@@ -1,0 +1,8 @@
+{"fromId":"JOB-A","toId":"file:nfs-prod:sales.done","kind":"produces","origin":"ai_analysis","certainty":"confirmed","evidence":[{"source":"scripts/job_a.sh","location":{"startLine":84,"endLine":84},"note":"トリガファイルを作成する"}]}
+{"fromId":"file:nfs-prod:sales.done","toId":"JOB-B","kind":"triggers","origin":"ai_analysis","certainty":"confirmed","evidence":[{"source":"scripts/job_b.sh","location":{"startLine":21,"endLine":23},"note":"トリガファイルの生成を待つ"}]}
+{"fromId":"JOB-B","toId":"NET-CLOSE","kind":"precedes","origin":"scheduler","certainty":"declared"}
+{"fromId":"NET-CLOSE","toId":"JOB-C","kind":"precedes","origin":"scheduler","certainty":"declared"}
+{"fromId":"JOB-C","toId":"event:vendor:ack","kind":"produces","origin":"ai_analysis","certainty":"inferred"}
+{"fromId":"event:vendor:ack","toId":"JOB-A","kind":"triggers","origin":"ai_analysis","certainty":"candidate"}
+{"fromId":"JOB-A","toId":"NET-CLOSE","kind":"precedes","origin":"scheduler","certainty":"declared"}
+{"fromId":"JOB-B","toId":"JOB-C","kind":"precedes","origin":"scheduler","certainty":"declared"}

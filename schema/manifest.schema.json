@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "BatchScope Snapshot Manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "snapshotId", "generatedAt", "nodeCount", "relationCount", "producer"],
+  "properties": {
+    "schemaVersion": {"const": "0.5"},
+    "snapshotId": {"type": "string", "minLength": 1, "maxLength": 256},
+    "generatedAt": {"type": "string", "format": "date-time"},
+    "nodeCount": {"type": "integer", "minimum": 0, "maximum": 10000000},
+    "relationCount": {"type": "integer", "minimum": 0, "maximum": 50000000},
+    "producer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "version"],
+      "properties": {
+        "name": {"type": "string", "minLength": 1, "maxLength": 128},
+        "version": {"type": "string", "minLength": 1, "maxLength": 64}
+      }
+    }
+  }
+}

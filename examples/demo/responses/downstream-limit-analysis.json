@@ -1,0 +1,313 @@
+{
+  "bootId": "demo-boot-01",
+  "snapshotId": "demo-2026-08-07T00:00:00Z",
+  "policyVersion": "limit-resolution-v1",
+  "target": {
+    "id": "JOB-A",
+    "type": "job",
+    "name": "売上抽出",
+    "path": "/DAILY/SALES/JOB-A",
+    "ancestorPath": [
+      {
+        "id": "UNIT-OPS",
+        "type": "management_unit",
+        "name": "運用管理"
+      },
+      {
+        "id": "NET-DAILY",
+        "type": "job_network",
+        "name": "日次処理"
+      },
+      {
+        "id": "NET-SALES",
+        "type": "job_network",
+        "name": "売上処理"
+      }
+    ]
+  },
+  "limits": {
+    "scope": [],
+    "finishByGroups": [
+      {
+        "timeZone": "Asia/Tokyo",
+        "total": 2,
+        "truncated": false,
+        "items": [
+          {
+            "node": {
+              "id": "JOB-C",
+              "type": "job",
+              "name": "会計連携ファイル作成"
+            },
+            "scope": "downstream",
+            "selectionReason": "ranked_finish_by",
+            "rank": 1,
+            "dependencyDistance": 2,
+            "ranking": {
+              "businessDayOffset": 1,
+              "localTime": "05:30:00",
+              "timeZone": "Asia/Tokyo",
+              "dependencyDistance": 2
+            },
+            "fact": {
+              "id": "LIMIT-JOB-C-FINISH",
+              "kind": "finish_by",
+              "businessDayOffset": 1,
+              "localTime": "05:30:00",
+              "timeZone": "Asia/Tokyo",
+              "sourceText": "翌日05:30までに終了",
+              "origin": "scheduler",
+              "certainty": "declared"
+            },
+            "alternatePathCount": 1,
+            "treeNodeId": "tree-3"
+          },
+          {
+            "node": {
+              "id": "JOB-B",
+              "type": "job",
+              "name": "売上集計"
+            },
+            "scope": "downstream",
+            "selectionReason": "ranked_finish_by",
+            "rank": 2,
+            "dependencyDistance": 2,
+            "ranking": {
+              "businessDayOffset": 1,
+              "localTime": "06:00:00",
+              "timeZone": "Asia/Tokyo",
+              "dependencyDistance": 2
+            },
+            "fact": {
+              "id": "LIMIT-JOB-B-FINISH",
+              "kind": "finish_by",
+              "businessDayOffset": 1,
+              "localTime": "06:00:00",
+              "timeZone": "Asia/Tokyo",
+              "sourceText": "翌日06:00までに終了",
+              "origin": "scheduler",
+              "certainty": "declared"
+            },
+            "alternatePathCount": 0,
+            "treeNodeId": "tree-7"
+          }
+        ]
+      }
+    ],
+    "maxElapsed": {
+      "total": 1,
+      "truncated": false,
+      "items": [
+        {
+          "node": {
+            "id": "JOB-B",
+            "type": "job",
+            "name": "売上集計"
+          },
+          "scope": "downstream",
+          "selectionReason": "ranked_max_elapsed",
+          "rank": 1,
+          "dependencyDistance": 2,
+          "ranking": {
+            "durationSeconds": 1800,
+            "dependencyDistance": 2
+          },
+          "fact": {
+            "id": "LIMIT-JOB-B-ELAPSED",
+            "kind": "max_elapsed",
+            "duration": "PT30M",
+            "sourceText": "開始から30分以内",
+            "origin": "scheduler",
+            "certainty": "declared"
+          },
+          "alternatePathCount": 0,
+          "treeNodeId": "tree-7"
+        }
+      ]
+    },
+    "raw": {
+      "total": 0,
+      "items": [],
+      "truncated": false
+    }
+  },
+  "tree": {
+    "node": {
+      "id": "JOB-A",
+      "type": "job",
+      "name": "売上抽出"
+    },
+    "children": [
+      {
+        "node": {
+          "id": "NET-CLOSE",
+          "type": "job_network",
+          "name": "会計締め処理"
+        },
+        "children": [
+          {
+            "node": {
+              "id": "JOB-C",
+              "type": "job",
+              "name": "会計連携ファイル作成"
+            },
+            "children": [
+              {
+                "node": {
+                  "id": "event:vendor:ack",
+                  "type": "external_event",
+                  "name": "外部ベンダー受信完了"
+                },
+                "children": [
+                  {
+                    "node": {
+                      "id": "JOB-A",
+                      "type": "job",
+                      "name": "売上抽出"
+                    },
+                    "referenceType": "cycle",
+                    "referenceTo": "tree-1",
+                    "cycleId": "cycle-1",
+                    "children": [],
+                    "treeNodeId": "tree-5",
+                    "viaRelations": [
+                      {
+                        "kind": "triggers",
+                        "origin": "ai_analysis",
+                        "certainty": "candidate"
+                      }
+                    ]
+                  }
+                ],
+                "treeNodeId": "tree-4",
+                "viaRelations": [
+                  {
+                    "kind": "produces",
+                    "origin": "ai_analysis",
+                    "certainty": "inferred"
+                  }
+                ]
+              }
+            ],
+            "treeNodeId": "tree-3",
+            "viaRelations": [
+              {
+                "kind": "precedes",
+                "origin": "scheduler",
+                "certainty": "declared"
+              }
+            ]
+          }
+        ],
+        "treeNodeId": "tree-2",
+        "viaRelations": [
+          {
+            "kind": "precedes",
+            "origin": "scheduler",
+            "certainty": "declared"
+          }
+        ]
+      },
+      {
+        "node": {
+          "id": "file:nfs-prod:sales.done",
+          "type": "file",
+          "name": "sales.done"
+        },
+        "children": [
+          {
+            "node": {
+              "id": "JOB-B",
+              "type": "job",
+              "name": "売上集計"
+            },
+            "children": [
+              {
+                "node": {
+                  "id": "NET-CLOSE",
+                  "type": "job_network",
+                  "name": "会計締め処理"
+                },
+                "referenceType": "shared",
+                "referenceTo": "tree-2",
+                "children": [],
+                "treeNodeId": "tree-8",
+                "viaRelations": [
+                  {
+                    "kind": "precedes",
+                    "origin": "scheduler",
+                    "certainty": "declared"
+                  }
+                ]
+              }
+            ],
+            "treeNodeId": "tree-7",
+            "viaRelations": [
+              {
+                "kind": "triggers",
+                "origin": "ai_analysis",
+                "certainty": "confirmed"
+              }
+            ]
+          }
+        ],
+        "treeNodeId": "tree-6",
+        "viaRelations": [
+          {
+            "kind": "produces",
+            "origin": "ai_analysis",
+            "certainty": "confirmed"
+          }
+        ]
+      }
+    ],
+    "treeNodeId": "tree-1"
+  },
+  "uncoveredRoutes": [
+    {
+      "boundary": {
+        "id": "JOB-A",
+        "type": "job",
+        "name": "売上抽出"
+      },
+      "reason": "cycle_without_limit"
+    }
+  ],
+  "cycles": [
+    {
+      "cycleId": "cycle-1",
+      "path": [
+        {
+          "id": "JOB-A",
+          "type": "job",
+          "name": "売上抽出"
+        },
+        {
+          "id": "NET-CLOSE",
+          "type": "job_network",
+          "name": "会計締め処理"
+        },
+        {
+          "id": "JOB-C",
+          "type": "job",
+          "name": "会計連携ファイル作成"
+        },
+        {
+          "id": "event:vendor:ack",
+          "type": "external_event",
+          "name": "外部ベンダー受信完了"
+        },
+        {
+          "id": "JOB-A",
+          "type": "job",
+          "name": "売上抽出"
+        }
+      ],
+      "containsImplicitRelation": true,
+      "containsUncertainRelation": true
+    }
+  ],
+  "analysisComplete": true,
+  "truncated": false,
+  "frontier": []
+}

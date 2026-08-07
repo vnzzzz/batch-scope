@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "BatchScope Relation",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["fromId", "toId", "kind", "origin", "certainty"],
+  "properties": {
+    "fromId": {"type": "string", "minLength": 1, "maxLength": 1024},
+    "toId": {"type": "string", "minLength": 1, "maxLength": 1024},
+    "kind": {"enum": ["precedes", "produces", "triggers", "consumed_by", "observed_by"]},
+    "origin": {"enum": ["scheduler", "deterministic_analysis", "ai_analysis", "manual"]},
+    "certainty": {"enum": ["declared", "confirmed", "inferred", "candidate"]},
+    "evidence": {
+      "type": "array",
+      "maxItems": 100,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["source"],
+        "properties": {
+          "source": {"type": "string", "minLength": 1, "maxLength": 4096},
+          "location": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "startLine": {"type": "integer", "minimum": 1},
+              "endLine": {"type": "integer", "minimum": 1},
+              "jsonPointer": {"type": "string", "maxLength": 4096}
+            }
+          },
+          "note": {"type": "string", "maxLength": 8192}
+        }
+      }
+    }
+  }
+}

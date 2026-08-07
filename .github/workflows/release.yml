@@ -1,0 +1,81 @@
+name: Release binaries
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions: {}
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Build and publish binaries
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - name: Check release prerequisites
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+
+          if [[ ! "${GITHUB_REF_NAME}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$ ]]; then
+            echo "タグはv0.1.0またはv0.1.0-rc.1の形式で作成してください。" >&2
+            exit 1
+          fi
+
+          if [[ ! -f LICENSE ]]; then
+            echo "公開前にLICENSEを追加してください。" >&2
+            exit 1
+          fi
+
+          if ! git merge-base --is-ancestor "${GITHUB_SHA}" origin/main; then
+            echo "mainへ取り込まれていないコミットからはリリースできません。" >&2
+            exit 1
+          fi
+
+      - name: Verify
+        run: make verify
+
+      - name: Build release artifacts
+        run: |
+          make release-artifacts \
+            VERSION="${GITHUB_REF_NAME#v}" \
+            COMMIT="${GITHUB_SHA}"
+
+      - name: Publish GitHub Release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -Eeuo pipefail
+
+          args=(
+            "${GITHUB_REF_NAME}"
+            dist/*
+            --verify-tag
+            --generate-notes
+            --title "${GITHUB_REF_NAME}"
+          )
+
+          if [[ "${GITHUB_REF_NAME}" == *-* ]]; then
+            args+=(--prerelease)
+          fi
+
+          gh release create "${args[@]}"

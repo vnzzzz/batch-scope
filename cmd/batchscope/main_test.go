@@ -1,0 +1,39 @@
+package main
+
+import (
+	"strings"
+	"testing"
+)
+
+func TestDefaultListenAddress(t *testing.T) {
+	t.Setenv("PORT", "18080")
+
+	got, err := defaultListenAddress()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "0.0.0.0:18080" {
+		t.Fatalf("address = %q, want %q", got, "0.0.0.0:18080")
+	}
+}
+
+func TestDefaultListenAddressRejectsInvalidPort(t *testing.T) {
+	t.Setenv("PORT", "not-a-port")
+
+	_, err := defaultListenAddress()
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	if !strings.Contains(err.Error(), "invalid PORT") {
+		t.Fatalf("error = %q, want invalid PORT", err)
+	}
+}
+
+func TestDefaultListenAddressRejectsOutOfRangePort(t *testing.T) {
+	t.Setenv("PORT", "70000")
+
+	_, err := defaultListenAddress()
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+}

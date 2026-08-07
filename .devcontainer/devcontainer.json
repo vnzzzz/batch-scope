@@ -1,0 +1,55 @@
+{
+  "name": "BatchScope",
+  "build": {
+    "dockerfile": "Dockerfile",
+    "context": ".."
+  },
+  "features": {
+    "ghcr.io/devcontainers/features/go:1": {
+      "version": "1.26.5"
+    },
+    "ghcr.io/devcontainers/features/github-cli:1": {}
+  },
+  "remoteUser": "node",
+  "containerEnv": {
+    "BATCHSCOPE_DATA_DIR": "/tmp/batchscope",
+    "CODEX_HOME": "/home/node/.codex",
+    "CODEX_VERSION": "latest",
+    "CLAUDE_CODE_VERSION": "latest",
+    "DISABLE_AUTOUPDATER": "1",
+    "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1"
+  },
+  "mounts": [
+    "source=batchscope-claude-${devcontainerId},target=/home/node/.claude,type=volume",
+    "source=batchscope-codex-${devcontainerId},target=/home/node/.codex,type=volume",
+    "source=batchscope-gh-${devcontainerId},target=/home/node/.config/gh,type=volume",
+    "source=batchscope-go-mod-${devcontainerId},target=/go/pkg/mod,type=volume",
+    "source=batchscope-go-build-${devcontainerId},target=/home/node/.cache/go-build,type=volume"
+  ],
+  "postCreateCommand": "bash .devcontainer/scripts/post-create.sh",
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "golang.go",
+        "redhat.vscode-yaml"
+      ],
+      "settings": {
+        "go.toolsManagement.autoUpdate": false,
+        "go.testFlags": [
+          "-race"
+        ],
+        "editor.formatOnSave": true,
+        "files.trimTrailingWhitespace": true
+      }
+    }
+  },
+  "forwardPorts": [
+    8080
+  ],
+  "portsAttributes": {
+    "8080": {
+      "label": "BatchScope API",
+      "onAutoForward": "notify"
+    }
+  }
+}

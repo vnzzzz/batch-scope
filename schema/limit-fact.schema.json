@@ -1,0 +1,77 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "BatchScope Configured Limit Fact",
+  "oneOf": [
+    {"$ref": "#/$defs/finishBy"},
+    {"$ref": "#/$defs/maxElapsed"},
+    {"$ref": "#/$defs/raw"}
+  ],
+  "$defs": {
+    "base": {
+      "type": "object",
+      "required": ["id", "kind", "origin", "certainty"],
+      "properties": {
+        "id": {"type": "string", "minLength": 1, "maxLength": 512},
+        "kind": {"enum": ["finish_by", "max_elapsed", "raw"]},
+        "sourceText": {"type": "string", "maxLength": 8192},
+        "origin": {"enum": ["scheduler", "deterministic_analysis", "ai_analysis", "manual"]},
+        "certainty": {"enum": ["declared", "confirmed", "inferred", "candidate"]}
+      }
+    },
+    "finishBy": {
+      "allOf": [
+        {"$ref": "#/$defs/base"},
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["id", "kind", "businessDayOffset", "localTime", "timeZone", "origin", "certainty"],
+          "properties": {
+            "id": {"type": "string", "minLength": 1, "maxLength": 512},
+            "kind": {"const": "finish_by"},
+            "businessDayOffset": {"type": "integer", "minimum": -31, "maximum": 31},
+            "localTime": {"type": "string", "pattern": "^(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d$"},
+            "timeZone": {"type": "string", "minLength": 1, "maxLength": 128},
+            "sourceText": {"type": "string", "maxLength": 8192},
+            "origin": {"enum": ["scheduler", "deterministic_analysis", "ai_analysis", "manual"]},
+            "certainty": {"enum": ["declared", "confirmed", "inferred", "candidate"]}
+          }
+        }
+      ]
+    },
+    "maxElapsed": {
+      "allOf": [
+        {"$ref": "#/$defs/base"},
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["id", "kind", "duration", "origin", "certainty"],
+          "properties": {
+            "id": {"type": "string", "minLength": 1, "maxLength": 512},
+            "kind": {"const": "max_elapsed"},
+            "duration": {"type": "string", "pattern": "^P"},
+            "sourceText": {"type": "string", "maxLength": 8192},
+            "origin": {"enum": ["scheduler", "deterministic_analysis", "ai_analysis", "manual"]},
+            "certainty": {"enum": ["declared", "confirmed", "inferred", "candidate"]}
+          }
+        }
+      ]
+    },
+    "raw": {
+      "allOf": [
+        {"$ref": "#/$defs/base"},
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["id", "kind", "sourceText", "origin", "certainty"],
+          "properties": {
+            "id": {"type": "string", "minLength": 1, "maxLength": 512},
+            "kind": {"const": "raw"},
+            "sourceText": {"type": "string", "minLength": 1, "maxLength": 8192},
+            "origin": {"enum": ["scheduler", "deterministic_analysis", "ai_analysis", "manual"]},
+            "certainty": {"enum": ["declared", "confirmed", "inferred", "candidate"]}
+          }
+        }
+      ]
+    }
+  }
+}

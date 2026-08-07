@@ -1,0 +1,221 @@
+# API仕様
+
+## 基本方針
+
+| 処理 | HTTPメソッド | 理由 |
+|---|---|---|
+| 状態確認、対象検索、後続リミット取得 | `GET` | サーバーの状態を変更しない |
+| スナップショット取込 | `POST` | 新しい取込処理を作成し、検索先を更新する |
+
+スナップショットの検査とSQLiteの作成は、アップロード完了後も続く場合があります。
+取込APIは`202 Accepted`を返し、取込状況を確認するURIを`Location`ヘッダーへ設定します。
+
+エラーはRFC 9457のProblem Details形式で返します。
+ジョブIDとジョブネットIDにはパス区切り文字が含まれる場合があるため、検索対象のIDはクエリパラメーターで受け取ります。
+
+## API一覧
+
+| Method | Path | 用途 |
+|---|---|---|
+| `GET` | `/healthz` | プロセスの生存確認 |
+| `GET` | `/readyz` | 検索できるスナップショットがあるか確認 |
+| `GET` | `/v1/status` | サービス状態の取得 |
+| `POST` | `/v1/snapshot-imports` | スナップショットの送信 |
+| `GET` | `/v1/snapshot-imports/{importId}` | 取込状況の取得 |
+| `GET` | `/v1/snapshots/current` | 現在使用中のスナップショット情報の取得 |
+| `GET` | `/v1/targets` | ジョブまたはジョブネットの完全一致検索 |
+| `GET` | `/v1/downstream-limit-analysis` | 後続リミットと依存経路の取得 |
+
+HumaによるAPI実装後は、生成されたAPIドキュメントを`/docs`、OpenAPIを`/openapi.json`と`/openapi.yaml`で公開します。
+取込データ用のJSON SchemaはHTTP APIから配信せず、リポジトリの`schema/`とエージェントスキルに含めます。
+
+## 対象の検索
+
+```http
+GET /v1/targets?query=JOB-A&type=job
+```
+
+| パラメーター | 必須 | 説明 |
+|---|---|---|
+| `query` | はい | ID、名前、完全パスとの完全一致に使う |
+| `type` | いいえ | `job`または`job_network`へ絞る。複数指定できる |
+
+前方一致、部分一致、曖昧検索は行いません。
+検索結果は、一致した項目の優先度、完全パス、IDの順に並べます。
+
+一回の検索では最大1,000件を返します。
+上限を超えた場合は`truncated=true`とし、検索条件を絞るよう利用者へ示します。
+ページトークンは、実データで必要性を確認するまで導入しません。
+
+```json
+{
+  "snapshotId": "2026-08-05T01:00:00Z",
+  "items": [
+    {
+      "id": "JOB-A",
+      "type": "job",
+      "name": "売上集計",
+      "path": "/DAILY/SALES/JOB-A",
+      "matchedBy": ["id"],
+      "ancestorPath": [
+        {"id": "UNIT-OPS", "type": "management_unit", "name": "運用管理"},
+        {"id": "NET-DAILY", "type": "job_network", "name": "日次処理"}
+      ]
+    }
+  ],
+  "truncated": false
+}
+```
+
+## 後続リミットの取得
+
+```http
+GET /v1/downstream-limit-analysis?targetId=JOB-A&includeEvidence=false
+```
+
+| パラメーター | 必須 | 既定値 | 説明 |
+|---|---|---:|---|
+| `targetId` | はい | なし | ジョブIDまたはジョブネットID |
+| `includeEvidence` | いいえ | `false` | 根拠情報をレスポンスへ含めるか |
+
+探索の深さ、調べるノード数、経路ツリーの件数、返却するリミット数はサービス側で制限します。
+利用者は内部の処理量を指定しません。
+上限に達した場合は、`analysisComplete`、`truncated`、`frontier`で未確認範囲を示します。
+
+リミットの選び方、並べ方、循環の扱いは[後続リミットの検索](dependency-analysis.md)で定めます。
+
+### レスポンスの構成
+
+| 項目 | 内容 |
+|---|---|
+| `bootId`、`snapshotId` | サービス起動と使用中データの識別子 |
+| `policyVersion` | リミットの選び方と並べ方の版 |
+| `target` | 検索対象 |
+| `limits.scope` | 対象ジョブ自身のリミット、またはジョブネット配下から求めた代表リミット |
+| `limits.finishByGroups` | タイムゾーンごとの`finish_by` |
+| `limits.maxElapsed` | `max_elapsed` |
+| `limits.raw` | 比較できない元設定 |
+| `tree` | 返却したリミットなどまでの経路と、その経路を構成する依存関係 |
+| `uncoveredRoutes` | リミットが見つからなかった経路 |
+| `cycles` | 検出した循環 |
+| `analysisComplete`、`truncated`、`frontier` | 処理範囲と打切り地点 |
+
+各後続リミットには、設定先のジョブ、選定理由、順位、対象からの距離、並べ替えに使った値を含めます。
+経路は`tree`にまとめ、リミット側の`treeNodeId`から設定先のツリーノードを参照します。
+同じ経路のノード列をリミットごとに重複して返しません。
+
+経路ツリーの選び方と`viaRelations`の意味は[後続リミットの検索](dependency-analysis.md#経路ツリー)で定めます。
+APIでは、`includeEvidence=false`でも`kind`、`origin`、`certainty`を返し、`true`の場合だけ`evidence`を追加します。
+
+```json
+{
+  "node": {
+    "id": "JOB-C",
+    "type": "job",
+    "name": "会計連携ファイル作成"
+  },
+  "scope": "downstream",
+  "selectionReason": "ranked_finish_by",
+  "rank": 1,
+  "dependencyDistance": 7,
+  "ranking": {
+    "businessDayOffset": 1,
+    "localTime": "06:00:00",
+    "timeZone": "Asia/Tokyo"
+  },
+  "fact": {},
+  "treeNodeId": "tree-42",
+  "alternatePathCount": 0
+}
+```
+
+経路ツリーの子ノードは、次のように依存関係を持ちます。
+
+```json
+{
+  "treeNodeId": "tree-7",
+  "node": {
+    "id": "JOB-B",
+    "type": "job",
+    "name": "売上集計"
+  },
+  "viaRelations": [
+    {
+      "kind": "triggers",
+      "origin": "ai_analysis",
+      "certainty": "confirmed"
+    }
+  ],
+  "children": []
+}
+```
+
+開発時にレスポンスをテキスト表示する方法は[デモ](../development/demo.md)を参照してください。
+
+## スナップショットの取込
+
+```http
+POST /v1/snapshot-imports
+Content-Type: application/vnd.batchscope.snapshot+gzip
+Idempotency-Key: 7d20a0aa-...
+```
+
+圧縮アーカイブは、リクエストボディとして受け取ります。
+受信中に500 MiBの上限を検査し、メモリへ一括読込しません。
+
+```http
+HTTP/1.1 202 Accepted
+Location: /v1/snapshot-imports/imp_01J...
+Retry-After: 2
+```
+
+```mermaid
+stateDiagram-v2
+    [*] --> accepted
+    accepted --> validating
+    validating --> building
+    building --> activating
+    activating --> succeeded
+    accepted --> failed
+    validating --> failed
+    building --> failed
+    activating --> failed
+```
+
+同時に実行できる取込は一件です。
+二件目は`409 Conflict`を返します。
+
+同じ`snapshotId`と同じ内容の再送は成功済みとして扱います。
+同じ`snapshotId`で内容が異なる場合は`409 Conflict`を返します。
+
+## 大容量リクエストの制御
+
+HTTPサーバー全体へ短い`ReadTimeout`を設定すると、500 MiBの取込を途中で切断する可能性があります。
+ヘッダー受信には`ReadHeaderTimeout`を使い、リクエストボディのサイズと処理時間は取込ハンドラーで制御します。
+
+検索処理の時間制限も検索ハンドラー側で設定します。
+用途の異なる処理へ同じタイムアウト値を適用しません。
+
+## エラー
+
+| Status | 種別 | 主な発生条件 |
+|---:|---|---|
+| 400 | `invalid-request` | クエリパラメーターまたは要求形式が不正 |
+| 404 | `target-not-found` | 対象IDが見つからない |
+| 409 | `snapshot-import-in-progress` | 別の取込を実行中 |
+| 409 | `snapshot-id-conflict` | 同じIDで異なる内容を受信 |
+| 413 | `snapshot-too-large` | サイズ上限を超えた |
+| 422 | `invalid-snapshot` | スナップショットの内容が不正 |
+| 503 | `snapshot-not-loaded` | 検索可能なスナップショットがない |
+| 500 | `internal-error` | サーバー内部のエラー |
+
+スナップショットの検査エラーには、対象ファイル、行番号、JSON Pointer、理由コードを含められます。
+
+## OpenAPIの管理
+
+設計段階では、この文書とJSON Schemaをレビュー対象とします。
+手書きのOpenAPIファイルは置きません。
+
+HumaによるAPI実装後は、Goのルート定義と型からOpenAPIを生成します。
+生成物をGit管理する場合は、生成コマンドとCIの差分検査を同時に追加します。
+エージェントスキルへOpenAPIを含める場合も、同じ生成物から梱包し、手作業で複製しません。
