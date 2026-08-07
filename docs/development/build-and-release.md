@@ -13,6 +13,8 @@
 
 GitHub Releasesはタグに対応するリリースを作り、OS別バイナリとSHA-256チェックサムを添付します。
 GHCRとDocker Hubは、利用要望と運用方法を確認してから追加します。
+利用者向けのPublic Skillは同じリポジトリで管理し、初回リリースまでにGitHub Releaseのアーカイブへ追加します。
+現時点のRelease WorkflowはOS別バイナリだけを作成します。
 
 ## バイナリの対象環境
 

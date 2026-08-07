@@ -64,7 +64,7 @@ batchscope/
 ├── docs/                      # 設計文書と開発手順
 ├── examples/demo/             # デモ用の取込データとレスポンス例
 ├── scripts/                   # 開発、表示、公開用の補助スクリプト
-├── skills/batchscope/         # エージェントスキルの正本
+├── skills/                    # PublicとInternalのエージェントスキル
 └── Dockerfile                 # 本番用イメージ
 ```
 

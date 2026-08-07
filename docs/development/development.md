@@ -47,11 +47,19 @@ Codex CLIとClaude Codeは、利用時点の最新版をインストールしま
 
 実行環境：Dev Container
 
-各CLIを一度起動し、認証を完了します。
+各CLIとGitHub CLIの認証を完了します。
 
 ```bash
 codex
 claude
+gh auth login
+```
+
+GitHub Issueを扱う前に、対象アカウントとリポジトリを確認します。
+
+```bash
+gh auth status
+gh repo view
 ```
 
 認証情報と利用者設定は、リポジトリ専用の名前付きボリュームへ保存します。
@@ -78,6 +86,21 @@ codex doctor
 
 権限を修正してもSQLiteの破損エラーが残る場合だけ、Codexを終了してから`state_5.sqlite`と付随ファイルを退避します。
 認証情報やセッションを含む`.codex`全体は削除しません。
+
+### モデルの選択
+
+CLIはDev Container作成時の最新版を使用します。
+Claude CodeとCodexのモデルはリポジトリへ固定しません。
+
+Claude Codeは`ANTHROPIC_MODEL`、ClaudeからCodexへ委任する場合は任意の`BATCHSCOPE_CODEX_MODEL`でローカルに指定できます。
+未設定の場合は、それぞれのCLIの利用者設定または既定モデルを使用します。
+
+```bash
+export ANTHROPIC_MODEL=<利用可能なClaudeモデル>
+export BATCHSCOPE_CODEX_MODEL=<利用可能なCodexモデル>
+```
+
+モデル名や認証情報をリポジトリへコミットしません。
 
 ## 開発コマンド
 
@@ -113,8 +136,18 @@ codex doctor
 スナップショット取込と後続リミット検索は、設計済みで未実装です。
 デモ用レスポンスの確認方法は[デモ](demo.md)を参照してください。
 
-## エージェントスキル
+## AIエージェントによる開発
 
-CodexとClaude Codeは、`skills/batchscope`を正本とする同じSkillを使用します。
-配置と更新規則は[エージェントスキル](../design/agent-skill.md)を参照してください。
-共通の実装規則は`AGENTS.md`に記載し、`CLAUDE.md`は`AGENTS.md`を参照します。
+実装作業はGitHub Issueを起点とします。
+Issueには目的、対象範囲、対象外、受入条件を記載し、Pull RequestからIssueを関連付けます。
+
+Claude Codeを主担当とし、Issueの解釈、計画、設計判断、差分レビュー、最終検証を担当させます。
+Codexは、一度に一つの限定された実装またはレビューだけを担当します。
+同じ作業ツリーへの並列編集は行いません。
+
+設計と実装からIssue候補を作る場合は`batchscope-backlog` Skillを使用します。
+Issue候補は利用者の確認後にGitHubへ登録し、Projectsや別のバックログ文書は使用しません。
+
+Issue実装の進行手順は`batchscope-development` Skillに記載します。
+共通の実装規則は`AGENTS.md`、Claude Code固有の役割は`CLAUDE.md`を参照してください。
+Skillの配置と更新規則は[エージェントスキル](../design/agent-skill.md)を参照してください。
