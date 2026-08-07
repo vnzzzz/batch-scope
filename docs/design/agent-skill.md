@@ -1,49 +1,73 @@
 # エージェントスキル
 
-BatchScopeのエージェントスキルは、スナップショットの作成と検索APIの利用を支援します。
-サービス内部の処理を代替せず、入力形式とAPIの使い方をエージェントへ伝えます。
+BatchScopeでは、利用者へ配布するPublic Skillと、リポジトリ開発だけに使うInternal Skillを分けます。
+サービス内部の処理や設計文書をSkillへ重複して実装しません。
+
+## Skillの責務
+
+| 区分 | Skill | 利用者 | 役割 |
+|---|---|---|---|
+| Public | `batchscope` | Codex、Claude Code | スナップショットの作成、取込、検索APIの利用 |
+| Internal | `batchscope-backlog` | Claude Code | 設計、実装、既存Issueの監査とIssue候補の作成 |
+| Internal | `batchscope-development` | Claude Code | Issueの計画、Codexへの限定委任、差分レビュー、検証 |
+
+Public Skillは、BatchScope利用者と開発者が同じ手順でサービスを利用するために共有します。
+Internal Skillはリポジトリ固有の開発手順だけを扱い、公開用成果物へ含めません。
 
 ## 管理する内容
 
 | 対象 | 正本 | Skillでの扱い |
 |---|---|---|
-| 取込ファイルの制約 | `schema/`配下のJSON Schema | 作成時に参照する |
-| 変換と検索の手順 | `skills/batchscope/SKILL.md` | エージェントへ直接指示する |
-| 変換時の要点 | `skills/batchscope/references/` | Skillだけで判断しやすい範囲へ要約する |
-| API仕様 | HumaのGo実装 | 実装後にOpenAPIを生成し、必要な配布物へ自動で含める |
+| 取込ファイルの制約 | `schema/`配下のJSON Schema | Public Skillには作成時に必要な要点だけを記載する |
+| 変換と検索の手順 | `skills/public/batchscope/SKILL.md` | 製品利用時に直接指示する |
+| 変換時の要点 | `skills/public/batchscope/references/` | リポジトリ外でも判断できる範囲へ要約する |
+| バックログ監査 | `skills/internal/batchscope-backlog/SKILL.md` | Claude Codeの監査と登録手順を記載する |
+| Issue実装 | `skills/internal/batchscope-development/SKILL.md` | Claude Codeの指揮手順を記載する |
+| API仕様 | HumaのGo実装 | 実装後にOpenAPIを生成する |
 | 設計理由 | `docs/design/`配下 | Skillへコピーせず、開発時に参照する |
 
 ## ディレクトリ構成
 
 ```text
-skills/batchscope/
-├── SKILL.md
-└── references/
-    ├── canonical-snapshot.md
-    └── normalization-rules.md
+skills/
+├── README.md
+├── public/
+│   └── batchscope/
+│       ├── SKILL.md
+│       └── references/
+│           ├── canonical-snapshot.md
+│           └── normalization-rules.md
+└── internal/
+    ├── batchscope-backlog/
+    │   └── SKILL.md
+    └── batchscope-development/
+        └── SKILL.md
 ```
 
-`skills/batchscope`を正本とし、CodexとClaude Codeはシンボリックリンクから同じ内容を参照します。
+Claude CodeとCodexは、シンボリックリンクから必要なSkillだけを参照します。
 
 ```text
-.agents/skills/batchscope -> ../../skills/batchscope
-.claude/skills/batchscope -> ../../skills/batchscope
+.agents/skills/batchscope -> ../../skills/public/batchscope
+.claude/skills/batchscope -> ../../skills/public/batchscope
+.claude/skills/batchscope-backlog -> ../../skills/internal/batchscope-backlog
+.claude/skills/batchscope-development -> ../../skills/internal/batchscope-development
 ```
 
-## 対応する操作
+CodexにはPublic Skillだけを公開します。
+Internal SkillからCodexを限定的に呼び出すため、Codex自身にはバックログ管理や指揮のSkillを持たせません。
 
-| 操作 | Skillの役割 | BatchScopeの役割 |
-|---|---|---|
-| スナップショット作成 | 元資料からノード、依存関係、リミット、確実性を共通形式へ変換する | JSON Schemaと参照関係を再検査し、SQLiteを作成する |
-| 対象検索 | 完全一致検索を呼び、複数候補がある場合は利用者へ確認する | 候補と親子関係を返す |
-| 後続リミット検索 | APIの返却順、確実性、循環、未確認範囲を保って説明する | 後続を探索し、リミットと経路を返す |
+## 配布
 
-MVPでは専用のBatchScope CLIを用意しません。
-Skillは標準コマンドでファイルを作成、梱包、送信しますが、完全な検査は取込APIでも必ず行います。
+Public Skillはリポジトリ内を正本とし、リポジトリ外へコピーしても利用できる内容にします。
+リポジトリ内部の開発手順やIssue運用へ依存させません。
+
+初回リリースまでに、`skills/public/batchscope`だけをGitHub Releaseのアーカイブへ追加します。
+Plugin、Marketplace、Gist同期、Skill専用リポジトリは、利用上の必要性が確認されるまで追加しません。
 
 ## 更新規則
 
-- APIまたは取込形式を変更した場合は、実装、JSON Schema、設計文書、Skillの参照資料、必要なデモデータを同じ変更で更新する。
-- JSON Schemaの制約をSkillへ全文転記せず、変換時に必要な判断だけを記載する。
+- APIまたは取込形式を変更した場合は、実装、JSON Schema、設計文書、Public Skillの参照資料、必要なデモデータを同じ変更で更新する。
+- JSON Schemaの制約をPublic Skillへ全文転記せず、利用時に必要な判断だけを記載する。
 - OpenAPIは手書きで同梱しない。
-- Skillの具体的な実行手順は`SKILL.md`だけに記載する。
+- Public SkillとInternal Skillの責務を混在させない。
+- Issue候補は利用者の確認後に登録し、バックログ文書を別に作らない。
