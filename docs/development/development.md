@@ -156,6 +156,11 @@ export BATCHSCOPE_CODEX_MODEL=<利用可能なCodexモデル>
 実装作業はGitHub Issueを起点とします。
 Issueには目的、対象範囲、対象外、受入条件を記載し、Pull RequestからIssueを関連付けます。
 
+実装順序上、相手のIssueが完了するまで着手できない関係は、GitHubのネイティブな`blocked by`と`blocking`で管理します。
+依存理由はIssue本文へ記載しますが、機械判定の正本はネイティブ依存関係とし、Openのブロッカーが一つでもあるIssueには着手しません。
+Dev Containerでの作業開始時は`gh issue view <番号> --json number,title,body,labels,url,blockedBy,blocking`でIssueとブロッカーの状態を確認します。
+単に参照するIssueはネイティブ依存関係へ登録せず、Issue本文の「関連資料」に記載します。
+
 人間はIssueの起票とPull Requestの最終確認に集中します。
 Issueが十分に定義されている場合、Claude CodeはCodexへ原則としてIssue単位で実装を委任し、CI成功済みのReady for review Pull Requestを作成するまで自律的に進めます。
 
