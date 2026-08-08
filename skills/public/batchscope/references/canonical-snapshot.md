@@ -1,6 +1,8 @@
 # スナップショットの形式
 
-各項目の厳密な制約は、BatchScopeサービスが検査するJSON Schemaで定義する。
+JSON Schemaは、構造と1レコード単体の基本制約を定義する。
+BatchScopeは、複数レコード間の整合性と意味上の制約を追加で検査する。
+JSON Schemaに適合するだけでは、取込は成功しない。
 この文書は、LLMがスナップショットを作るときに必要な規則をまとめる。
 
 ## アーカイブ
@@ -15,6 +17,7 @@ batchscope-snapshot.tar.gz
 - メディアタイプ：`application/vnd.batchscope.snapshot+gzip`
 - 圧縮後サイズ上限：500 MiB
 - 展開後サイズ上限：4 GiB
+- `manifest.json`サイズ上限：1 MiB
 
 三つのファイル以外は含めない。
 ディレクトリ、リンク、親ディレクトリを指すパスも含めない。
