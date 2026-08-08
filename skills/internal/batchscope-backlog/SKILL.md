@@ -21,6 +21,7 @@ gh label list
 
 認証、対象リポジトリ、必要なラベルまたはMilestoneが不足している場合は、Issueを作らず不足を報告する。
 Projectsは使用しない。
+進捗を表すラベルは新設しない。
 
 ## 監査
 
@@ -29,7 +30,7 @@ Projectsは使用しない。
 1. `docs/index.md`からMVPの設計文書を読む。
 2. `schema/`、`cmd/`、`internal/`、`examples/`、`scripts/`、`.github/workflows/`を確認する。
 3. テストと`make verify`が検査している範囲を確認する。
-4. OpenとClosedの既存Issueを確認する。
+4. OpenとClosedの既存Issue、および各Issueのネイティブ依存関係である`blockedBy`と`blocking`を確認する。
 5. 設計済み、実装済み、未実装、未決事項を対応付ける。
 6. 既存Issueと重複する候補を除く。
 
@@ -47,7 +48,8 @@ GitHubへ書き込む前に、次を含む候補一覧を提示する。
 - 対象外
 - 受入条件
 - 関連文書
-- 依存する候補またはIssue
+- 単に参照する関連Issue
+- ネイティブ依存関係へ登録するブロッカーと、ブロックされる候補またはIssue
 - 推奨順序
 
 候補の根拠は、確認したファイルまたは既存Issueを示す。
@@ -61,3 +63,37 @@ GitHubへ書き込む前に、次を含む候補一覧を提示する。
 
 登録後は、作成したIssue番号、タイトル、依存関係、推奨する最初のIssueを報告する。
 会話全文、エージェントの内部メモ、長い調査ログはIssueへ記載しない。
+
+## 依存関係の登録
+
+新規Issueを起票するときは、新規Issue側だけでなく既存Issue側の依存関係も見直す。
+新規Issueが既存Issueにブロックされる場合だけでなく、既存Issueが新規Issueにブロックされる場合もあるため、既存Issueへの追加登録も検討する。
+
+実行環境：Dev Container
+
+ネイティブ依存関係は次のコマンドで登録する。
+
+```bash
+gh issue edit <番号> --add-blocked-by <番号>
+gh issue edit <番号> --add-blocking <番号>
+```
+
+起票済みのIssueには、後から依存関係を追加または削除できる。
+
+```bash
+gh issue edit <番号> --remove-blocked-by <番号>
+gh issue edit <番号> --remove-blocking <番号>
+```
+
+登録するのは、相手のIssueが完了するまで着手できない、実装上の真のブロッカーだけとする。
+単に参照する、テーマが近い、同じ文書を扱うだけの関係はネイティブ依存関係へ登録せず、Issue本文の「関連資料」に記載する。
+
+Issue本文には依存理由を記載するが、機械判定の正本はGitHubのネイティブ依存関係とする。
+
+登録後は、全Issueの`blockedBy`を収集して有向グラフとし、循環がないことを確認する。
+実装順序上必要な依存関係が欠けていないことと、不要な依存関係が登録されていないことも確認する。
+各Issueの登録結果は次のコマンドで確認する。
+
+```bash
+gh issue view <番号> --json blockedBy,blocking
+```
