@@ -4,9 +4,10 @@
 
 `main`は、常にテストを通過した状態を保ちます。
 開発は作業ブランチで行い、Pull Requestを通して`main`へ取り込みます。
+「一つのIssue、一つのPull Request、一つの`main`コミット」を基本とします。
 
 作業ブランチへ`main`をマージせず、最新の`main`へrebaseします。
-マージ時はGitHubのRebase and mergeを使用し、履歴をセミリニアに保ちます。
+マージ時はGitHubのSquash mergeを使用します。
 
 ```mermaid
 flowchart TD
@@ -17,8 +18,11 @@ flowchart TD
     E --> F[再テストしてpush]
     F --> G[Pull Request]
     G --> H[レビュー対応]
-    H --> I[Rebase and merge]
+    H --> I[Squash merge]
+    I --> J[リモートのheadブランチを自動削除]
 ```
+
+ローカルの作業ブランチは自動削除しません。
 
 ## ブランチ名
 
@@ -163,6 +167,21 @@ git push --force-with-lease
 
 実行環境：Dev Container
 
+Pull Requestを作成する前に、タイトルが`main`のコミット履歴として適切か確認します。
+Pull RequestのタイトルはSquash merge後に`main`のコミットタイトルになります。
+タイトルは`feat:`、`fix:`、`chore:`などのConventional Commits形式を基本とし、一つのIssueの目的を簡潔に表します。
+基準とするremoteのコミット履歴と比較し、既存のタイトルと同じ粒度になっていることも確認します。
+
+```bash
+git log --oneline -10 origin/main
+```
+
+forkを使う場合は、`upstream/main`のコミット履歴を確認します。
+
+```bash
+git log --oneline -10 upstream/main
+```
+
 GitHub CLIでPull Requestを作成します。
 forkから送る場合も、`--repo`には元のリポジトリを指定します。
 
@@ -188,6 +207,7 @@ CI失敗時の修正手順とレビューガイドの内容は`batchscope-develo
 Ready for reviewへの移行後も、人間による最終レビューを省略しません。
 
 Pull Requestには、少なくとも次を記載します。
+Pull Requestの本文はSquash merge後に`main`のコミット本文として残ります。
 
 - 変更の目的
 - 主な変更内容
@@ -204,8 +224,9 @@ Pull Requestには、少なくとも次を記載します。
 
 ## マージ後の片付け
 
-必須チェックとレビューが完了した後に、Rebase and mergeで`main`へ反映します。
-マージ後は、作業開始時に使った基準リポジトリから`main`を更新し、作業ブランチを削除します。
+必須チェックとレビューが完了した後に、Squash mergeで`main`へ反映します。
+GitHubはマージ後にリモートのheadブランチを自動削除します。
+マージ後は、作業開始時に使った基準リポジトリから`main`を更新し、削除済みのリモートブランチへの参照を整理します。
 
 実行環境：Dev Container
 
@@ -214,7 +235,6 @@ Pull Requestには、少なくとも次を記載します。
 ```bash
 git switch main
 git pull --ff-only origin main
-git branch -d feature/add-snapshot-import
 git fetch --prune origin
 ```
 
@@ -225,6 +245,12 @@ git fetch upstream
 git switch main
 git merge --ff-only upstream/main
 git push origin main
-git branch -d feature/add-snapshot-import
 git fetch --prune origin
+```
+
+ローカルの作業ブランチが不要であることを確認した後、`git branch -d <ブランチ名>`で削除します。
+`git branch -d`が削除を拒否した場合も、`git branch -D`で強制削除したり、自動削除したりしません。
+
+```bash
+git branch -d feature/add-snapshot-import
 ```

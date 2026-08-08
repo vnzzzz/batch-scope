@@ -180,17 +180,21 @@ CIの`Build production image`で確認することをPull Requestへ記載する
 
 ## コミットとPull Request
 
-Claude Codeが変更を目的別にコミットし、作業ブランチをpushする。
+「一つのIssue、一つのPull Request、一つの`main`コミット」を基本とする。
+Claude CodeがIssueの目的に沿って変更をコミットし、作業ブランチをpushする。
 
 ```bash
 git push -u origin <ブランチ>
 ```
 
 Pull RequestはDraftとして作成する。
+Pull RequestのタイトルはSquash merge後にそのまま`main`のコミットタイトルになる。
+作成前に、タイトルが`feat:`、`fix:`、`chore:`などのConventional Commits形式であり、`main`のコミット履歴としてIssueの目的を適切に表していることを確認する。
+Pull Requestの本文はSquash merge後にそのまま`main`のコミット本文になる。
 本文へ`Closes #<Issue番号>`とレビューガイドを含める。
 
 ```bash
-gh pr create --draft
+gh pr create --draft --title "<Conventional Commits形式のタイトル>"
 ```
 
 レビューガイドには次を含める。
@@ -226,3 +230,6 @@ gh pr ready <番号>
 
 Pull Requestはマージしない。
 人間による最終レビューを省略しない。
+人間がSquash mergeした後、GitHubは不要になったリモートのheadブランチを自動削除する。
+ローカルブランチは自動削除せず、不要であることを確認したうえで`git branch -d <ブランチ名>`を使用する。
+`git branch -D`による強制削除は行わない。
