@@ -42,21 +42,51 @@ const (
 	ErrorNDJSONLineLimit ErrorKind = "ndjson_line_size_limit"
 	// ErrorInvalidUTF8 は、NDJSONに不正なUTF-8が含まれることを表す。
 	ErrorInvalidUTF8 ErrorKind = "invalid_utf8"
+	// ErrorInvalidJSON は、JSONとして解釈できない入力を表す。
+	ErrorInvalidJSON ErrorKind = "invalid_json"
+	// ErrorSchemaViolation は、JSON Schemaに違反する入力を表す。
+	ErrorSchemaViolation ErrorKind = "schema_violation"
+	// ErrorNodeCountMismatch は、マニフェストとノードの件数不一致を表す。
+	ErrorNodeCountMismatch ErrorKind = "node_count_mismatch"
+	// ErrorRelationCountMismatch は、マニフェストと依存関係の件数不一致を表す。
+	ErrorRelationCountMismatch ErrorKind = "relation_count_mismatch"
+	// ErrorDuplicateNode は、同じIDを持つノードの重複を表す。
+	ErrorDuplicateNode ErrorKind = "duplicate_node"
+	// ErrorMissingParent は、存在しない親の参照を表す。
+	ErrorMissingParent ErrorKind = "missing_parent"
+	// ErrorMissingNode は、依存関係から存在しないノードへの参照を表す。
+	ErrorMissingNode ErrorKind = "missing_node"
+	// ErrorInvalidParentType は、許可されない種別の親を表す。
+	ErrorInvalidParentType ErrorKind = "invalid_parent_type"
+	// ErrorMultipleParents は、同じノードIDに異なる親を設定した入力を表す。
+	ErrorMultipleParents ErrorKind = "multiple_parents"
+	// ErrorParentCycle は、親子関係の循環を表す。
+	ErrorParentCycle ErrorKind = "parent_cycle"
+	// ErrorInvalidLimitOwner は、job以外のノードに設定されたリミットを表す。
+	ErrorInvalidLimitOwner ErrorKind = "invalid_limit_owner"
+	// ErrorInvalidDuration は、固定秒数へ変換できないmax_elapsedを表す。
+	ErrorInvalidDuration ErrorKind = "invalid_duration"
+	// ErrorDuplicateRelation は、内容が同じ依存関係の重複を表す。
+	ErrorDuplicateRelation ErrorKind = "duplicate_relation"
 )
 
 // Error は、失敗理由と該当するアーカイブ内ファイルを保持する。
 // Errがある場合はerrors.Isおよびerrors.Asで元のエラーを調べられる。
 type Error struct {
-	Kind ErrorKind
-	File string
-	Line int
-	Err  error
+	Kind    ErrorKind
+	File    string
+	Line    int
+	Pointer string
+	Err     error
 }
 
 func (e *Error) Error() string {
 	location := e.File
 	if e.Line > 0 {
 		location = fmt.Sprintf("%s:%d", location, e.Line)
+	}
+	if e.Pointer != "" {
+		location += e.Pointer
 	}
 	if location == "" {
 		location = "snapshot archive"
