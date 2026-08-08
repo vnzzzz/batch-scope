@@ -21,6 +21,7 @@ prepare_persistent_directories() {
   ensure_writable_directory "${HOME}/.config/gh" 0700
   ensure_writable_directory "${HOME}/.cache/go-build" 0755
   ensure_writable_directory "/go/pkg/mod" 0755
+  ensure_writable_directory "/go/pkg/sumdb" 0755
 
   mkdir -p "${CODEX_HOME:-${HOME}/.codex}/tmp"
 }
