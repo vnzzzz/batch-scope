@@ -37,3 +37,17 @@ func TestDefaultListenAddressRejectsOutOfRangePort(t *testing.T) {
 		t.Fatal("expected an error")
 	}
 }
+
+func TestDefaultDataDirectory(t *testing.T) {
+	t.Setenv("BATCHSCOPE_DATA_DIR", "/tmp/batchscope-test")
+	if got := defaultDataDirectory(); got != "/tmp/batchscope-test" {
+		t.Fatalf("data directory = %q, want /tmp/batchscope-test", got)
+	}
+}
+
+func TestDefaultDataDirectoryFallback(t *testing.T) {
+	t.Setenv("BATCHSCOPE_DATA_DIR", "")
+	if got := defaultDataDirectory(); got != "/tmp/batchscope" {
+		t.Fatalf("data directory = %q, want /tmp/batchscope", got)
+	}
+}

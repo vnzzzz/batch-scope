@@ -41,6 +41,30 @@ func TestReadyWithoutSnapshot(t *testing.T) {
 	}
 }
 
+func TestReadyAndStatusFollowStoreLifecycle(t *testing.T) {
+	a := newTestApp(t)
+
+	initialImport, err := a.store.BeginImport(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertServiceState(t, a, "importing", http.StatusServiceUnavailable)
+	if err := initialImport.Complete(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	assertServiceState(t, a, "ready", http.StatusOK)
+
+	updateImport, err := a.store.BeginImport(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertServiceState(t, a, "importing", http.StatusOK)
+	if err := updateImport.Abort(); err != nil {
+		t.Fatal(err)
+	}
+	assertServiceState(t, a, "ready", http.StatusOK)
+}
+
 func TestStatus(t *testing.T) {
 	a := newTestApp(t)
 	recorder := serveRequest(a, "/v1/status")
@@ -106,6 +130,11 @@ func TestOpenAPISpec(t *testing.T) {
 			t.Errorf("GET %s is missing from OpenAPI", path)
 		}
 	}
+	for _, status := range []string{"200", "503"} {
+		if spec.Paths["/readyz"].Get.Responses[status] == nil {
+			t.Errorf("GET /readyz response %s is missing from OpenAPI", status)
+		}
+	}
 }
 
 func TestProblemDetails(t *testing.T) {
@@ -167,11 +196,37 @@ func TestProblemDetails(t *testing.T) {
 
 func newTestApp(t *testing.T) *App {
 	t.Helper()
-	a, err := New(Config{Version: "test", Commit: "abc"})
+	a, err := New(Config{Version: "test", Commit: "abc", DataDir: t.TempDir()})
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() {
+		if err := a.Close(); err != nil {
+			t.Errorf("Close(): %v", err)
+		}
+	})
 	return a
+}
+
+func assertServiceState(t *testing.T, a *App, wantState string, wantReadyStatus int) {
+	t.Helper()
+	ready := serveRequest(a, "/readyz")
+	assertStatus(t, ready, wantReadyStatus)
+	readyBody := decodeObject(t, ready)
+	if wantReadyStatus == http.StatusOK {
+		if readyBody["status"] != "ready" || readyBody["reason"] != "snapshot_loaded" {
+			t.Fatalf("ready body = %v, want ready snapshot_loaded", readyBody)
+		}
+	} else if readyBody["status"] != "not_ready" || readyBody["reason"] != "snapshot_not_loaded" {
+		t.Fatalf("ready body = %v, want not_ready snapshot_not_loaded", readyBody)
+	}
+
+	status := serveRequest(a, "/v1/status")
+	assertStatus(t, status, http.StatusOK)
+	statusBody := decodeObject(t, status)
+	if statusBody["state"] != wantState {
+		t.Fatalf("state = %v, want %s", statusBody["state"], wantState)
+	}
 }
 
 func serveRequest(a *App, path string) *httptest.ResponseRecorder {
