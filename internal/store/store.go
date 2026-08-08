@@ -32,6 +32,15 @@ var (
 	ErrImportInProgress = errors.New("snapshot import is already in progress")
 	ErrImportFinished   = errors.New("snapshot import is already finished")
 	ErrClosed           = errors.New("store is closed")
+	// ErrRetiredCleanup は、検索先の切替成功後に退避済みSQLiteの後始末が失敗したことを示す。
+	ErrRetiredCleanup = errors.New("retired database cleanup failed")
+
+	// renameFileは、SQLite切替時のrename失敗をテストから再現するため差し替え可能にする。
+	renameFile = os.Rename
+	// openSQLiteは、有効化後のSQLiteを開けない場合をテストから再現するため差し替え可能にする。
+	openSQLite = openDatabase
+	// cleanupRetiredDatabaseは、退避済みSQLiteの後始末失敗を再現するテスト専用注入点である。
+	cleanupRetiredDatabase = closeAndRemove
 )
 
 // Store は、現在の検索先と進行中の取込を所有する。
@@ -105,7 +114,7 @@ func (s *Store) BeginImport(ctx context.Context) (*Import, error) {
 	if err := removeDatabaseFiles(path); err != nil {
 		return nil, fmt.Errorf("remove previous importing database: %w", err)
 	}
-	db, err := openDatabase(ctx, path)
+	db, err := openSQLite(ctx, path)
 	if err != nil {
 		_ = removeDatabaseFiles(path)
 		return nil, fmt.Errorf("open importing database: %w", err)
@@ -193,6 +202,8 @@ func (i *Import) DB() *sql.DB {
 }
 
 // Complete は索引とSQLiteの整合性を検査し、成功したDBだけを検索先へ切り替える。
+// errors.Is(err, ErrRetiredCleanup)が真の場合、検索先の切替は成功しているため、
+// 呼出側は取込失敗として扱ってはならない。
 func (i *Import) Complete(ctx context.Context) error {
 	s := i.store
 	s.mu.Lock()
@@ -224,8 +235,8 @@ func (i *Import) Complete(ctx context.Context) error {
 	if s.closed {
 		i.finished = true
 		s.importing = nil
-		_ = removeDatabaseFiles(filepath.Join(s.directory, importingDatabaseName))
-		return ErrClosed
+		removeErr := removeDatabaseFiles(filepath.Join(s.directory, importingDatabaseName))
+		return errors.Join(ErrClosed, removeErr)
 	}
 
 	old := s.current
@@ -233,27 +244,31 @@ func (i *Import) Complete(ctx context.Context) error {
 	if old != nil {
 		s.retiredID++
 		retiredPath = filepath.Join(s.directory, fmt.Sprintf(".retired-%d.db", s.retiredID))
-		if err := os.Rename(old.path, retiredPath); err != nil {
+		if err := renameFile(old.path, retiredPath); err != nil {
 			return i.failAfterCloseLocked(fmt.Errorf("retire current database: %w", err))
 		}
 	}
 
 	importingPath := filepath.Join(s.directory, importingDatabaseName)
 	currentPath := filepath.Join(s.directory, currentDatabaseName)
-	if err := os.Rename(importingPath, currentPath); err != nil {
+	if err := renameFile(importingPath, currentPath); err != nil {
+		cause := fmt.Errorf("activate importing database: %w", err)
 		if old != nil {
-			_ = os.Rename(retiredPath, old.path)
+			cause = errors.Join(cause, i.restoreCurrentLocked(old, retiredPath))
 		}
-		return i.failAfterCloseLocked(fmt.Errorf("activate importing database: %w", err))
+		return i.failAfterCloseLocked(cause)
 	}
 
-	newDB, err := openDatabase(ctx, currentPath)
+	newDB, err := openSQLite(ctx, currentPath)
 	if err != nil {
-		_ = removeDatabaseFiles(currentPath)
+		cause := errors.Join(
+			fmt.Errorf("open activated database: %w", err),
+			removeDatabaseFiles(currentPath),
+		)
 		if old != nil {
-			_ = os.Rename(retiredPath, old.path)
+			cause = errors.Join(cause, i.restoreCurrentLocked(old, retiredPath))
 		}
-		return i.failAfterCloseLocked(fmt.Errorf("open activated database: %w", err))
+		return i.failAfterCloseLocked(cause)
 	}
 
 	next := &database{db: newDB, path: currentPath}
@@ -261,14 +276,18 @@ func (i *Import) Complete(ctx context.Context) error {
 	s.importing = nil
 	i.finished = true
 
+	var result error
 	if old != nil {
 		old.path = retiredPath
 		old.retired = true
 		if old.refs == 0 {
-			_ = closeAndRemove(old)
+			result = errors.Join(result, cleanupRetiredDatabase(old))
 		}
 	}
-	return nil
+	if result != nil {
+		return errors.Join(ErrRetiredCleanup, result)
+	}
+	return result
 }
 
 // Abort はimporting.dbを破棄する。
@@ -308,6 +327,21 @@ func (i *Import) failAfterCloseLocked(cause error) error {
 	}
 	removeErr := removeDatabaseFiles(filepath.Join(s.directory, importingDatabaseName))
 	return errors.Join(cause, removeErr)
+}
+
+func (i *Import) restoreCurrentLocked(old *database, retiredPath string) error {
+	if err := renameFile(retiredPath, old.path); err != nil {
+		// 復元失敗後は内部のpathと実際の配置が一致しないため、旧DBを検索先として公開しない。
+		i.store.current = nil
+		old.path = retiredPath
+		old.retired = true
+		var cleanupErr error
+		if old.refs == 0 {
+			cleanupErr = closeAndRemove(old)
+		}
+		return errors.Join(fmt.Errorf("restore current database: %w", err), cleanupErr)
+	}
+	return nil
 }
 
 func (s *Store) release(active *database) {

@@ -24,7 +24,7 @@ if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?
   exit 2
 fi
 
-for command in go tar zip sha256sum; do
+for command in go tar sha256sum; do
   command -v "$command" >/dev/null 2>&1 || {
     echo "必要なコマンドが見つかりません: $command" >&2
     exit 1
@@ -52,7 +52,6 @@ targets=(
   "linux arm64"
   "darwin amd64"
   "darwin arm64"
-  "windows amd64"
 )
 
 for target in "${targets[@]}"; do
@@ -60,10 +59,6 @@ for target in "${targets[@]}"; do
   name="batchscope_${version}_${goos}_${goarch}"
   stage="$work_dir/$name"
   binary="batchscope"
-
-  if [[ "$goos" == "windows" ]]; then
-    binary="batchscope.exe"
-  fi
 
   mkdir -p "$stage"
 
@@ -76,14 +71,7 @@ for target in "${targets[@]}"; do
 
   cp README.md LICENSE "$stage/"
 
-  if [[ "$goos" == "windows" ]]; then
-    (
-      cd "$work_dir"
-      zip -qr "$output_dir/${name}.zip" "$name"
-    )
-  else
-    tar -C "$work_dir" -czf "$output_dir/${name}.tar.gz" "$name"
-  fi
+  tar -C "$work_dir" -czf "$output_dir/${name}.tar.gz" "$name"
 
 done
 

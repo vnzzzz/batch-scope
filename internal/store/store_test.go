@@ -271,6 +271,158 @@ func TestFailedUpdateDoesNotReplaceCurrentDatabase(t *testing.T) {
 	}
 }
 
+func TestCompleteKeepsCurrentDatabaseWhenActivationRenameFails(t *testing.T) {
+	directory := t.TempDir()
+	storage := newTestStore(t, directory)
+	activateValue(t, storage, "current")
+	operation := beginTestImport(t, storage)
+	insertValue(t, operation.DB(), "replacement")
+
+	activationErr := errors.New("activation rename failed")
+	currentPath := filepath.Join(directory, currentDatabaseName)
+	importingPath := filepath.Join(directory, importingDatabaseName)
+	originalRename := renameFile
+	renameFile = func(oldPath, newPath string) error {
+		if oldPath == importingPath && newPath == currentPath {
+			return activationErr
+		}
+		return originalRename(oldPath, newPath)
+	}
+	t.Cleanup(func() {
+		renameFile = originalRename
+	})
+
+	err := operation.Complete(context.Background())
+	if !errors.Is(err, activationErr) {
+		t.Fatalf("Complete() error = %v, want %v", err, activationErr)
+	}
+	assertFailedUpdateKeepsCurrent(t, storage, directory, "current")
+}
+
+func TestCompleteKeepsCurrentDatabaseWhenActivatedDatabaseCannotOpen(t *testing.T) {
+	directory := t.TempDir()
+	storage := newTestStore(t, directory)
+	activateValue(t, storage, "current")
+	operation := beginTestImport(t, storage)
+	insertValue(t, operation.DB(), "replacement")
+
+	openErr := errors.New("open activated database failed")
+	currentPath := filepath.Join(directory, currentDatabaseName)
+	originalOpen := openSQLite
+	openSQLite = func(ctx context.Context, path string) (*sql.DB, error) {
+		if path == currentPath {
+			return nil, openErr
+		}
+		return originalOpen(ctx, path)
+	}
+	t.Cleanup(func() {
+		openSQLite = originalOpen
+	})
+
+	err := operation.Complete(context.Background())
+	if !errors.Is(err, openErr) {
+		t.Fatalf("Complete() error = %v, want %v", err, openErr)
+	}
+	assertFailedUpdateKeepsCurrent(t, storage, directory, "current")
+}
+
+func TestCompleteBecomesEmptyWhenCurrentDatabaseCannotBeRestored(t *testing.T) {
+	directory := t.TempDir()
+	storage := newTestStore(t, directory)
+	activateValue(t, storage, "current")
+	oldDB, releaseOld, err := storage.Acquire()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	operation := beginTestImport(t, storage)
+	insertValue(t, operation.DB(), "replacement")
+	activationErr := errors.New("activation rename failed")
+	restoreErr := errors.New("restore rename failed")
+	currentPath := filepath.Join(directory, currentDatabaseName)
+	importingPath := filepath.Join(directory, importingDatabaseName)
+	originalRename := renameFile
+	renameFile = func(oldPath, newPath string) error {
+		switch {
+		case oldPath == importingPath && newPath == currentPath:
+			return activationErr
+		case filepath.Base(oldPath) == ".retired-1.db" && newPath == currentPath:
+			return restoreErr
+		default:
+			return originalRename(oldPath, newPath)
+		}
+	}
+	t.Cleanup(func() {
+		renameFile = originalRename
+	})
+
+	err = operation.Complete(context.Background())
+	if !errors.Is(err, activationErr) {
+		t.Errorf("Complete() error = %v, want activation error %v", err, activationErr)
+	}
+	if !errors.Is(err, restoreErr) {
+		t.Errorf("Complete() error = %v, want restore error %v", err, restoreErr)
+	}
+	if got := storage.State(); got != StateEmpty {
+		t.Fatalf("state = %q, want %q", got, StateEmpty)
+	}
+	if storage.Ready() {
+		t.Fatal("Ready() = true, want false")
+	}
+	if _, _, err := storage.Acquire(); !errors.Is(err, ErrNoDatabase) {
+		t.Fatalf("Acquire() error = %v, want %v", err, ErrNoDatabase)
+	}
+	if _, err := os.Stat(currentPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("current.db exists after failed restore: %v", err)
+	}
+	if got := queryValue(t, oldDB); got != "current" {
+		t.Fatalf("acquired database value = %q, want current", got)
+	}
+	if _, err := os.Stat(importingPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("importing.db remains after failure: %v", err)
+	}
+	retiredPath := filepath.Join(directory, ".retired-1.db")
+	if _, err := os.Stat(retiredPath); err != nil {
+		t.Fatalf("retired database before release: %v", err)
+	}
+
+	releaseOld()
+	if err := oldDB.Ping(); err == nil {
+		t.Fatal("old database is still open after release")
+	}
+	if _, err := os.Stat(retiredPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("retired database remains after release: %v", err)
+	}
+}
+
+func TestCompleteReportsRetiredCleanupAfterSuccessfulSwitch(t *testing.T) {
+	directory := t.TempDir()
+	storage := newTestStore(t, directory)
+	activateValue(t, storage, "old")
+	operation := beginTestImport(t, storage)
+	insertValue(t, operation.DB(), "new")
+
+	cleanupErr := errors.New("retired database cleanup failed")
+	originalCleanup := cleanupRetiredDatabase
+	cleanupRetiredDatabase = func(active *database) error {
+		return errors.Join(originalCleanup(active), cleanupErr)
+	}
+	t.Cleanup(func() {
+		cleanupRetiredDatabase = originalCleanup
+	})
+
+	err := operation.Complete(context.Background())
+	if !errors.Is(err, ErrRetiredCleanup) {
+		t.Fatalf("Complete() error = %v, want %v", err, ErrRetiredCleanup)
+	}
+	if got := storage.State(); got != StateReady {
+		t.Fatalf("state = %q, want %q", got, StateReady)
+	}
+	if got := activeValue(t, storage); got != "new" {
+		t.Fatalf("active value = %q, want new", got)
+	}
+}
+
 func newTestStore(t *testing.T, directory string) *Store {
 	t.Helper()
 	storage, err := New(directory)
@@ -297,13 +449,37 @@ func beginTestImport(t *testing.T, storage *Store) *Import {
 func activateValue(t *testing.T, storage *Store, value string) {
 	t.Helper()
 	operation := beginTestImport(t, storage)
-	if _, err := operation.DB().Exec(`INSERT INTO node
+	insertValue(t, operation.DB(), value)
+	if err := operation.Complete(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func insertValue(t *testing.T, db *sql.DB, value string) {
+	t.Helper()
+	if _, err := db.Exec(`INSERT INTO node
         (node_id, node_type, name, name_normalized)
         VALUES (?, 'job', ?, ?)`, value, value, value); err != nil {
 		t.Fatal(err)
 	}
-	if err := operation.Complete(context.Background()); err != nil {
-		t.Fatal(err)
+}
+
+func assertFailedUpdateKeepsCurrent(t *testing.T, storage *Store, directory, wantValue string) {
+	t.Helper()
+	if got := storage.State(); got != StateReady {
+		t.Fatalf("state = %q, want %q", got, StateReady)
+	}
+	if !storage.Ready() {
+		t.Fatal("Ready() = false, want true")
+	}
+	if got := activeValue(t, storage); got != wantValue {
+		t.Fatalf("active value = %q, want %q", got, wantValue)
+	}
+	if _, err := os.Stat(filepath.Join(directory, currentDatabaseName)); err != nil {
+		t.Fatalf("current.db after failure: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(directory, importingDatabaseName)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("importing.db remains after failure: %v", err)
 	}
 }
 
