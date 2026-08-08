@@ -1,55 +1,220 @@
 package app
 
 import (
+	"context"
+	"encoding/hex"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
+
+	"github.com/danielgtaylor/huma/v2"
 )
 
 func TestHealth(t *testing.T) {
-	a, err := New(Config{Version: "test"})
-	if err != nil {
-		t.Fatal(err)
-	}
+	a := newTestApp(t)
+	recorder := serveRequest(a, "/healthz")
 
-	recorder := httptest.NewRecorder()
-	a.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/healthz", nil))
-	if recorder.Code != http.StatusOK {
-		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusOK)
+	assertStatus(t, recorder, http.StatusOK)
+	assertContentType(t, recorder, "application/json")
+	body := decodeObject(t, recorder)
+	assertKeys(t, body, "status")
+	if body["status"] != "ok" {
+		t.Fatalf("status = %v, want ok", body["status"])
 	}
 }
 
 func TestReadyWithoutSnapshot(t *testing.T) {
-	a, err := New(Config{Version: "test"})
-	if err != nil {
-		t.Fatal(err)
-	}
+	a := newTestApp(t)
+	recorder := serveRequest(a, "/readyz")
 
-	recorder := httptest.NewRecorder()
-	a.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/readyz", nil))
-	if recorder.Code != http.StatusServiceUnavailable {
-		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusServiceUnavailable)
+	assertStatus(t, recorder, http.StatusServiceUnavailable)
+	assertContentType(t, recorder, "application/json")
+	body := decodeObject(t, recorder)
+	assertKeys(t, body, "status", "reason")
+	if body["status"] != "not_ready" {
+		t.Fatalf("status = %v, want not_ready", body["status"])
+	}
+	if body["reason"] != "snapshot_not_loaded" {
+		t.Fatalf("reason = %v, want snapshot_not_loaded", body["reason"])
 	}
 }
 
 func TestStatus(t *testing.T) {
+	a := newTestApp(t)
+	recorder := serveRequest(a, "/v1/status")
+
+	assertStatus(t, recorder, http.StatusOK)
+	assertContentType(t, recorder, "application/json")
+	body := decodeObject(t, recorder)
+	assertKeys(t, body, "state", "bootId", "startedAt", "snapshot", "build")
+
+	if body["state"] != "empty" {
+		t.Fatalf("state = %v, want empty", body["state"])
+	}
+
+	bootID, ok := body["bootId"].(string)
+	if !ok {
+		t.Fatalf("bootId = %T, want string", body["bootId"])
+	}
+	bootBytes, err := hex.DecodeString(bootID)
+	if err != nil || len(bootID) != 32 || len(bootBytes) != 16 {
+		t.Fatalf("bootId = %q, want 32 hexadecimal characters", bootID)
+	}
+
+	startedAt, ok := body["startedAt"].(string)
+	if !ok {
+		t.Fatalf("startedAt = %T, want string", body["startedAt"])
+	}
+	if _, err := time.Parse(time.RFC3339, startedAt); err != nil {
+		t.Fatalf("startedAt = %q, want RFC 3339: %v", startedAt, err)
+	}
+
+	snapshot, ok := body["snapshot"]
+	if !ok {
+		t.Fatal("snapshot is missing")
+	}
+	if snapshot != nil {
+		t.Fatalf("snapshot = %v, want null", snapshot)
+	}
+
+	build, ok := body["build"].(map[string]any)
+	if !ok {
+		t.Fatalf("build = %T, want object", body["build"])
+	}
+	assertKeys(t, build, "version", "commit")
+	if build["version"] != "test" {
+		t.Fatalf("build.version = %v, want test", build["version"])
+	}
+	if build["commit"] != "abc" {
+		t.Fatalf("build.commit = %v, want abc", build["commit"])
+	}
+}
+
+func TestOpenAPISpec(t *testing.T) {
+	spec := OpenAPISpec()
+	if spec.Info.Title != "BatchScope API" {
+		t.Fatalf("info.title = %q, want BatchScope API", spec.Info.Title)
+	}
+	if spec.Info.Version != "v1" {
+		t.Fatalf("info.version = %q, want v1", spec.Info.Version)
+	}
+	for _, path := range []string{"/healthz", "/readyz", "/v1/status"} {
+		item := spec.Paths[path]
+		if item == nil || item.Get == nil {
+			t.Errorf("GET %s is missing from OpenAPI", path)
+		}
+	}
+}
+
+func TestProblemDetails(t *testing.T) {
+	tests := []struct {
+		name       string
+		problem    *huma.ErrorModel
+		wantType   string
+		wantStatus int
+	}{
+		{
+			name:       "invalid request",
+			problem:    InvalidRequestProblem("invalid input"),
+			wantType:   "/problems/invalid-request",
+			wantStatus: http.StatusBadRequest,
+		},
+		{
+			name:       "internal error",
+			problem:    InternalErrorProblem("operation failed"),
+			wantType:   "/problems/internal-error",
+			wantStatus: http.StatusInternalServerError,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if test.problem.Type != test.wantType {
+				t.Fatalf("type = %q, want %q", test.problem.Type, test.wantType)
+			}
+			if test.problem.Status != test.wantStatus {
+				t.Fatalf("status = %d, want %d", test.problem.Status, test.wantStatus)
+			}
+
+			mux := http.NewServeMux()
+			api := buildAPI(mux, &App{})
+			huma.Register(api, huma.Operation{
+				OperationID: "problem-test",
+				Method:      http.MethodGet,
+				Path:        "/problem-test",
+				Hidden:      true,
+			}, func(context.Context, *struct{}) (*healthOutput, error) {
+				return nil, test.problem
+			})
+
+			recorder := httptest.NewRecorder()
+			mux.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/problem-test", nil))
+			assertStatus(t, recorder, test.wantStatus)
+			assertContentType(t, recorder, "application/problem+json")
+
+			body := decodeObject(t, recorder)
+			if body["type"] != test.wantType {
+				t.Fatalf("response type = %v, want %q", body["type"], test.wantType)
+			}
+			if body["status"] != float64(test.wantStatus) {
+				t.Fatalf("response status = %v, want %d", body["status"], test.wantStatus)
+			}
+		})
+	}
+}
+
+func newTestApp(t *testing.T) *App {
+	t.Helper()
 	a, err := New(Config{Version: "test", Commit: "abc"})
 	if err != nil {
 		t.Fatal(err)
 	}
+	return a
+}
 
+func serveRequest(a *App, path string) *httptest.ResponseRecorder {
 	recorder := httptest.NewRecorder()
-	a.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/v1/status", nil))
-	if recorder.Code != http.StatusOK {
-		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusOK)
-	}
+	a.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, path, nil))
+	return recorder
+}
 
+func assertStatus(t *testing.T, recorder *httptest.ResponseRecorder, want int) {
+	t.Helper()
+	if recorder.Code != want {
+		t.Fatalf("status = %d, want %d", recorder.Code, want)
+	}
+}
+
+func assertContentType(t *testing.T, recorder *httptest.ResponseRecorder, want string) {
+	t.Helper()
+	got := recorder.Header().Get("Content-Type")
+	if got != want {
+		t.Fatalf("Content-Type = %q, want %q", got, want)
+	}
+	if link := recorder.Header().Get("Link"); link != "" {
+		t.Fatalf("Link = %q, want empty", link)
+	}
+}
+
+func decodeObject(t *testing.T, recorder *httptest.ResponseRecorder) map[string]any {
+	t.Helper()
 	var body map[string]any
 	if err := json.Unmarshal(recorder.Body.Bytes(), &body); err != nil {
 		t.Fatal(err)
 	}
-	if body["state"] != "empty" {
-		t.Fatalf("state = %v, want empty", body["state"])
+	return body
+}
+
+func assertKeys(t *testing.T, object map[string]any, keys ...string) {
+	t.Helper()
+	if len(object) != len(keys) {
+		t.Fatalf("keys = %v, want %v", object, keys)
+	}
+	for _, key := range keys {
+		if _, ok := object[key]; !ok {
+			t.Errorf("key %q is missing", key)
+		}
 	}
 }
