@@ -1,7 +1,10 @@
 package snapshot
 
 import (
+	"bufio"
+	"bytes"
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -133,48 +136,220 @@ func TestValidateAcceptsDemoSnapshot(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Validate() error = %v", err)
 	}
-	if len(result.Relations) != 8 {
-		t.Fatalf("len(Relations) = %d, want 8", len(result.Relations))
+	if result.NodeCount != 9 || result.RelationCount != 8 {
+		t.Fatalf("Validate() result = %#v, want 9 nodes and 8 relations", result)
+	}
+}
+
+func TestValidateAppliesManifestInputBoundaries(t *testing.T) {
+	t.Run("accepts exact size limit", func(t *testing.T) {
+		extracted := writeExtractedSnapshot(t, nil, nil)
+		contents, err := os.ReadFile(extracted.Manifest)
+		if err != nil {
+			t.Fatalf("read manifest: %v", err)
+		}
+		contents = append(contents, bytes.Repeat([]byte{' '}, (1<<20)-len(contents))...)
+		if err := os.WriteFile(extracted.Manifest, contents, 0o600); err != nil {
+			t.Fatalf("write manifest: %v", err)
+		}
+		if _, err := Validate(context.Background(), extracted); err != nil {
+			t.Fatalf("Validate() error = %v", err)
+		}
+	})
+
+	t.Run("size limit before JSON decode", func(t *testing.T) {
+		extracted := writeExtractedSnapshot(t, nil, nil)
+		contents := bytes.Repeat([]byte{' '}, (1<<20)+1)
+		if err := os.WriteFile(extracted.Manifest, contents, 0o600); err != nil {
+			t.Fatalf("write manifest: %v", err)
+		}
+		_, err := Validate(context.Background(), extracted)
+		assertValidationError(t, err, ErrorManifestSizeLimit, manifestName, 0, "")
+	})
+
+	t.Run("invalid UTF-8 before JSON decode", func(t *testing.T) {
+		extracted := writeExtractedSnapshot(t, nil, nil)
+		if err := os.WriteFile(extracted.Manifest, []byte{'{', 0xff, '}'}, 0o600); err != nil {
+			t.Fatalf("write manifest: %v", err)
+		}
+		_, err := Validate(context.Background(), extracted)
+		assertValidationError(t, err, ErrorInvalidUTF8, manifestName, 0, "")
+	})
+}
+
+func TestValidateAcceptsJSONNumberFormsForManifestCounts(t *testing.T) {
+	extracted := writeExtractedSnapshot(t, []string{testNode("job", "A", nil, nil)}, nil)
+	writeTestFile(t, extracted.Manifest, `{"schemaVersion":"0.5","snapshotId":"s","generatedAt":"2026-08-08T00:00:00Z","nodeCount":1.0,"relationCount":0e0,"producer":{"name":"test","version":"1"}}`)
+	result, err := Validate(context.Background(), extracted)
+	if err != nil {
+		t.Fatalf("Validate() error = %v", err)
+	}
+	if result.NodeCount != 1 || result.RelationCount != 0 {
+		t.Fatalf("Validate() result = %#v, want one node and no relations", result)
+	}
+}
+
+func TestValidateRejectsNonIntegerOrOutOfRangeManifestCounts(t *testing.T) {
+	for _, tt := range []struct {
+		name      string
+		pointer   string
+		nodeCount string
+		relCount  string
+	}{
+		{name: "fractional node count", nodeCount: "1.5", relCount: "0", pointer: "/nodeCount"},
+		{name: "node count outside int and schema range", nodeCount: "1e100", relCount: "0", pointer: "/nodeCount"},
+		{name: "fractional relation count", nodeCount: "1", relCount: "0.5", pointer: "/relationCount"},
+		{name: "relation count outside int and schema range", nodeCount: "1", relCount: "1e100", pointer: "/relationCount"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			extracted := writeExtractedSnapshot(t, []string{testNode("job", "A", nil, nil)}, nil)
+			contents := fmt.Sprintf(`{"schemaVersion":"0.5","snapshotId":"s","generatedAt":"2026-08-08T00:00:00Z","nodeCount":%s,"relationCount":%s,"producer":{"name":"test","version":"1"}}`, tt.nodeCount, tt.relCount)
+			writeTestFile(t, extracted.Manifest, contents)
+			_, err := Validate(context.Background(), extracted)
+			assertValidationError(t, err, ErrorSchemaViolation, manifestName, 0, tt.pointer)
+		})
 	}
 }
 
 func TestValidateRejectsSchemaViolations(t *testing.T) {
+	nodeWithLimitFact := func(fact string) string {
+		return fmt.Sprintf(`{"type":"job","id":"A","name":"A","limitFacts":[%s]}`, fact)
+	}
 	tests := []struct {
-		name    string
-		file    string
-		line    int
-		pointer string
-		mutate  func(t *testing.T, extracted Extracted)
+		name     string
+		kind     ErrorKind
+		file     string
+		line     int
+		pointer  string
+		contents string
 	}{
 		{
-			name: "manifest",
-			file: manifestName, pointer: "/schemaVersion",
-			mutate: func(t *testing.T, extracted Extracted) {
-				writeTestFile(t, extracted.Manifest, `{"schemaVersion":"1","snapshotId":"s","generatedAt":"2026-08-08T00:00:00Z","nodeCount":1,"relationCount":0,"producer":{"name":"test","version":"1"}}`)
-			},
+			name: "manifest required", kind: ErrorSchemaViolation, file: manifestName,
+			contents: `{"schemaVersion":"0.5","snapshotId":"s","generatedAt":"2026-08-08T00:00:00Z","nodeCount":1,"relationCount":0}`,
 		},
 		{
-			name: "node",
-			file: nodesName, line: 1, pointer: "/name",
-			mutate: func(t *testing.T, extracted Extracted) {
-				writeTestFile(t, extracted.Nodes, `{"type":"job","id":"A","name":""}`+"\n")
-			},
+			name: "manifest type", kind: ErrorSchemaViolation, file: manifestName, pointer: "/snapshotId",
+			contents: `{"schemaVersion":"0.5","snapshotId":1,"generatedAt":"2026-08-08T00:00:00Z","nodeCount":1,"relationCount":0,"producer":{"name":"test","version":"1"}}`,
 		},
 		{
-			name: "relation",
-			file: relationsName, line: 1, pointer: "/kind",
-			mutate: func(t *testing.T, extracted Extracted) {
-				writeTestFile(t, extracted.Relations, `{"fromId":"A","toId":"A","kind":"unknown","origin":"scheduler","certainty":"declared"}`+"\n")
-			},
+			name: "manifest schemaVersion const", kind: ErrorSchemaViolation, file: manifestName, pointer: "/schemaVersion",
+			contents: `{"schemaVersion":"1","snapshotId":"s","generatedAt":"2026-08-08T00:00:00Z","nodeCount":1,"relationCount":0,"producer":{"name":"test","version":"1"}}`,
+		},
+		{
+			name: "manifest additionalProperties", kind: ErrorSchemaViolation, file: manifestName,
+			contents: `{"schemaVersion":"0.5","snapshotId":"s","generatedAt":"2026-08-08T00:00:00Z","nodeCount":1,"relationCount":0,"producer":{"name":"test","version":"1"},"extra":true}`,
+		},
+		{
+			name: "manifest nodeCount range", kind: ErrorSchemaViolation, file: manifestName, pointer: "/nodeCount",
+			contents: `{"schemaVersion":"0.5","snapshotId":"s","generatedAt":"2026-08-08T00:00:00Z","nodeCount":-1,"relationCount":0,"producer":{"name":"test","version":"1"}}`,
+		},
+		{name: "node required", kind: ErrorSchemaViolation, file: nodesName, line: 1, contents: `{"type":"job","id":"A"}`},
+		{name: "node type enum", kind: ErrorSchemaViolation, file: nodesName, line: 1, pointer: "/type", contents: `{"type":"unknown","id":"A","name":"A"}`},
+		{name: "node field type", kind: ErrorSchemaViolation, file: nodesName, line: 1, pointer: "/name", contents: `{"type":"job","id":"A","name":1}`},
+		{name: "node additionalProperties", kind: ErrorSchemaViolation, file: nodesName, line: 1, contents: `{"type":"job","id":"A","name":"A","extra":true}`},
+		{name: "node name minLength", kind: ErrorSchemaViolation, file: nodesName, line: 1, pointer: "/name", contents: `{"type":"job","id":"A","name":""}`},
+		{name: "relation required", kind: ErrorSchemaViolation, file: relationsName, line: 1, contents: `{"toId":"A","kind":"precedes","origin":"scheduler","certainty":"declared"}`},
+		{name: "relation kind enum", kind: ErrorSchemaViolation, file: relationsName, line: 1, pointer: "/kind", contents: `{"fromId":"A","toId":"A","kind":"unknown","origin":"scheduler","certainty":"declared"}`},
+		{name: "relation origin enum", kind: ErrorSchemaViolation, file: relationsName, line: 1, pointer: "/origin", contents: `{"fromId":"A","toId":"A","kind":"precedes","origin":"unknown","certainty":"declared"}`},
+		{name: "relation certainty enum", kind: ErrorSchemaViolation, file: relationsName, line: 1, pointer: "/certainty", contents: `{"fromId":"A","toId":"A","kind":"precedes","origin":"scheduler","certainty":"unknown"}`},
+		{name: "relation additionalProperties", kind: ErrorSchemaViolation, file: relationsName, line: 1, contents: `{"fromId":"A","toId":"A","kind":"precedes","origin":"scheduler","certainty":"declared","extra":true}`},
+		{name: "relation evidence item type", kind: ErrorSchemaViolation, file: relationsName, line: 1, pointer: "/evidence/0", contents: `{"fromId":"A","toId":"A","kind":"precedes","origin":"scheduler","certainty":"declared","evidence":["invalid"]}`},
+		{
+			name: "finish_by required", kind: ErrorSchemaViolation, file: nodesName, line: 1, pointer: "/limitFacts/0",
+			contents: nodeWithLimitFact(`{"kind":"finish_by","businessDayOffset":0,"localTime":"00:00:00","timeZone":"UTC","origin":"scheduler","certainty":"declared"}`),
+		},
+		{
+			name: "finish_by enum", kind: ErrorSchemaViolation, file: nodesName, line: 1, pointer: "/limitFacts/0/origin",
+			contents: nodeWithLimitFact(`{"id":"L","kind":"finish_by","businessDayOffset":0,"localTime":"00:00:00","timeZone":"UTC","origin":"unknown","certainty":"declared"}`),
+		},
+		{
+			name: "finish_by type", kind: ErrorSchemaViolation, file: nodesName, line: 1, pointer: "/limitFacts/0/id",
+			contents: nodeWithLimitFact(`{"id":1,"kind":"finish_by","businessDayOffset":0,"localTime":"00:00:00","timeZone":"UTC","origin":"scheduler","certainty":"declared"}`),
+		},
+		{
+			name: "finish_by additionalProperties", kind: ErrorSchemaViolation, file: nodesName, line: 1, pointer: "/limitFacts/0",
+			contents: nodeWithLimitFact(`{"id":"L","kind":"finish_by","businessDayOffset":0,"localTime":"00:00:00","timeZone":"UTC","origin":"scheduler","certainty":"declared","extra":true}`),
+		},
+		{
+			name: "max_elapsed required", kind: ErrorSchemaViolation, file: nodesName, line: 1, pointer: "/limitFacts/0",
+			contents: nodeWithLimitFact(`{"kind":"max_elapsed","duration":"PT1S","origin":"scheduler","certainty":"declared"}`),
+		},
+		{
+			name: "max_elapsed enum", kind: ErrorSchemaViolation, file: nodesName, line: 1, pointer: "/limitFacts/0/origin",
+			contents: nodeWithLimitFact(`{"id":"L","kind":"max_elapsed","duration":"PT1S","origin":"unknown","certainty":"declared"}`),
+		},
+		{
+			name: "max_elapsed type", kind: ErrorSchemaViolation, file: nodesName, line: 1, pointer: "/limitFacts/0/id",
+			contents: nodeWithLimitFact(`{"id":1,"kind":"max_elapsed","duration":"PT1S","origin":"scheduler","certainty":"declared"}`),
+		},
+		{
+			name: "max_elapsed additionalProperties", kind: ErrorSchemaViolation, file: nodesName, line: 1, pointer: "/limitFacts/0",
+			contents: nodeWithLimitFact(`{"id":"L","kind":"max_elapsed","duration":"PT1S","origin":"scheduler","certainty":"declared","extra":true}`),
+		},
+		{
+			name: "raw required", kind: ErrorSchemaViolation, file: nodesName, line: 1, pointer: "/limitFacts/0",
+			contents: nodeWithLimitFact(`{"kind":"raw","sourceText":"raw","origin":"manual","certainty":"declared"}`),
+		},
+		{
+			name: "raw enum", kind: ErrorSchemaViolation, file: nodesName, line: 1, pointer: "/limitFacts/0/origin",
+			contents: nodeWithLimitFact(`{"id":"L","kind":"raw","sourceText":"raw","origin":"unknown","certainty":"declared"}`),
+		},
+		{
+			name: "raw type", kind: ErrorSchemaViolation, file: nodesName, line: 1, pointer: "/limitFacts/0/id",
+			contents: nodeWithLimitFact(`{"id":1,"kind":"raw","sourceText":"raw","origin":"manual","certainty":"declared"}`),
+		},
+		{
+			name: "raw additionalProperties", kind: ErrorSchemaViolation, file: nodesName, line: 1, pointer: "/limitFacts/0",
+			contents: nodeWithLimitFact(`{"id":"L","kind":"raw","sourceText":"raw","origin":"manual","certainty":"declared","extra":true}`),
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			extracted := writeExtractedSnapshot(t, []string{testNode("job", "A", nil, nil)}, nil)
-			tt.mutate(t, extracted)
+			switch tt.file {
+			case manifestName:
+				writeTestFile(t, extracted.Manifest, tt.contents)
+			case nodesName:
+				writeTestFile(t, extracted.Nodes, tt.contents+"\n")
+			case relationsName:
+				writeTestFile(t, extracted.Relations, tt.contents+"\n")
+			default:
+				t.Fatalf("unknown test file %q", tt.file)
+			}
 			_, err := Validate(context.Background(), extracted)
-			assertValidationError(t, err, ErrorSchemaViolation, tt.file, tt.line, tt.pointer)
+			assertValidationError(t, err, tt.kind, tt.file, tt.line, tt.pointer)
 		})
+	}
+}
+
+func TestValidateReturnsStableSchemaError(t *testing.T) {
+	nodes := []string{`{"type":"job","id":"","name":""}`}
+	extracted := writeExtractedSnapshot(t, nodes, nil)
+
+	type errorLocation struct {
+		kind    ErrorKind
+		file    string
+		line    int
+		pointer string
+	}
+	var first errorLocation
+	for attempt := 0; attempt < 50; attempt++ {
+		_, err := Validate(context.Background(), extracted)
+		var validationErr *Error
+		if !errors.As(err, &validationErr) {
+			t.Fatalf("Validate() attempt %d error = %v, want *Error", attempt, err)
+		}
+		got := errorLocation{kind: validationErr.Kind, file: validationErr.File, line: validationErr.Line, pointer: validationErr.Pointer}
+		if attempt == 0 {
+			first = got
+			continue
+		}
+		if got != first {
+			t.Fatalf("Validate() attempt %d error = %#v, want %#v", attempt, got, first)
+		}
+	}
+	if first.kind != ErrorSchemaViolation || first.file != nodesName || first.line != 1 || first.pointer != "/id" {
+		t.Fatalf("Validate() error = %#v, want stable /id schema violation on node line 1", first)
 	}
 }
 
@@ -250,6 +425,51 @@ func TestValidateRejectsNodeAndParentViolations(t *testing.T) {
 	}
 }
 
+func TestValidateReturnsEarlierParentReferenceBeforeLaterDuplicate(t *testing.T) {
+	nodes := []string{
+		testNode("job", "FIRST", stringPointer("MISSING"), nil),
+		testNode("management_unit", "ROOT", nil, nil),
+		testNode("job", "OTHER", nil, nil),
+		testNode("job", "DUPLICATE", nil, nil),
+		testNode("job", "DUPLICATE", nil, nil),
+	}
+	_, err := Validate(context.Background(), writeExtractedSnapshot(t, nodes, nil))
+	assertValidationError(t, err, ErrorMissingParent, nodesName, 1, "/parentId")
+}
+
+func TestValidateReturnsEarlierDuplicateBeforeLaterParentReference(t *testing.T) {
+	nodes := []string{
+		testNode("job", "DUPLICATE", nil, nil),
+		testNode("job", "DUPLICATE", nil, nil),
+		testNode("management_unit", "ROOT", nil, nil),
+		testNode("job", "OTHER", nil, nil),
+		testNode("job", "LAST", stringPointer("MISSING"), nil),
+	}
+	_, err := Validate(context.Background(), writeExtractedSnapshot(t, nodes, nil))
+	assertValidationError(t, err, ErrorDuplicateNode, nodesName, 2, "/id")
+}
+
+func TestValidateReturnsLineValidationBeforeNodeCrossValidation(t *testing.T) {
+	nodes := []string{
+		testNode("job", "DUPLICATE", nil, nil),
+		testNode("job", "DUPLICATE", nil, nil),
+		`{"type":"job","id":"INVALID","name":""}`,
+	}
+	_, err := Validate(context.Background(), writeExtractedSnapshot(t, nodes, nil))
+	assertValidationError(t, err, ErrorSchemaViolation, nodesName, 3, "/name")
+}
+
+func TestValidateReportsParentCycleAtSmallestCycleLine(t *testing.T) {
+	nodes := []string{
+		testNode("management_unit", "BRANCH", stringPointer("C"), nil),
+		testNode("management_unit", "A", stringPointer("C"), nil),
+		testNode("management_unit", "B", stringPointer("A"), nil),
+		testNode("management_unit", "C", stringPointer("B"), nil),
+	}
+	_, err := Validate(context.Background(), writeExtractedSnapshot(t, nodes, nil))
+	assertValidationError(t, err, ErrorParentCycle, nodesName, 2, "/parentId")
+}
+
 func TestValidateRejectsLimitOutsideJob(t *testing.T) {
 	limit := map[string]any{"id": "RAW", "kind": "raw", "sourceText": "raw", "origin": "manual", "certainty": "declared"}
 	nodes := []string{testNode("job_network", "NET", nil, []any{limit})}
@@ -258,8 +478,39 @@ func TestValidateRejectsLimitOutsideJob(t *testing.T) {
 }
 
 func TestValidateRejectsDurationsThatCannotBecomeFixedIntegerSeconds(t *testing.T) {
-	for _, duration := range []string{"P1Y", "P1M", "P", "PT", "P1DT", "PT0.5S", "P999999999999999999999999999999999999D"} {
-		t.Run(duration, func(t *testing.T) {
+	accepted := []struct {
+		duration string
+		seconds  int64
+	}{
+		{duration: "P0D", seconds: 0},
+		{duration: "PT0S", seconds: 0},
+		{duration: "P1W", seconds: 604800},
+		{duration: "P1DT2H3M4S", seconds: 93784},
+		{duration: "PT1.5H", seconds: 5400},
+		{duration: "PT0.5M", seconds: 30},
+		{duration: "PT1,5H", seconds: 5400},
+		{duration: "PT9223372036854775807S", seconds: int64(1<<63 - 1)},
+	}
+	for _, tt := range accepted {
+		t.Run("accept "+tt.duration, func(t *testing.T) {
+			seconds, ok := durationSeconds(tt.duration)
+			if !ok || seconds != tt.seconds {
+				t.Fatalf("durationSeconds(%q) = (%d, %t), want (%d, true)", tt.duration, seconds, ok, tt.seconds)
+			}
+			limit := map[string]any{"id": "DURATION", "kind": "max_elapsed", "duration": tt.duration, "origin": "scheduler", "certainty": "declared"}
+			nodes := []string{testNode("job", "JOB", nil, []any{limit})}
+			if _, err := Validate(context.Background(), writeExtractedSnapshot(t, nodes, nil)); err != nil {
+				t.Fatalf("Validate() error = %v", err)
+			}
+		})
+	}
+
+	rejected := []string{"P1Y", "P1M", "P", "PT", "P1DT", "PT0.5S", "PT1.5H30M", "PT9223372036854775808S", "P1S"}
+	for _, duration := range rejected {
+		t.Run("reject "+duration, func(t *testing.T) {
+			if seconds, ok := durationSeconds(duration); ok {
+				t.Fatalf("durationSeconds(%q) = (%d, true), want rejected", duration, seconds)
+			}
 			limit := map[string]any{"id": "DURATION", "kind": "max_elapsed", "duration": duration, "origin": "scheduler", "certainty": "declared"}
 			nodes := []string{testNode("job", "JOB", nil, []any{limit})}
 			_, err := Validate(context.Background(), writeExtractedSnapshot(t, nodes, nil))
@@ -298,6 +549,40 @@ func TestValidateRejectsDuplicateRelationsAfterCanonicalizingEvidence(t *testing
 	assertValidationError(t, err, ErrorDuplicateRelation, relationsName, 2, "")
 }
 
+func TestRelationIDCompatibility(t *testing.T) {
+	tests := []struct {
+		name     string
+		relation relation
+		want     string
+	}{
+		{
+			name: "with evidence",
+			relation: relation{
+				FromID: "A", ToID: "B", Kind: "precedes", Origin: "scheduler", Certainty: "declared",
+				Evidence: json.RawMessage(`[{"source":"definition","location":{"startLine":1,"endLine":2}}]`),
+			},
+			want: "7d52b337b498f1747ee9638c9da66e0eb53d1d1a13a5aa6fa7fc6cb4e1eeacdb",
+		},
+		{
+			name:     "without evidence",
+			relation: relation{FromID: "A", ToID: "B", Kind: "precedes", Origin: "scheduler", Certainty: "declared"},
+			want:     "88b20ce1ebe22b016ca9745450783252a5276eb18bbbc62c358426c2579de43e",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := relationID(tt.relation)
+			if err != nil {
+				t.Fatalf("relationID() error = %v", err)
+			}
+			// この不一致は、保存済みrelation_idとの互換性が壊れたことを示す。
+			if encoded := hex.EncodeToString(got[:]); encoded != tt.want {
+				t.Fatalf("relationID() = %q, want %q", encoded, tt.want)
+			}
+		})
+	}
+}
+
 func TestRelationIDIsDeterministicAndChangesWithEveryIdentityField(t *testing.T) {
 	base := relation{
 		FromID: "A", ToID: "B", Kind: "precedes", Origin: "scheduler", Certainty: "declared",
@@ -314,7 +599,7 @@ func TestRelationIDIsDeterministicAndChangesWithEveryIdentityField(t *testing.T)
 		t.Fatalf("relationID() error = %v", err)
 	}
 	if got != want {
-		t.Fatalf("relationID() = %q, want %q for equivalent evidence", got, want)
+		t.Fatalf("relationID() = %q, want %q for equivalent evidence", hex.EncodeToString(got[:]), hex.EncodeToString(want[:]))
 	}
 
 	changes := []relation{
@@ -331,17 +616,13 @@ func TestRelationIDIsDeterministicAndChangesWithEveryIdentityField(t *testing.T)
 			t.Fatalf("relationID(change %d) error = %v", index, err)
 		}
 		if got == want {
-			t.Errorf("relationID(change %d) = unchanged %q", index, got)
+			t.Errorf("relationID(change %d) = unchanged %q", index, hex.EncodeToString(got[:]))
 		}
 	}
 }
 
-func TestValidateReturnsRelationIDsInInputOrder(t *testing.T) {
+func TestValidateReturnsInputCountsWithoutRetainingRelations(t *testing.T) {
 	nodes := []string{testNode("job", "A", nil, nil), testNode("job", "B", nil, nil), testNode("job", "C", nil, nil)}
-	input := []relation{
-		{FromID: "A", ToID: "B", Kind: "precedes", Origin: "scheduler", Certainty: "declared"},
-		{FromID: "B", ToID: "C", Kind: "precedes", Origin: "scheduler", Certainty: "declared"},
-	}
 	relations := []string{
 		testRelation("A", "B", "precedes", "scheduler", "declared", nil),
 		testRelation("B", "C", "precedes", "scheduler", "declared", nil),
@@ -350,14 +631,8 @@ func TestValidateReturnsRelationIDsInInputOrder(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Validate() error = %v", err)
 	}
-	for index, item := range result.Relations {
-		want, idErr := relationID(input[index])
-		if idErr != nil {
-			t.Fatalf("relationID() error = %v", idErr)
-		}
-		if item.Line != index+1 || item.ID != want {
-			t.Errorf("Relations[%d] = %#v, want line %d ID %q", index, item, index+1, want)
-		}
+	if result.NodeCount != 3 || result.RelationCount != 2 {
+		t.Fatalf("Validate() result = %#v, want 3 nodes and 2 relations", result)
 	}
 }
 
@@ -368,6 +643,112 @@ func TestValidatePreservesContextCancellation(t *testing.T) {
 	assertValidationError(t, err, ErrorIO, "", 0, "")
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("Validate() error = %v, want context.Canceled", err)
+	}
+}
+
+func BenchmarkValidate(b *testing.B) {
+	benchmarks := []struct {
+		name          string
+		nodeCount     int
+		relationCount int
+	}{
+		{name: "Small", nodeCount: 10_000, relationCount: 25_000},
+		{name: "Medium", nodeCount: 100_000, relationCount: 300_000},
+	}
+	for _, benchmark := range benchmarks {
+		b.Run(benchmark.name, func(b *testing.B) {
+			b.StopTimer()
+			extracted := writeBenchmarkSnapshot(b, benchmark.name, benchmark.nodeCount, benchmark.relationCount)
+			b.ReportAllocs()
+			b.StartTimer()
+
+			for b.Loop() {
+				result, err := Validate(context.Background(), extracted)
+				if err != nil {
+					b.Fatalf("Validate() error = %v", err)
+				}
+				if result.NodeCount != benchmark.nodeCount || result.RelationCount != benchmark.relationCount {
+					b.Fatalf("Validate() result = %#v, want %d nodes and %d relations", result, benchmark.nodeCount, benchmark.relationCount)
+				}
+			}
+		})
+	}
+}
+
+func writeBenchmarkSnapshot(b *testing.B, name string, nodeCount, relationCount int) Extracted {
+	b.Helper()
+	directory := b.TempDir()
+	extracted := Extracted{
+		Directory: directory,
+		Manifest:  filepath.Join(directory, manifestName),
+		Nodes:     filepath.Join(directory, nodesName),
+		Relations: filepath.Join(directory, relationsName),
+	}
+	writeBenchmarkFile(b, extracted.Manifest, func(writer *bufio.Writer) error {
+		_, err := fmt.Fprintf(writer, `{"schemaVersion":"0.5","snapshotId":"benchmark-%s","generatedAt":"2026-08-08T00:00:00Z","nodeCount":%d,"relationCount":%d,"producer":{"name":"benchmark","version":"1"}}`, strings.ToLower(name), nodeCount, relationCount)
+		return err
+	})
+	writeBenchmarkFile(b, extracted.Nodes, func(writer *bufio.Writer) error {
+		if _, err := fmt.Fprintln(writer, `{"type":"management_unit","id":"ROOT","name":"Root","parentId":null,"limitFacts":[]}`); err != nil {
+			return err
+		}
+		networkCount := nodeCount / 100
+		jobCount := nodeCount * 7 / 10
+		fileCount := nodeCount * 2 / 10
+		eventCount := nodeCount - 1 - networkCount - jobCount - fileCount
+		for index := 0; index < networkCount; index++ {
+			if _, err := fmt.Fprintf(writer, "{\"type\":\"job_network\",\"id\":\"NET-%06d\",\"name\":\"Network %06d\",\"parentId\":\"ROOT\",\"limitFacts\":[]}\n", index, index); err != nil {
+				return err
+			}
+		}
+		for index := 0; index < jobCount; index++ {
+			if _, err := fmt.Fprintf(writer, "{\"type\":\"job\",\"id\":\"JOB-%06d\",\"name\":\"Job %06d\",\"parentId\":\"NET-%06d\",\"limitFacts\":[]}\n", index, index, index%networkCount); err != nil {
+				return err
+			}
+		}
+		for index := 0; index < fileCount; index++ {
+			if _, err := fmt.Fprintf(writer, "{\"type\":\"file\",\"id\":\"FILE-%06d\",\"name\":\"File %06d\",\"parentId\":null,\"limitFacts\":[]}\n", index, index); err != nil {
+				return err
+			}
+		}
+		for index := 0; index < eventCount; index++ {
+			if _, err := fmt.Fprintf(writer, "{\"type\":\"external_event\",\"id\":\"EVENT-%06d\",\"name\":\"Event %06d\",\"parentId\":null,\"limitFacts\":[]}\n", index, index); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	writeBenchmarkFile(b, extracted.Relations, func(writer *bufio.Writer) error {
+		jobCount := nodeCount * 7 / 10
+		for index := 0; index < relationCount; index++ {
+			fromIndex := index % jobCount
+			toIndex := (fromIndex + index/jobCount + 1) % jobCount
+			if _, err := fmt.Fprintf(writer, "{\"fromId\":\"JOB-%06d\",\"toId\":\"JOB-%06d\",\"kind\":\"precedes\",\"origin\":\"scheduler\",\"certainty\":\"declared\"}\n", fromIndex, toIndex); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	return extracted
+}
+
+func writeBenchmarkFile(b *testing.B, path string, write func(*bufio.Writer) error) {
+	b.Helper()
+	file, err := os.Create(path)
+	if err != nil {
+		b.Fatalf("create %q: %v", path, err)
+	}
+	writer := bufio.NewWriter(file)
+	if err := write(writer); err != nil {
+		_ = file.Close()
+		b.Fatalf("write %q: %v", path, err)
+	}
+	if err := writer.Flush(); err != nil {
+		_ = file.Close()
+		b.Fatalf("flush %q: %v", path, err)
+	}
+	if err := file.Close(); err != nil {
+		b.Fatalf("close %q: %v", path, err)
 	}
 }
 

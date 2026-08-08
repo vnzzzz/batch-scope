@@ -40,7 +40,9 @@ const (
 	ErrorMissingEntry ErrorKind = "missing_entry"
 	// ErrorNDJSONLineLimit は、NDJSON一行の上限超過を表す。
 	ErrorNDJSONLineLimit ErrorKind = "ndjson_line_size_limit"
-	// ErrorInvalidUTF8 は、NDJSONに不正なUTF-8が含まれることを表す。
+	// ErrorManifestSizeLimit は、manifest.jsonの上限超過を表す。
+	ErrorManifestSizeLimit ErrorKind = "manifest_size_limit"
+	// ErrorInvalidUTF8 は、入力ファイルに不正なUTF-8が含まれることを表す。
 	ErrorInvalidUTF8 ErrorKind = "invalid_utf8"
 	// ErrorInvalidJSON は、JSONとして解釈できない入力を表す。
 	ErrorInvalidJSON ErrorKind = "invalid_json"

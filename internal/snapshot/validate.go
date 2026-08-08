@@ -5,7 +5,6 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -17,7 +16,9 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"unicode/utf8"
 
+	"batchscope/internal/limits"
 	embeddedschema "batchscope/schema"
 
 	jsonschema "github.com/santhosh-tekuri/jsonschema/v6"
@@ -29,7 +30,7 @@ var (
 	compiledSchemasOnce sync.Once
 	compiledSchemas     snapshotSchemas
 	compiledSchemasErr  error
-	integerDuration     = regexp.MustCompile(`^P(?:(\d+)W|(?:(\d+)D)?(?:T(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?)?)$`)
+	durationComponents  = regexp.MustCompile(`^P(?:(\d+(?:[.,]\d+)?)W|(?:(\d+(?:[.,]\d+)?)D)?(?:T(?:(\d+(?:[.,]\d+)?)H)?(?:(\d+(?:[.,]\d+)?)M)?(?:(\d+(?:[.,]\d+)?)S)?)?)$`)
 )
 
 type snapshotSchemas struct {
@@ -39,16 +40,15 @@ type snapshotSchemas struct {
 }
 
 type manifest struct {
-	NodeCount     int `json:"nodeCount"`
-	RelationCount int `json:"relationCount"`
+	NodeCount     json.Number `json:"nodeCount"`
+	RelationCount json.Number `json:"relationCount"`
 }
 
-type node struct {
+type nodeInput struct {
 	Type       string      `json:"type"`
 	ID         string      `json:"id"`
 	ParentID   *string     `json:"parentId"`
 	LimitFacts []limitFact `json:"limitFacts"`
-	Line       int         `json:"-"`
 }
 
 type limitFact struct {
@@ -65,20 +65,44 @@ type relation struct {
 	Evidence  json.RawMessage `json:"evidence"`
 }
 
-// ValidatedRelation は、relations.ndjsonの一行と、その内容から生成したIDを結び付ける。
-type ValidatedRelation struct {
-	Line int
-	ID   string
+type nodeKind uint8
+
+const (
+	nodeKindUnknown nodeKind = iota
+	nodeKindManagementUnit
+	nodeKindJobNetwork
+	nodeKindJob
+	nodeKindFile
+	nodeKindFilePattern
+	nodeKindJobStatus
+	nodeKindExternalEvent
+)
+
+type nodeRecord struct {
+	Type      nodeKind
+	ParentID  string
+	HasParent bool
+	Line      int
 }
 
 // ValidationResult は、検査後のSQLite作成で再利用する値を保持する。
-// Relationsの順序はrelations.ndjsonの行順と一致する。
+// SQLite登録はNDJSONを再読込し、relation_idもその時点で再生成するため、検査中の行データやIDは保持しない。
 type ValidationResult struct {
-	Relations []ValidatedRelation
+	NodeCount     int
+	RelationCount int
 }
 
 // Validate は、展開済みスナップショットの形式と参照整合性を検査する。
-// 最初のエラーで停止するため、同じ入力では常にファイル順と行順が最も早いエラーを返す。
+// 検査フェーズは次の順序に固定し、同じ入力には同じエラーを返す。
+//  1. manifest.json: サイズ、UTF-8、JSON、Schema、件数の整数性
+//  2. nodes.ndjsonの各行: JSON、意味、Schema
+//  3. ノード横断: 件数、行番号順の親参照とID重複または複数の親、親子関係の循環
+//  4. relations.ndjsonの各行: JSON、Schema、参照の存在、重複
+//  5. 依存関係の件数
+//
+// 行内で完結する検査と、全ノードを読み終えて初めて判定できる検査は別のフェーズで実行する。
+// ノード横断では各ノードの親の存在と種別を調べ、ID重複または複数の親と行番号を比較する。
+// 検査種別より行番号を優先し、循環内でも最小行を返すことで、取込元が先に直すべき箇所を示す。
 func Validate(ctx context.Context, extracted Extracted) (ValidationResult, error) {
 	if err := ctx.Err(); err != nil {
 		return ValidationResult{}, &Error{Kind: ErrorIO, Err: err}
@@ -89,35 +113,39 @@ func Validate(ctx context.Context, extracted Extracted) (ValidationResult, error
 		return ValidationResult{}, &Error{Kind: ErrorIO, Err: err}
 	}
 
-	manifestValue, err := readJSON(ctx, extracted.Manifest, manifestName, schemas.manifest)
+	metadata, err := readManifest(ctx, extracted.Manifest, schemas.manifest)
 	if err != nil {
 		return ValidationResult{}, err
-	}
-	var metadata manifest
-	if err := remarshal(manifestValue, &metadata); err != nil {
-		return ValidationResult{}, &Error{Kind: ErrorInvalidJSON, File: manifestName, Err: err}
 	}
 
-	nodes, nodeByID, err := readNodes(ctx, extracted.Nodes, schemas.node)
+	orderedNodeIDs, nodeByID, nodeCount, duplicateErr, err := readNodes(ctx, extracted.Nodes, schemas.node)
 	if err != nil {
 		return ValidationResult{}, err
 	}
-	if metadata.NodeCount != len(nodes) {
+	if metadata.nodeCount != nodeCount {
 		return ValidationResult{}, &Error{Kind: ErrorNodeCountMismatch, File: manifestName, Pointer: "/nodeCount"}
 	}
-	if err := validateParents(ctx, nodes, nodeByID); err != nil {
+	if err := validateNodeReferences(orderedNodeIDs, nodeByID, duplicateErr); err != nil {
+		return ValidationResult{}, err
+	}
+	if err := validateParentCycles(ctx, orderedNodeIDs, nodeByID); err != nil {
 		return ValidationResult{}, err
 	}
 
-	validatedRelations, err := readRelations(ctx, extracted.Relations, schemas.relation, nodeByID)
+	relationCount, err := readRelations(ctx, extracted.Relations, schemas.relation, nodeByID)
 	if err != nil {
 		return ValidationResult{}, err
 	}
-	if metadata.RelationCount != len(validatedRelations) {
+	if metadata.relationCount != relationCount {
 		return ValidationResult{}, &Error{Kind: ErrorRelationCountMismatch, File: manifestName, Pointer: "/relationCount"}
 	}
 
-	return ValidationResult{Relations: validatedRelations}, nil
+	return ValidationResult{NodeCount: nodeCount, RelationCount: relationCount}, nil
+}
+
+type validatedManifest struct {
+	nodeCount     int
+	relationCount int
 }
 
 func getSchemas() (snapshotSchemas, error) {
@@ -153,79 +181,139 @@ func getSchemas() (snapshotSchemas, error) {
 	return compiledSchemas, compiledSchemasErr
 }
 
-func readJSON(ctx context.Context, path, name string, schema *jsonschema.Schema) (any, error) {
+func readManifest(ctx context.Context, path string, schema *jsonschema.Schema) (validatedManifest, error) {
 	file, err := os.Open(path)
 	if err != nil {
-		return nil, &Error{Kind: ErrorIO, File: name, Err: err}
+		return validatedManifest{}, &Error{Kind: ErrorIO, File: manifestName, Err: err}
 	}
 	defer file.Close()
 
-	value, err := jsonschema.UnmarshalJSON(contextReader{ctx: ctx, reader: file})
+	contents, err := io.ReadAll(io.LimitReader(contextReader{ctx: ctx, reader: file}, limits.MaxManifestBytes+1))
 	if err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
-			return nil, &Error{Kind: ErrorIO, File: name, Err: ctxErr}
+			return validatedManifest{}, &Error{Kind: ErrorIO, File: manifestName, Err: ctxErr}
 		}
-		return nil, &Error{Kind: ErrorInvalidJSON, File: name, Err: err}
+		return validatedManifest{}, &Error{Kind: ErrorIO, File: manifestName, Err: err}
+	}
+	if int64(len(contents)) > limits.MaxManifestBytes {
+		return validatedManifest{}, &Error{Kind: ErrorManifestSizeLimit, File: manifestName}
+	}
+	if !utf8.Valid(contents) {
+		return validatedManifest{}, &Error{Kind: ErrorInvalidUTF8, File: manifestName}
+	}
+
+	value, err := jsonschema.UnmarshalJSON(bytes.NewReader(contents))
+	if err != nil {
+		return validatedManifest{}, &Error{Kind: ErrorInvalidJSON, File: manifestName, Err: err}
 	}
 	if err := schema.Validate(value); err != nil {
-		return nil, schemaError(name, 0, err)
+		return validatedManifest{}, schemaError(manifestName, 0, err)
 	}
-	return value, nil
+
+	var decoded manifest
+	if err := remarshal(value, &decoded); err != nil {
+		return validatedManifest{}, &Error{Kind: ErrorInvalidJSON, File: manifestName, Err: err}
+	}
+	nodeCount, ok := jsonIntegerAsInt(decoded.NodeCount)
+	if !ok {
+		return validatedManifest{}, &Error{Kind: ErrorSchemaViolation, File: manifestName, Pointer: "/nodeCount"}
+	}
+	relationCount, ok := jsonIntegerAsInt(decoded.RelationCount)
+	if !ok {
+		return validatedManifest{}, &Error{Kind: ErrorSchemaViolation, File: manifestName, Pointer: "/relationCount"}
+	}
+	return validatedManifest{nodeCount: nodeCount, relationCount: relationCount}, nil
 }
 
-func readNodes(ctx context.Context, path string, schema *jsonschema.Schema) ([]node, map[string]node, error) {
-	nodes := make([]node, 0)
-	byID := make(map[string]node)
+func jsonIntegerAsInt(number json.Number) (int, bool) {
+	value, ok := new(big.Rat).SetString(number.String())
+	if !ok || !value.IsInt() || !value.Num().IsInt64() {
+		return 0, false
+	}
+	asInt64 := value.Num().Int64()
+	converted := int(asInt64)
+	return converted, int64(converted) == asInt64
+}
+
+func readNodes(ctx context.Context, path string, schema *jsonschema.Schema) ([]string, map[string]nodeRecord, int, *Error, error) {
+	orderedIDs := make([]string, 0)
+	byID := make(map[string]nodeRecord)
+	count := 0
+	var duplicateErr *Error
 	err := readNDJSON(ctx, path, nodesName, func(line int, contents []byte) error {
-		value, err := decodeJSONLine(nodesName, line, contents)
+		count++
+		id, record, err := validateNodeLine(schema, line, contents)
 		if err != nil {
 			return err
 		}
-		var current node
-		if err := remarshal(value, &current); err != nil {
-			// 構造が想定と異なる行はSchemaが理由を説明できるため、そちらの結果を優先する。
-			if schemaErr := schema.Validate(value); schemaErr != nil {
-				return schemaError(nodesName, line, schemaErr)
+		if previous, exists := byID[id]; exists {
+			// 最初の定義は単体では正しいため、取り除くべき後続の定義側の行を報告する。
+			// 以降の重複は最初の1件より必ず後ろにあり、行番号の比較へ影響しないので保持しない。
+			if duplicateErr == nil {
+				if differentParents(previous, record) {
+					duplicateErr = &Error{Kind: ErrorMultipleParents, File: nodesName, Line: line, Pointer: "/parentId"}
+				} else {
+					duplicateErr = &Error{Kind: ErrorDuplicateNode, File: nodesName, Line: line, Pointer: "/id"}
+				}
 			}
-			return &Error{Kind: ErrorInvalidJSON, File: nodesName, Line: line, Err: err}
+			return nil
 		}
-
-		// リミットの所有者と親の有無はSchemaのif-thenでも表現しているが、
-		// 取込元が原因を特定できるよう、汎用のschema_violationより具体的な理由コードを先に返す。
-		// 種別自体が未知の場合は判定できないため、Schemaの結果に委ねる。
-		if isNodeType(current.Type) && current.Type != "job" && len(current.LimitFacts) > 0 {
-			return &Error{Kind: ErrorInvalidLimitOwner, File: nodesName, Line: line, Pointer: "/limitFacts"}
-		}
-		if isParentlessType(current.Type) && current.ParentID != nil {
-			return &Error{Kind: ErrorInvalidParentType, File: nodesName, Line: line, Pointer: "/parentId"}
-		}
-		if err := schema.Validate(value); err != nil {
-			return schemaError(nodesName, line, err)
-		}
-		for index, fact := range current.LimitFacts {
-			if fact.Kind == "max_elapsed" && !validDurationSeconds(fact.Duration) {
-				return &Error{Kind: ErrorInvalidDuration, File: nodesName, Line: line, Pointer: fmt.Sprintf("/limitFacts/%d/duration", index)}
-			}
-		}
-
-		current.Line = line
-		if previous, exists := byID[current.ID]; exists {
-			if differentParents(previous.ParentID, current.ParentID) {
-				return &Error{Kind: ErrorMultipleParents, File: nodesName, Line: line, Pointer: "/parentId"}
-			}
-			return &Error{Kind: ErrorDuplicateNode, File: nodesName, Line: line, Pointer: "/id"}
-		}
-		byID[current.ID] = current
-		nodes = append(nodes, current)
+		byID[id] = record
+		orderedIDs = append(orderedIDs, id)
 		return nil
 	})
-	return nodes, byID, err
+	return orderedIDs, byID, count, duplicateErr, err
 }
 
-func readRelations(ctx context.Context, path string, schema *jsonschema.Schema, nodes map[string]node) ([]ValidatedRelation, error) {
-	relations := make([]ValidatedRelation, 0)
-	seen := make(map[string]struct{})
+func validateNodeLine(schema *jsonschema.Schema, line int, contents []byte) (string, nodeRecord, error) {
+	value, err := decodeJSONLine(nodesName, line, contents)
+	if err != nil {
+		return "", nodeRecord{}, err
+	}
+	var current nodeInput
+	if err := remarshal(value, &current); err != nil {
+		// 構造が想定と異なる行はSchemaが理由を説明できるため、そちらの結果を優先する。
+		if schemaErr := schema.Validate(value); schemaErr != nil {
+			return "", nodeRecord{}, schemaError(nodesName, line, schemaErr)
+		}
+		return "", nodeRecord{}, &Error{Kind: ErrorInvalidJSON, File: nodesName, Line: line, Err: err}
+	}
+
+	// リミットの所有者と親の有無はSchemaのif-thenでも表現しているが、
+	// 取込元が原因を特定できるよう、汎用のschema_violationより具体的な理由コードを先に返す。
+	// 種別自体が未知の場合は判定できないため、Schemaの結果に委ねる。
+	if isNodeType(current.Type) && current.Type != "job" && len(current.LimitFacts) > 0 {
+		return "", nodeRecord{}, &Error{Kind: ErrorInvalidLimitOwner, File: nodesName, Line: line, Pointer: "/limitFacts"}
+	}
+	if isParentlessType(current.Type) && current.ParentID != nil {
+		return "", nodeRecord{}, &Error{Kind: ErrorInvalidParentType, File: nodesName, Line: line, Pointer: "/parentId"}
+	}
+	for index, fact := range current.LimitFacts {
+		if fact.Kind == "max_elapsed" {
+			if _, ok := durationSeconds(fact.Duration); ok {
+				continue
+			}
+			return "", nodeRecord{}, &Error{Kind: ErrorInvalidDuration, File: nodesName, Line: line, Pointer: fmt.Sprintf("/limitFacts/%d/duration", index)}
+		}
+	}
+	if err := schema.Validate(value); err != nil {
+		return "", nodeRecord{}, schemaError(nodesName, line, err)
+	}
+
+	record := nodeRecord{Type: nodeKindOf(current.Type), Line: line}
+	if current.ParentID != nil {
+		// 親なしをポインターで保持すると全ノード分の参照領域が増えるため、値と有無を分ける。
+		record.ParentID = *current.ParentID
+		record.HasParent = true
+	}
+	return current.ID, record, nil
+}
+
+func readRelations(ctx context.Context, path string, schema *jsonschema.Schema, nodes map[string]nodeRecord) (int, error) {
+	count := 0
+	seen := make(map[[sha256.Size]byte]struct{})
 	err := readNDJSON(ctx, path, relationsName, func(line int, contents []byte) error {
+		count++
 		value, err := decodeJSONLine(relationsName, line, contents)
 		if err != nil {
 			return err
@@ -252,10 +340,9 @@ func readRelations(ctx context.Context, path string, schema *jsonschema.Schema, 
 			return &Error{Kind: ErrorDuplicateRelation, File: relationsName, Line: line}
 		}
 		seen[id] = struct{}{}
-		relations = append(relations, ValidatedRelation{Line: line, ID: id})
 		return nil
 	})
-	return relations, err
+	return count, err
 }
 
 func readNDJSON(ctx context.Context, path, name string, consume func(int, []byte) error) error {
@@ -311,25 +398,87 @@ func schemaError(name string, line int, err error) *Error {
 	pointer := ""
 	var validationErr *jsonschema.ValidationError
 	if errors.As(err, &validationErr) {
-		leaf := deepestValidationError(validationErr)
+		leaf := stableValidationLeaf(validationErr)
 		pointer = jsonPointer(leaf.InstanceLocation)
 	}
 	return &Error{Kind: ErrorSchemaViolation, File: name, Line: line, Pointer: pointer, Err: err}
 }
 
-func deepestValidationError(root *jsonschema.ValidationError) *jsonschema.ValidationError {
-	deepest := root
+func stableValidationLeaf(root *jsonschema.ValidationError) *jsonschema.ValidationError {
+	leaves := make([]*jsonschema.ValidationError, 0)
 	var visit func(*jsonschema.ValidationError)
 	visit = func(current *jsonschema.ValidationError) {
-		if len(current.InstanceLocation) > len(deepest.InstanceLocation) {
-			deepest = current
+		if len(current.Causes) == 0 {
+			leaves = append(leaves, current)
+			return
+		}
+		causes := current.Causes
+		if strings.HasSuffix(current.BasicOutput().KeywordLocation, "/oneOf") {
+			// 排他的な分岐の不一致は無関係な分岐の違反も含むため、違反葉が最少の分岐を原因箇所の選定に使う。
+			causes = []*jsonschema.ValidationError{closestValidationCause(causes)}
+		}
+		for _, cause := range causes {
+			visit(cause)
+		}
+	}
+	visit(root)
+	// ライブラリ内のcause順は公開された選定規則ではないため、入力位置、Schema位置、メッセージで全順序を作る。
+	slices.SortFunc(leaves, compareValidationErrors)
+	return leaves[0]
+}
+
+func closestValidationCause(causes []*jsonschema.ValidationError) *jsonschema.ValidationError {
+	ordered := slices.Clone(causes)
+	slices.SortFunc(ordered, func(left, right *jsonschema.ValidationError) int {
+		if compared := len(validationLeaves(left)) - len(validationLeaves(right)); compared != 0 {
+			return compared
+		}
+		return strings.Compare(validationCauseKey(left), validationCauseKey(right))
+	})
+	return ordered[0]
+}
+
+func validationCauseKey(root *jsonschema.ValidationError) string {
+	leaves := validationLeaves(root)
+	slices.SortFunc(leaves, compareValidationErrors)
+	var key strings.Builder
+	for _, leaf := range leaves {
+		key.WriteString(jsonPointer(leaf.InstanceLocation))
+		key.WriteByte(0)
+		key.WriteString(leaf.BasicOutput().KeywordLocation)
+		key.WriteByte(0)
+		key.WriteString(leaf.Error())
+		key.WriteByte(0)
+	}
+	return key.String()
+}
+
+func validationLeaves(root *jsonschema.ValidationError) []*jsonschema.ValidationError {
+	leaves := make([]*jsonschema.ValidationError, 0)
+	var visit func(*jsonschema.ValidationError)
+	visit = func(current *jsonschema.ValidationError) {
+		if len(current.Causes) == 0 {
+			leaves = append(leaves, current)
+			return
 		}
 		for _, cause := range current.Causes {
 			visit(cause)
 		}
 	}
 	visit(root)
-	return deepest
+	return leaves
+}
+
+func compareValidationErrors(left, right *jsonschema.ValidationError) int {
+	if compared := strings.Compare(jsonPointer(left.InstanceLocation), jsonPointer(right.InstanceLocation)); compared != 0 {
+		return compared
+	}
+	leftKeyword := left.BasicOutput().KeywordLocation
+	rightKeyword := right.BasicOutput().KeywordLocation
+	if compared := strings.Compare(leftKeyword, rightKeyword); compared != 0 {
+		return compared
+	}
+	return strings.Compare(left.Error(), right.Error())
 }
 
 func jsonPointer(parts []string) string {
@@ -345,36 +494,56 @@ func jsonPointer(parts []string) string {
 }
 
 func isNodeType(kind string) bool {
+	return nodeKindOf(kind) != nodeKindUnknown
+}
+
+func nodeKindOf(kind string) nodeKind {
 	switch kind {
-	case "management_unit", "job_network", "job", "file", "file_pattern", "job_status", "external_event":
-		return true
+	case "management_unit":
+		return nodeKindManagementUnit
+	case "job_network":
+		return nodeKindJobNetwork
+	case "job":
+		return nodeKindJob
+	case "file":
+		return nodeKindFile
+	case "file_pattern":
+		return nodeKindFilePattern
+	case "job_status":
+		return nodeKindJobStatus
+	case "external_event":
+		return nodeKindExternalEvent
 	default:
-		return false
+		return nodeKindUnknown
 	}
 }
 
 func isParentlessType(kind string) bool {
-	switch kind {
-	case "file", "file_pattern", "job_status", "external_event":
+	switch nodeKindOf(kind) {
+	case nodeKindFile, nodeKindFilePattern, nodeKindJobStatus, nodeKindExternalEvent:
 		return true
 	default:
 		return false
 	}
 }
 
-func differentParents(left, right *string) bool {
-	if left == nil || right == nil {
-		return left != right
+func differentParents(left, right nodeRecord) bool {
+	if left.HasParent != right.HasParent {
+		return true
 	}
-	return *left != *right
+	return left.HasParent && left.ParentID != right.ParentID
 }
 
-func validateParents(ctx context.Context, ordered []node, nodes map[string]node) error {
-	for _, current := range ordered {
-		if current.ParentID == nil {
+func validateNodeReferences(orderedIDs []string, nodes map[string]nodeRecord, duplicateErr *Error) error {
+	for _, id := range orderedIDs {
+		current := nodes[id]
+		if duplicateErr != nil && duplicateErr.Line < current.Line {
+			return duplicateErr
+		}
+		if !current.HasParent {
 			continue
 		}
-		parent, exists := nodes[*current.ParentID]
+		parent, exists := nodes[current.ParentID]
 		if !exists {
 			return &Error{Kind: ErrorMissingParent, File: nodesName, Line: current.Line, Pointer: "/parentId"}
 		}
@@ -382,33 +551,45 @@ func validateParents(ctx context.Context, ordered []node, nodes map[string]node)
 			return &Error{Kind: ErrorInvalidParentType, File: nodesName, Line: current.Line, Pointer: "/parentId"}
 		}
 	}
+	if duplicateErr != nil {
+		return duplicateErr
+	}
+	return nil
+}
 
+func validateParentCycles(ctx context.Context, orderedIDs []string, nodes map[string]nodeRecord) error {
 	state := make(map[string]uint8, len(nodes))
-	for _, start := range ordered {
+	for _, startID := range orderedIDs {
 		if err := ctx.Err(); err != nil {
 			return &Error{Kind: ErrorIO, File: nodesName, Err: err}
 		}
-		if state[start.ID] == 2 {
+		if state[startID] == 2 {
 			continue
 		}
 		path := make([]string, 0)
-		current := start
+		currentID := startID
 		for {
 			if err := ctx.Err(); err != nil {
 				return &Error{Kind: ErrorIO, File: nodesName, Err: err}
 			}
-			if state[current.ID] == 1 {
-				return &Error{Kind: ErrorParentCycle, File: nodesName, Line: current.Line, Pointer: "/parentId"}
+			current := nodes[currentID]
+			if state[currentID] == 1 {
+				firstCycleIndex := slices.Index(path, currentID)
+				cycleLine := nodes[path[firstCycleIndex]].Line
+				for _, id := range path[firstCycleIndex+1:] {
+					cycleLine = min(cycleLine, nodes[id].Line)
+				}
+				return &Error{Kind: ErrorParentCycle, File: nodesName, Line: cycleLine, Pointer: "/parentId"}
 			}
-			if state[current.ID] == 2 {
+			if state[currentID] == 2 {
 				break
 			}
-			state[current.ID] = 1
-			path = append(path, current.ID)
-			if current.ParentID == nil {
+			state[currentID] = 1
+			path = append(path, currentID)
+			if !current.HasParent {
 				break
 			}
-			current = nodes[*current.ParentID]
+			currentID = current.ParentID
 		}
 		for _, id := range path {
 			state[id] = 2
@@ -417,54 +598,68 @@ func validateParents(ctx context.Context, ordered []node, nodes map[string]node)
 	return nil
 }
 
-func allowedParent(child, parent string) bool {
+func allowedParent(child, parent nodeKind) bool {
 	switch child {
-	case "management_unit":
-		return parent == "management_unit"
-	case "job_network":
-		return parent == "management_unit" || parent == "job_network"
-	case "job":
-		return parent == "job_network"
+	case nodeKindManagementUnit:
+		return parent == nodeKindManagementUnit
+	case nodeKindJobNetwork:
+		return parent == nodeKindManagementUnit || parent == nodeKindJobNetwork
+	case nodeKindJob:
+		return parent == nodeKindJobNetwork
 	default:
 		return false
 	}
 }
 
-func validDurationSeconds(duration string) bool {
-	matches := integerDuration.FindStringSubmatch(duration)
+func durationSeconds(duration string) (int64, bool) {
+	matches := durationComponents.FindStringSubmatch(duration)
 	if matches == nil {
-		return false
+		return 0, false
 	}
 	if matches[1] == "" && matches[2] == "" && matches[3] == "" && matches[4] == "" && matches[5] == "" {
-		return false
+		return 0, false
 	}
 	if strings.Contains(duration, "T") && matches[3] == "" && matches[4] == "" && matches[5] == "" {
-		return false
+		return 0, false
 	}
 
-	// 週は暦に依存せず常に7日として秒へ変換できるため受け入れる。
-	// ISO 8601どおり他の単位とは混在させず、SQLiteの整数秒に収まる値だけを許可する。
-	total := new(big.Int)
+	for index := 1; index < len(matches); index++ {
+		if !strings.ContainsAny(matches[index], ".,") {
+			continue
+		}
+		for smaller := index + 1; smaller < len(matches); smaller++ {
+			if matches[smaller] != "" {
+				return 0, false
+			}
+		}
+	}
+
+	// 点とコンマはISO 8601で認められる小数記号として同一視し、二進浮動小数を介さず整数秒性を判定する。
+	total := new(big.Rat)
 	for index, seconds := range []int64{604800, 86400, 3600, 60, 1} {
 		if matches[index+1] == "" {
 			continue
 		}
-		value := new(big.Int)
-		if _, ok := value.SetString(matches[index+1], 10); !ok {
-			return false
+		component := strings.ReplaceAll(matches[index+1], ",", ".")
+		value, ok := new(big.Rat).SetString(component)
+		if !ok {
+			return 0, false
 		}
-		value.Mul(value, big.NewInt(seconds))
+		value.Mul(value, new(big.Rat).SetInt64(seconds))
 		total.Add(total, value)
 	}
-	return total.IsInt64()
+	if !total.IsInt() || !total.Num().IsInt64() {
+		return 0, false
+	}
+	return total.Num().Int64(), true
 }
 
-func relationID(value relation) (string, error) {
+func relationID(value relation) ([sha256.Size]byte, error) {
 	evidence := any([]any{})
 	if len(value.Evidence) > 0 {
 		decoded, err := jsonschema.UnmarshalJSON(bytes.NewReader(value.Evidence))
 		if err != nil {
-			return "", err
+			return [sha256.Size]byte{}, err
 		}
 		evidence = decoded
 	}
@@ -473,10 +668,9 @@ func relationID(value relation) (string, error) {
 	// evidence配列の順序は入力が表す提示順として区別し、欠落と空配列は同一視する。
 	canonical, err := canonicalJSON([]any{value.FromID, value.ToID, value.Kind, value.Origin, value.Certainty, evidence})
 	if err != nil {
-		return "", err
+		return [sha256.Size]byte{}, err
 	}
-	hash := sha256.Sum256(canonical)
-	return hex.EncodeToString(hash[:]), nil
+	return sha256.Sum256(canonical), nil
 }
 
 func canonicalJSON(value any) ([]byte, error) {
