@@ -5,7 +5,7 @@ IMAGE ?= batchscope
 TAG ?= local
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 COMMIT ?= $(shell git rev-parse --short=12 HEAD 2>/dev/null || echo unknown)
-.PHONY: help bootstrap fmt fmt-check scripts-check vet test run verify demo-view release-artifacts image image-run check-docker
+.PHONY: help bootstrap fmt fmt-check scripts-check vet test run openapi openapi-check verify demo-view release-artifacts image image-run check-docker
 
 help: ## [共通] 利用できるターゲットを表示する
 	@awk 'BEGIN {FS = ":.*## "; printf "Usage: make <target>\n\nTargets:\n"} /^[a-zA-Z0-9_-]+:.*## / {printf "  %-18s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -31,7 +31,22 @@ scripts-check: ## [Dev Container/CI] シェルスクリプトの構文を確認�
 run: ## [Dev Container] サービスを起動する
 	go run ./cmd/batchscope serve
 
-verify: fmt-check scripts-check vet test ## [Dev Container/CI] 静的検査とテストを実行する
+openapi: ## [Dev Container] OpenAPIを生成する
+	@mkdir -p docs/api
+	@set -e; \
+		tmp="$$(mktemp docs/api/openapi.yaml.tmp.XXXXXX)"; \
+		trap 'rm -f "$$tmp"' EXIT; \
+		go run ./cmd/openapi-gen > "$$tmp"; \
+		mv "$$tmp" docs/api/openapi.yaml
+
+openapi-check: ## [Dev Container/CI] OpenAPI生成物の差分を確認する
+	@set -e; \
+		tmp="$$(mktemp)"; \
+		trap 'rm -f "$$tmp"' EXIT; \
+		go run ./cmd/openapi-gen > "$$tmp"; \
+		diff -u docs/api/openapi.yaml "$$tmp"
+
+verify: fmt-check scripts-check vet test openapi-check ## [Dev Container/CI] 静的検査とテストを実行する
 
 demo-view: ## [Dev Container] デモのAPIレスポンスを読みやすく表示する
 	./scripts/show-limit-analysis.sh examples/demo/responses/downstream-limit-analysis.json
