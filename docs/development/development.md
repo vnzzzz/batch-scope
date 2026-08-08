@@ -110,6 +110,8 @@ export BATCHSCOPE_CODEX_MODEL=<利用可能なCodexモデル>
 |---|---|
 | `make verify` | 静的検査とテスト |
 | `make run` | ポート8080でサービスを起動 |
+| `make openapi` | `docs/api/openapi.yaml`を生成 |
+| `make openapi-check` | OpenAPI生成物と実装の差分を確認 |
 | `make demo-view` | デモのAPIレスポンスをテキスト表示 |
 | `make release-artifacts VERSION=0.1.0` | GitHub Releasesへ登録するバイナリを作成 |
 
@@ -132,6 +134,8 @@ export BATCHSCOPE_CODEX_MODEL=<利用可能なCodexモデル>
 | `GET /healthz` | プロセスの生存確認 |
 | `GET /readyz` | スナップショット未投入時は503 |
 | `GET /v1/status` | 起動状態とスナップショット状態 |
+
+このほかに、Humaが`/docs`、`/openapi.json`、`/openapi.yaml`を提供します。
 
 スナップショット取込と後続リミット検索は、設計済みで未実装です。
 デモ用レスポンスの確認方法は[デモ](demo.md)を参照してください。
