@@ -9,7 +9,7 @@ BatchScopeでは、利用者へ配布するPublic Skillと、リポジトリ開�
 |---|---|---|---|
 | Public | `batchscope` | Codex、Claude Code | スナップショットの作成、取込、検索APIの利用 |
 | Internal | `batchscope-backlog` | Claude Code | 設計、実装、既存Issueの監査とIssue候補の作成 |
-| Internal | `batchscope-development` | Claude Code | Issueの計画、Codexへの限定委任、差分レビュー、検証 |
+| Internal | `batchscope-development` | Claude Code | Issue単位のCodexへの委任、差分レビュー、検証、GitHub操作による自律実行 |
 
 Public Skillは、BatchScope利用者と開発者が同じ手順でサービスを利用するために共有します。
 Internal Skillはリポジトリ固有の開発手順だけを扱い、公開用成果物へ含めません。
