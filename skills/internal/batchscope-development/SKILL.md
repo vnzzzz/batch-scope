@@ -1,77 +1,110 @@
 ---
 name: batchscope-development
-description: GitHub Issueを起点にBatchScopeを開発し、Claude Codeが計画とレビューを担い、Codex CLIへ限定された実装やレビューを委任するときに使用する。製品APIの利用やスナップショット変換には使用しない。
+description: GitHub Issueを起点にBatchScopeを自律的に開発し、Claude CodeがIssue単位でCodex CLIへ実装を委任して、CI成功済みのReady for review Pull Requestを作成するときに使用する。製品APIの利用やスナップショット変換には使用しない。
 ---
 
 # BatchScope development
 
-Claude Codeが主担当として作業を指揮する。
-Codexは、明示された範囲を実装またはレビューする作業担当として使用する。
+Claude Codeが主担当として設計判断、差分レビュー、最終検証、GitHub操作を担う。
+コードベースの一次調査、実装、テスト、文書更新は、原則としてIssue単位でCodexへ委任する。
 
 ## 開始条件
 
 1. Dev Container内で作業する。
-2. `main`ではなく、対象Issue用の作業ブランチにいることを確認する。
+2. `gh issue view <番号> --json number,title,body,labels,url`でIssueを読む。
 3. `git status --short`で、開始前から存在する変更を確認する。
-4. `gh issue view <番号> --json number,title,body,labels,url`でIssueを読む。
-5. `AGENTS.md`とIssueに関連する設計文書を読む。
+4. `AGENTS.md`とIssueに関連する設計文書を読む。
+5. Issueに目的、対象範囲、対象外、受入条件がそろっていることを確認する。
 
-Issueに目的、対象範囲、対象外、受入条件のいずれかが不足し、公開仕様や設計判断に影響する場合は、実装前に不足を報告する。
-エージェントだけで新しい公開仕様を決めない。
+Issueが十分に定義され、停止条件に該当しない場合は、計画の承認待ちなどの途中確認を行わず、Ready for review Pull Requestの作成まで進める。
 
-## 主担当の責務
+作業ブランチはClaude Codeが作成する。
+接頭辞は`CONTRIBUTING.md`のブランチ名規則に従う。
+
+```bash
+gh issue develop <番号> --name <接頭辞>/<要約> --base main --checkout
+```
+
+## 自律実行の停止条件
+
+次のいずれかに該当する場合だけ作業を止め、人間へ確認する。
+
+- Issueに目的、対象範囲、対象外、受入条件が不足している。
+- 新しい公開API、Schema、データ形式の決定が必要になる。
+- Issueと設計文書、または設計文書同士が矛盾している。
+- Secret、認証、権限、破壊的操作の追加が必要になる。
+- Issue外の大規模な設計変更が必要になる。
+- 外部環境の問題により受入条件を検証できない。
+- 受入条件の変更が必要になる。
+
+内部の関数分割、パッケージ構成、テスト方法などは、既存方針の範囲内でエージェントが判断する。
+
+## 責務
+
+Codexは次を行う。
+
+- コードベースを調査する。
+- Issueの対象範囲を実装する。
+- テストを追加または修正する。
+- 必要な`docs/`、`schema/`、Skillの参照資料を更新する。
+- 実装と一致するようにコード内のコメントを更新する。
+- `make verify`を実行する。
 
 Claude Codeは次を行う。
 
 - Issueと設計文書の整合を確認する。
-- 受入条件と変更予定ファイルを対応付けた短い計画を作る。
-- Codexへ委任する範囲と、Claude Code自身が判断する範囲を分ける。
-- Codex実行後に`git diff`を読み、設計、実装、テスト、文書の整合を確認する。
-- 必要な修正だけを追加で委任する。
+- Codexへ委任する範囲を決める。
+- Codex実行後に`git diff`と検査結果を確認する。
+- 必要な修正をCodexへ再委任する。
 - 最後に`make verify`を実行する。
-- コミット、push、Issue更新、Pull Request作成は主担当が行う。
+- 目的別にコミットし、pushする。
+- Draft Pull Requestを作成し、CIを確認する。
+- CI成功後にPull RequestをReady for reviewへ移行する。
 
-主担当はCodexの最終回答だけで完了を判断しない。
-必ず実際の差分とテスト結果を確認する。
+Claude CodeはCodexの最終報告だけで完了を判断しない。
+必ず実際の差分と検査結果を確認する。
+
+トークン消費を抑えるため、Claude Codeはコードベースの全面調査を行わない。
+一次調査はCodexへ委任し、Claude Codeの確認は差分と受入条件に絞る。
 
 ## Codexへ委任する単位
 
-一度の委任は、一つの明確な成果物に限定する。
+原則としてIssue全体を一度の委任でCodexへ渡す。
+一度の委任には大きすぎる場合だけ、Claude Codeが受入条件に沿って安全な単位へ分割し、順次委任する。
 
-適切な例：
-
-- 既存3エンドポイントをHumaへ移行し、対応するテストを追加する。
-- 指定されたパッケージだけをレビューし、問題点をファイルと行単位で報告する。
-- 失敗したテストの原因を特定し、最小の修正を行う。
-
-避ける例：
-
-- Issue全体の設計、実装、レビュー、GitHub操作をまとめて任せる。
-- 複数のCodex実行に同じ作業ツリーを同時編集させる。
-- Codexへ対象外のリファクタリングを許可する。
-
-並列化する場合は、読み取り専用の調査またはレビューだけにする。
+複数のCodex実行に同じ作業ツリーを同時編集させない。
+委任されたCodexは対象外のリファクタリングを行わず、明示された範囲を広げない。
 
 ## 委任プロンプト
 
 Codexへ渡すプロンプトには次を含める。
 
-- Issue番号、目的、受入条件
+- Issue番号
+- 目的
+- 受入条件
 - 今回の委任範囲
 - 対象外
 - 参照すべき文書とファイル
-- 実行すべき検査
+- 実行する検査
 - GitHub操作を行わないこと
 - 最後に変更ファイル、検査結果、未解決事項を簡潔に報告すること
 
 一時ファイルはリポジトリ外へ作成する。
+
+`codex exec --ephemeral`は利用者設定の`model`を読み込まないため、`BATCHSCOPE_CODEX_MODEL`に利用者が利用できるモデルを指定する必要がある。
+この動作はCodex CLI 0.147.0で確認している。
+未設定の場合はCodexの既定モデルが使われ、アカウントによっては実行に失敗する。
+
+`--sandbox workspace-write`では、既定のGoビルドキャッシュがサンドボックスの書き込み可能範囲外にあるため使用できない。
+そのため、委任プロンプトでは`GOCACHE=/tmp/batchscope-go-cache make verify`を検査に指定する。
 
 ```bash
 prompt_file="$(mktemp)"
 result_file="$(mktemp)"
 
 cat >"$prompt_file" <<'PROMPT'
-ここに限定された実装指示を記載する。
+ここにIssueと委任範囲に沿った実装指示を記載する。
+検査では`GOCACHE=/tmp/batchscope-go-cache make verify`を実行する。
 PROMPT
 
 codex_args=(
@@ -93,12 +126,11 @@ rm -f "$prompt_file" "$result_file"
 
 `--sandbox danger-full-access`、`--dangerously-bypass-approvals-and-sandbox`、`--skip-git-repo-check`は使用しない。
 権限またはネットワーク制限で処理できない場合は、回避せず主担当へ報告する。
-Codexへコミット、push、IssueやPull Requestの操作を任せない。
-`BATCHSCOPE_CODEX_MODEL`が未設定の場合は、Codexの利用者設定または既定モデルを使用する。
+Codexへブランチ作成、コミット、push、IssueやPull Requestの作成または更新を任せない。
 
-## レビューと完了
+## 差分レビューと検証
 
-Codex実行後、主担当は次を確認する。
+Codex実行後、Claude Codeは次を確認する。
 
 ```bash
 git status --short
@@ -107,14 +139,57 @@ git diff
 make verify
 ```
 
+差分を受入条件と照合し、設計、実装、テスト、文書、コード内コメントの整合を確認する。
+問題がある場合は、修正範囲と検査を指定してCodexへ再委任する。
+
 Dockerfileまたはコンテナのビルド設定を変更した場合は、Dev Container内で`make image`を実行しない。
-ホストでの確認またはCI確認が必要であることをPull Requestへ記載する。
+CIの`Build production image`で確認することをPull Requestへ記載する。
 
-Pull Requestには次を含める。
+## コミットとPull Request
 
-- `Closes #<Issue番号>`
-- 変更の目的と主な変更
+Claude Codeが変更を目的別にコミットし、作業ブランチをpushする。
+
+```bash
+git push -u origin <ブランチ>
+```
+
+Pull RequestはDraftとして作成する。
+本文へ`Closes #<Issue番号>`とレビューガイドを含める。
+
+```bash
+gh pr create --draft
+```
+
+レビューガイドには次を含める。
+
+- 最初に確認するファイル
+- 主な設計判断
+- 維持する不変条件
+- 生成ファイル
+- 既知の制約
 - 受入条件ごとの確認結果
 - 実行した検査
 - 互換性への影響
 - 未対応事項
+
+CIの完了まで検査結果を監視する。
+
+```bash
+gh pr checks <番号> --watch
+```
+
+CIが失敗した場合は、失敗したrunのログから原因を調べる。
+
+```bash
+gh run view <ID> --log-failed
+```
+
+必要な修正をCodexへ再委任し、Claude Codeが差分と検査結果を確認して再pushした後、CIを再確認する。
+CIが成功したら、Pull RequestをReady for reviewへ移行する。
+
+```bash
+gh pr ready <番号>
+```
+
+Pull Requestはマージしない。
+人間による最終レビューを省略しない。

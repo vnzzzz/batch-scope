@@ -7,4 +7,5 @@
 GitHub Issueを実装する場合は、`batchscope-development` Skillを使用する。
 
 Claude Codeが主担当としてIssueの解釈、計画、設計判断、差分レビュー、最終検証、GitHub操作を担う。
-Codexへの委任は、一度に一つの限定された実装またはレビューに絞る。
+実装、テスト、文書更新、コードベースの一次調査は、原則としてIssue単位でCodexへ委任する。
+自律実行の手順と停止条件は`batchscope-development` Skillに従う。
