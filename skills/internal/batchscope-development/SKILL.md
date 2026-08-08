@@ -11,10 +11,35 @@ Claude Codeが主担当として設計判断、差分レビュー、最終検証
 ## 開始条件
 
 1. Dev Container内で作業する。
-2. `gh issue view <番号> --json number,title,body,labels,url`でIssueを読む。
-3. `git status --short`で、開始前から存在する変更を確認する。
-4. `AGENTS.md`とIssueに関連する設計文書を読む。
-5. Issueに目的、対象範囲、対象外、受入条件がそろっていることを確認する。
+2. Issue番号が指定されている場合は、そのIssueを対象として手順8へ進む。
+3. Issue番号が指定されていない場合は、Milestone `v0.1.0`のOpen Issueを一覧し、ラベルを取得する。
+
+   ```bash
+   gh issue list --state open --milestone v0.1.0 --limit 200 --json number,title,labels
+   ```
+
+4. 一覧した各Issueのネイティブ依存関係、Openの関連Pull Request、作業ブランチの有無を確認する。
+
+   ```bash
+   gh issue view <番号> --json number,state,labels,blockedBy,blocking
+   gh issue develop --list <番号>
+   ```
+
+5. `blockedBy`にOpenのIssueが一つでもあるIssue、`blocked`ラベルが付いたIssue、または対応中のPull RequestがあるIssueを候補から除外し、Issueごとに除外理由を記録する。
+   Openの関連Pull Request、または`gh issue develop --list <番号>`が返す作業ブランチが存在する場合は、対応中のPull Requestがあるものとして扱う。
+6. 候補が一つの場合は、そのIssueを対象とする。
+   候補が複数の場合は、`blocking`を再帰的にたどって到達できるOpen Issueを重複なく数え、その数が多いIssueを対象とする。
+   同数の場合は直接ブロックしているOpen Issueの数が多いIssueを優先し、それも同数の場合はIssue番号が小さいIssueを選ぶ。
+   候補が一つもない場合は着手せず、除外したIssueと除外理由を人間へ報告する。
+7. 自動選択したIssueと選択理由を人間へ報告する。
+   選択理由には、除外したIssueと除外理由、および候補ごとの推移的にブロックしているOpen Issueの総数と直接ブロックしているOpen Issueの数を含める。
+   報告後は承認を待たず、Issueの読み取りとブランチ作成へ進む。
+8. `gh issue view <番号> --json number,title,body,labels,url,blockedBy,blocking`で対象Issueとネイティブ依存関係を読む。
+9. `blockedBy`にOpenのIssueが一つでもある場合は、ブランチを作成せず作業を止めて人間へ報告する。
+   `blockedBy`が空の場合、またはClosedのIssueだけの場合は着手してよい。
+10. `git status --short`で、開始前から存在する変更を確認する。
+11. `AGENTS.md`とIssueに関連する設計文書を読む。
+12. Issueに目的、対象範囲、対象外、受入条件がそろっていることを確認する。
 
 Issueが十分に定義され、停止条件に該当しない場合は、計画の承認待ちなどの途中確認を行わず、Ready for review Pull Requestの作成まで進める。
 
@@ -29,6 +54,8 @@ gh issue develop <番号> --name <接頭辞>/<要約> --base main --checkout
 
 次のいずれかに該当する場合だけ作業を止め、人間へ確認する。
 
+- 着手可能なIssueが一つもない。
+- Openのブロッカーを持つIssueである。
 - Issueに目的、対象範囲、対象外、受入条件が不足している。
 - 新しい公開API、Schema、データ形式の決定が必要になる。
 - Issueと設計文書、または設計文書同士が矛盾している。
@@ -36,6 +63,9 @@ gh issue develop <番号> --name <接頭辞>/<要約> --base main --checkout
 - Issue外の大規模な設計変更が必要になる。
 - 外部環境の問題により受入条件を検証できない。
 - 受入条件の変更が必要になる。
+
+着手可能なIssueがないことを理由に停止する場合は、報告へ除外したIssueと除外理由を含める。
+Openのブロッカーを理由に停止する場合は、報告へブロッカーのIssue番号と状態を含める。
 
 内部の関数分割、パッケージ構成、テスト方法などは、既存方針の範囲内でエージェントが判断する。
 
