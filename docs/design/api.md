@@ -211,11 +211,33 @@ HTTPサーバー全体へ短い`ReadTimeout`を設定すると、500 MiBの取�
 
 スナップショットの検査エラーには、対象ファイル、行番号、JSON Pointer、理由コードを含められます。
 
+Problem Detailsの`type`には、上表の種別に対応するURI参照を設定します。
+
+```text
+/problems/<種別>
+```
+
+上表にない、フレームワークが生成するエラーの`type`は`about:blank`のままとします。
+
 ## OpenAPIの管理
 
-設計段階では、この文書とJSON Schemaをレビュー対象とします。
 手書きのOpenAPIファイルは置きません。
+Goのルート定義と型からOpenAPIを生成し、`docs/api/openapi.yaml`をGit管理します。
 
-HumaによるAPI実装後は、Goのルート定義と型からOpenAPIを生成します。
-生成物をGit管理する場合は、生成コマンドとCIの差分検査を同時に追加します。
+実行環境：Dev Container
+
+```bash
+make openapi
+make openapi-check
+```
+
+`make openapi`は生成物を更新し、`make openapi-check`は実装との差分を検査します。
+`make openapi-check`は`make verify`に含まれるため、CIでも差分を検査します。
+
+サービスとOpenAPI生成コマンドは、同じ設定とルート登録処理を使います。
+`info.version`はビルド版ではなく`v1`を使い、生成物がビルドごとに変わらないようにします。
+
+HumaのモデルスキーマはHTTPで配信しません。
+レスポンスへ`$schema`や`describedBy`のリンクも付けません。
+
 エージェントスキルへOpenAPIを含める場合も、同じ生成物から梱包し、手作業で複製しません。
