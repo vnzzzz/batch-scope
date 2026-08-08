@@ -66,6 +66,8 @@ finish_sort_seconds = businessDayOffset × 86400 + localTimeSeconds
 
 `max_elapsed`は、固定秒数の`duration_seconds`へ変換します。
 年や月を含む期間は長さが一定でないため、MVPでは`max_elapsed`として受け入れません。
+小数部は、指定した期間の構成要素のうち最も小さい単位にだけ許可します。
+各構成要素を秒へ換算した合計がちょうど整数になる値だけを受け入れます。
 
 `raw`は元の表記を保存します。
 数値へ変換しないため、設定値による並べ替えは行いません。
@@ -105,6 +107,11 @@ fromId + toId + kind + origin + certainty + canonicalized evidence
 
 このIDにより、同じ二つのノード間でも、種類や判定根拠が異なる依存関係を別々に保存できます。
 すべての項目が同じ依存関係は重複として拒否します。
+
+`relation_id`は、項目を正規化したJSONからSHA-256で生成し、hex文字列として保存します。
+JSON objectのキーは辞書順に並べ、配列の順序は入力どおりに保持します。
+`evidence`の欠落と空配列は同じ値として扱います。
+数値は整数として正規化するため、例えば`1`と`1.0`からは同じ値を生成します。
 
 ## SQLiteの作成と切替
 

@@ -14,10 +14,10 @@ bootstrap: ## [Dev Container] Goモジュールを取得する
 	go mod download
 
 fmt: ## [Dev Container] Goソースを整形する
-	gofmt -w $$(find cmd internal -name '*.go' -type f)
+	gofmt -w $$(git ls-files '*.go')
 
 fmt-check: ## [Dev Container/CI] Goソースの整形を確認する
-	@test -z "$$(gofmt -l $$(find cmd internal -name '*.go' -type f))" || { gofmt -d $$(gofmt -l $$(find cmd internal -name '*.go' -type f)); exit 1; }
+	@files="$$(gofmt -l $$(git ls-files '*.go'))"; test -z "$$files" || { gofmt -d $$files; exit 1; }
 
 vet: ## [Dev Container/CI] go vetを実行する
 	go vet ./...
