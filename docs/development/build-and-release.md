@@ -24,9 +24,11 @@ GHCRとDocker Hubは、利用要望と運用方法を確認してから追加し
 | Linux | arm64 | `tar.gz` |
 | macOS | amd64 | `tar.gz` |
 | macOS | arm64 | `tar.gz` |
-| Windows | amd64 | `zip` |
 
-各アーカイブには、`batchscope`または`batchscope.exe`、`README.md`、`LICENSE`を含めます。
+SQLiteの切替は、開いているファイルをrenameできるPOSIXのセマンティクスに依存します。
+そのため、v0.1.0ではWindows向けバイナリを公開しません。
+
+各アーカイブには、`batchscope`、`README.md`、`LICENSE`を含めます。
 `checksums.txt`には、各アーカイブのSHA-256を記録します。
 
 ## 公開前の準備
@@ -65,7 +67,6 @@ dist/
 ├── batchscope_0.1.0_linux_arm64.tar.gz
 ├── batchscope_0.1.0_darwin_amd64.tar.gz
 ├── batchscope_0.1.0_darwin_arm64.tar.gz
-├── batchscope_0.1.0_windows_amd64.zip
 └── checksums.txt
 ```
 

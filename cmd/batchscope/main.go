@@ -49,7 +49,7 @@ func run(args []string) error {
 func serve(args []string) error {
 	fs := flag.NewFlagSet("serve", flag.ContinueOnError)
 	listen := fs.String("listen", "", "HTTP listen address")
-	dataDir := fs.String("data-dir", envOrDefault("BATCHSCOPE_DATA_DIR", "/tmp/batchscope"), "ephemeral data directory")
+	dataDir := fs.String("data-dir", defaultDataDirectory(), "ephemeral data directory")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -62,17 +62,15 @@ func serve(args []string) error {
 		*listen = defaultListen
 	}
 
-	if err := os.MkdirAll(*dataDir, 0o750); err != nil {
-		return fmt.Errorf("create data directory: %w", err)
-	}
-
 	application, err := app.New(app.Config{
 		Version: version,
 		Commit:  commit,
+		DataDir: *dataDir,
 	})
 	if err != nil {
 		return err
 	}
+	defer application.Close()
 
 	server := &http.Server{
 		Addr:              *listen,
@@ -109,6 +107,10 @@ func defaultListenAddress() (string, error) {
 		return "", fmt.Errorf("invalid PORT %q: must be an integer from 1 to 65535", value)
 	}
 	return "0.0.0.0:" + value, nil
+}
+
+func defaultDataDirectory() string {
+	return envOrDefault("BATCHSCOPE_DATA_DIR", "/tmp/batchscope")
 }
 
 func envOrDefault(name, fallback string) string {

@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"time"
 
+	"batchscope/internal/store"
+
 	"github.com/danielgtaylor/huma/v2"
 	"github.com/danielgtaylor/huma/v2/adapters/humago"
 )
@@ -20,12 +22,14 @@ const (
 type Config struct {
 	Version string
 	Commit  string
+	DataDir string
 }
 
 type App struct {
 	config  Config
 	bootID  string
 	started time.Time
+	store   *store.Store
 	handler http.Handler
 }
 
@@ -58,7 +62,8 @@ type healthOutput struct {
 }
 
 type readyOutput struct {
-	Body ReadyResponse
+	Status int
+	Body   ReadyResponse
 }
 
 type statusOutput struct {
@@ -66,8 +71,14 @@ type statusOutput struct {
 }
 
 func New(config Config) (*App, error) {
+	storage, err := store.New(config.DataDir)
+	if err != nil {
+		return nil, fmt.Errorf("open SQLite store: %w", err)
+	}
+
 	bootID, err := newBootID()
 	if err != nil {
+		_ = storage.Close()
 		return nil, fmt.Errorf("generate boot ID: %w", err)
 	}
 
@@ -75,6 +86,7 @@ func New(config Config) (*App, error) {
 		config:  config,
 		bootID:  bootID,
 		started: time.Now().UTC(),
+		store:   storage,
 	}
 
 	mux := http.NewServeMux()
@@ -93,6 +105,11 @@ func OpenAPISpec() *huma.OpenAPI {
 
 func (a *App) Handler() http.Handler {
 	return a.handler
+}
+
+// Close は、Appが所有するSQLiteストアを閉じる。
+func (a *App) Close() error {
+	return a.store.Close()
 }
 
 func buildAPI(mux *http.ServeMux, a *App) huma.API {
@@ -140,6 +157,13 @@ func registerRoutes(api huma.API, a *App) {
 		Summary:       "Check snapshot readiness",
 		DefaultStatus: http.StatusServiceUnavailable,
 	}, a.ready)
+	// Humaは動的なStatusフィールドを実行時には使うが、既定値以外の応答は自動生成しない。
+	// 既存データがある場合の200にも、503と同じレスポンス形式を明示する。
+	readinessResponses := api.OpenAPI().Paths["/readyz"].Get.Responses
+	readinessResponses["200"] = &huma.Response{
+		Description: http.StatusText(http.StatusOK),
+		Content:     readinessResponses["503"].Content,
+	}
 
 	huma.Register(api, huma.Operation{
 		OperationID: "status",
@@ -156,7 +180,17 @@ func (a *App) health(context.Context, *struct{}) (*healthOutput, error) {
 }
 
 func (a *App) ready(context.Context, *struct{}) (*readyOutput, error) {
+	if a.store.Ready() {
+		return &readyOutput{
+			Status: http.StatusOK,
+			Body: ReadyResponse{
+				Status: "ready",
+				Reason: "snapshot_loaded",
+			},
+		}, nil
+	}
 	return &readyOutput{
+		Status: http.StatusServiceUnavailable,
 		Body: ReadyResponse{
 			Status: "not_ready",
 			Reason: "snapshot_not_loaded",
@@ -167,7 +201,7 @@ func (a *App) ready(context.Context, *struct{}) (*readyOutput, error) {
 func (a *App) status(context.Context, *struct{}) (*statusOutput, error) {
 	return &statusOutput{
 		Body: StatusResponse{
-			State:     "empty",
+			State:     string(a.store.State()),
 			BootID:    a.bootID,
 			StartedAt: a.started,
 			Snapshot:  nil,

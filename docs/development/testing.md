@@ -121,7 +121,7 @@ JSONレスポンスの生成時間も分けて計測します。
 ## 公開用バイナリ
 
 - `scripts/build-release-artifacts.sh`の構文を`make verify`で確認する。
-- Linux amd64、Linux arm64、macOS amd64、macOS arm64、Windows amd64の成果物名が重複しない。
+- Linux amd64、Linux arm64、macOS amd64、macOS arm64の成果物名が重複しない。
 - バイナリへ指定したバージョンとコミットが埋め込まれる。
 - 各アーカイブに`README.md`と`LICENSE`が含まれる。
 - `checksums.txt`がすべてのアーカイブを含む。
