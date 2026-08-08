@@ -92,8 +92,19 @@ codex doctor
 CLIはDev Container作成時の最新版を使用します。
 Claude CodeとCodexのモデルはリポジトリへ固定しません。
 
-Claude Codeは`ANTHROPIC_MODEL`、ClaudeからCodexへ委任する場合は任意の`BATCHSCOPE_CODEX_MODEL`でローカルに指定できます。
-未設定の場合は、それぞれのCLIの利用者設定または既定モデルを使用します。
+Claude Codeの既定のeffortは、`.claude/settings.json`の`effortLevel`で指定します。
+指定できる値は`low`、`medium`、`high`、`xhigh`であり、このリポジトリでは`medium`を既定とします。
+effortは実行時の水準であり、モデルIDではないため、設定をリポジトリで管理します。
+この設定方法はClaude Code 2.1.224で確認しています。
+
+一時的に変更する場合は、環境変数`CLAUDE_CODE_EFFORT_LEVEL`または`claude --effort <level>`を使用します。
+対話中は`/effort`で変更できます。
+権限設定は利用者ごとの`.claude/settings.local.json`に置き、リポジトリでは管理しません。
+
+Claude Codeのモデルは`ANTHROPIC_MODEL`でローカルに指定できます。
+Claudeから`codex exec --ephemeral`へ委任する場合は、利用者設定の`model`が読まれません。
+そのため、利用者が利用できるモデルを`BATCHSCOPE_CODEX_MODEL`に指定する必要があります。
+詳細は[batchscope-development Skill](../../skills/internal/batchscope-development/SKILL.md)を参照してください。
 
 ```bash
 export ANTHROPIC_MODEL=<利用可能なClaudeモデル>
@@ -145,13 +156,16 @@ export BATCHSCOPE_CODEX_MODEL=<利用可能なCodexモデル>
 実装作業はGitHub Issueを起点とします。
 Issueには目的、対象範囲、対象外、受入条件を記載し、Pull RequestからIssueを関連付けます。
 
-Claude Codeを主担当とし、Issueの解釈、計画、設計判断、差分レビュー、最終検証を担当させます。
-Codexは、一度に一つの限定された実装またはレビューだけを担当します。
-同じ作業ツリーへの並列編集は行いません。
+人間はIssueの起票とPull Requestの最終確認に集中します。
+Issueが十分に定義されている場合、Claude CodeはCodexへ原則としてIssue単位で実装を委任し、CI成功済みのReady for review Pull Requestを作成するまで自律的に進めます。
+
+Claude Codeは設計判断、差分レビュー、最終検証、GitHub操作を担当します。
+Codexはコードベースの一次調査、実装、テスト、文書更新を担当します。
+公開仕様の決定やIssueとの矛盾などの停止条件に該当する場合は、人間の確認を待ちます。
 
 設計と実装からIssue候補を作る場合は`batchscope-backlog` Skillを使用します。
 Issue候補は利用者の確認後にGitHubへ登録し、Projectsや別のバックログ文書は使用しません。
 
-Issue実装の進行手順は`batchscope-development` Skillに記載します。
+Issue実装の進行手順と停止条件の詳細は`batchscope-development` Skillに記載します。
 共通の実装規則は`AGENTS.md`、Claude Code固有の役割は`CLAUDE.md`を参照してください。
 Skillの配置と更新規則は[エージェントスキル](../design/agent-skill.md)を参照してください。

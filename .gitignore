@@ -6,3 +6,4 @@
 /build/
 /coverage.out
 /dist/
+/.claude/settings.local.json
