@@ -176,6 +176,17 @@ gh pr create \
 
 同じリポジトリ内の作業ブランチでは、`--head`にブランチ名だけを指定できます。
 
+エージェントがPull Requestを作成する場合は、Draftとして作成し、CI成功後にReady for reviewへ移行します。
+
+```bash
+gh pr create --draft
+gh pr checks <Pull Request番号> --watch
+gh pr ready <Pull Request番号>
+```
+
+CI失敗時の修正手順とレビューガイドの内容は`batchscope-development` Skillを参照してください。
+Ready for reviewへの移行後も、人間による最終レビューを省略しません。
+
 Pull Requestには、少なくとも次を記載します。
 
 - 変更の目的
