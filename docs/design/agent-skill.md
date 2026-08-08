@@ -10,9 +10,12 @@ BatchScopeでは、利用者へ配布するPublic Skillと、リポジトリ開�
 | Public | `batchscope` | Codex、Claude Code | スナップショットの作成、取込、検索APIの利用 |
 | Internal | `batchscope-backlog` | Claude Code | 設計、実装、既存Issueの監査とIssue候補の作成 |
 | Internal | `batchscope-development` | Claude Code | Issue単位のCodexへの委任、差分レビュー、検証、GitHub操作による自律実行 |
+| Internal | `readable-code` | Codex、Claude Code | 判断理由、制約、不変条件を残すコードコメントの作成とレビュー |
+| Internal | `japanese-technical-writing` | Codex、Claude Code | 日本語技術文書の執筆と推敲 |
 
 Public Skillは、BatchScope利用者と開発者が同じ手順でサービスを利用するために共有します。
-Internal Skillはリポジトリ固有の開発手順だけを扱い、公開用成果物へ含めません。
+Internal Skillはリポジトリ固有の開発手順と共通規則だけを扱い、公開用成果物へ含めません。
+コードコメントと日本語技術文書のInternal Skillは、実装を担当するCodexと、レビューを担当するClaude Codeが共通して使用します。
 
 ## 管理する内容
 
@@ -23,6 +26,9 @@ Internal Skillはリポジトリ固有の開発手順だけを扱い、公開用
 | 変換時の要点 | `skills/public/batchscope/references/` | リポジトリ外でも判断できる範囲へ要約する |
 | バックログ監査 | `skills/internal/batchscope-backlog/SKILL.md` | Claude Codeの監査と登録手順を記載する |
 | Issue実装 | `skills/internal/batchscope-development/SKILL.md` | Claude Codeの指揮手順を記載する |
+| コードコメント | `skills/internal/readable-code/SKILL.md` | コメントの対象とレビュー規則を記載する |
+| 日本語文書規則 | `docs/development/writing-style.md` | Skillへ全文転記せず、適用時の判断だけを記載する |
+| 日本語文書の外部参考資料 | `skills/internal/japanese-technical-writing/references/sources.md` | 出典、確認日、採用範囲を記録する |
 | API仕様 | HumaのGo実装 | 実装後にOpenAPIを生成する |
 | 設計理由 | `docs/design/`配下 | Skillへコピーせず、開発時に参照する |
 
@@ -40,21 +46,31 @@ skills/
 └── internal/
     ├── batchscope-backlog/
     │   └── SKILL.md
-    └── batchscope-development/
-        └── SKILL.md
+    ├── batchscope-development/
+    │   └── SKILL.md
+    ├── readable-code/
+    │   └── SKILL.md
+    └── japanese-technical-writing/
+        ├── SKILL.md
+        └── references/
+            └── sources.md
 ```
 
 Claude CodeとCodexは、シンボリックリンクから必要なSkillだけを参照します。
 
 ```text
 .agents/skills/batchscope -> ../../skills/public/batchscope
+.agents/skills/readable-code -> ../../skills/internal/readable-code
+.agents/skills/japanese-technical-writing -> ../../skills/internal/japanese-technical-writing
 .claude/skills/batchscope -> ../../skills/public/batchscope
 .claude/skills/batchscope-backlog -> ../../skills/internal/batchscope-backlog
 .claude/skills/batchscope-development -> ../../skills/internal/batchscope-development
+.claude/skills/readable-code -> ../../skills/internal/readable-code
+.claude/skills/japanese-technical-writing -> ../../skills/internal/japanese-technical-writing
 ```
 
-CodexにはPublic Skillだけを公開します。
-Internal SkillからCodexを限定的に呼び出すため、Codex自身にはバックログ管理や指揮のSkillを持たせません。
+CodexにはPublic Skillに加えて、コードコメントと日本語技術文書の共通規則だけを公開します。
+Codex自身には、バックログ監査と実装指揮を担う`batchscope-backlog`と`batchscope-development`を公開しません。
 
 ## 配布
 
@@ -70,4 +86,6 @@ Plugin、Marketplace、Gist同期、Skill専用リポジトリは、利用上の
 - JSON Schemaの制約をPublic Skillへ全文転記せず、利用時に必要な判断だけを記載する。
 - OpenAPIは手書きで同梱しない。
 - Public SkillとInternal Skillの責務を混在させない。
+- 日本語文書の規則は`docs/development/writing-style.md`だけで更新し、Internal Skillへ全文転記しない。
+- 外部参考資料の出典、確認日、採用範囲は`skills/internal/japanese-technical-writing/references/sources.md`だけで管理する。
 - Issue候補は利用者の確認後に登録し、バックログ文書を別に作らない。
