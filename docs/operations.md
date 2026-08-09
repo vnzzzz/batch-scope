@@ -107,11 +107,14 @@ Cloud Runへ32 MiBを超えるアーカイブを直接送る場合は、通信�
 | 展開後合計 | 4 GiB |
 | `manifest.json` | 1 MiB |
 | `nodes.ndjson`と`relations.ndjson`の一行 | 16 MiB |
-| 一回の検索で調べるノード | 2,000,000件 |
+| 一回の検索で受理する探索状態 | 2,000,000件 |
 | 一回の検索で読み込む依存関係とジョブネットscope展開の行 | 4,000,000件 |
 | 一回の検索でたどる依存関係の深さ | 1,000 |
 | 経路ツリーのノード | 20,000件 |
 | リミットの各グループ | 1,000件 |
+
+探索状態の上限は、Pareto探索で受理した状態ごとに消費します。
+同じノードでも、`graphDepth`と`dependencyDistance`が異なる非劣状態を複数保持する場合は、それぞれを一件として数えます。
 
 ## ログ
 
@@ -122,7 +125,7 @@ Cloud Runへ32 MiBを超えるアーカイブを直接送る場合は、通信�
 | 要求の識別 | `request_id`、`operation`、`duration_ms` |
 | プロセスとデータ | `boot_id`、`snapshot_id`、`import_id` |
 | 検索対象 | `target_id` |
-| 処理量 | `visited_nodes`、`returned_tree_nodes`、`returned_limits` |
+| 処理量 | `visited_states`、`returned_tree_nodes`、`returned_limits` |
 | 完了状態 | `cycles_detected`、`analysis_complete`、`error_type` |
 
 ジョブ名、完全パス、判定根拠の抜粋、入力資料の内容は、既定ではログへ出力しません。
@@ -134,7 +137,7 @@ Cloud Runへ32 MiBを超えるアーカイブを直接送る場合は、通信�
 | 取込 | `snapshot_import_duration_seconds`、`snapshot_import_failures_total` |
 | 使用中データ | `snapshot_active_nodes`、`snapshot_active_relations` |
 | 対象検索 | `target_lookup_duration_seconds` |
-| 後続分析 | `limit_analysis_duration_seconds`、`limit_analysis_visited_nodes` |
+| 後続分析 | `limit_analysis_duration_seconds`、`limit_analysis_visited_states` |
 | 打切りと循環 | `limit_analysis_truncated_total`、`limit_analysis_cycles_total` |
 
 ## 性能目標

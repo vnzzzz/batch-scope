@@ -617,7 +617,7 @@ func TestTraverseSeparatesGraphDepthAndDependencyDistance(t *testing.T) {
 	assertDownstreamDistance(t, result.Downstream, "VIA-FILE", 2, 1)
 }
 
-func TestTraverseDownstreamUsesShortestDependencyDistance(t *testing.T) {
+func TestTraverseSelectsRepresentativeDownstreamByDependencyDistance(t *testing.T) {
 	nodes := []testNode{
 		{id: "START", typeName: "job"}, {id: "JOB", typeName: "job"},
 		{id: "FILE-1", typeName: "file"}, {id: "FILE-2", typeName: "file"},
@@ -756,7 +756,7 @@ func TestTraverseKeepsParetoStateThatCanExpandWithinGraphDepth(t *testing.T) {
 	}
 }
 
-func TestTraverseCountsParetoStatesTowardNodeLimit(t *testing.T) {
+func TestTraverseCountsParetoStatesTowardStateLimit(t *testing.T) {
 	nodes := []testNode{
 		{id: "START", typeName: "job"},
 		{id: "FILE-1", typeName: "file"},
@@ -775,16 +775,16 @@ func TestTraverseCountsParetoStatesTowardNodeLimit(t *testing.T) {
 	}
 
 	result, err := Traverse(context.Background(), openTestDB(t, nodes, relations), "START", Limits{
-		MaxVisitedNodes: 5,
-		MaxGraphDepth:   3,
+		MaxVisitedStates: 5,
+		MaxGraphDepth:    3,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	assertFrontier(t, result, "B", 2, 2, TruncationNodeLimit)
+	assertFrontier(t, result, "B", 2, 2, TruncationStateLimit)
 	if hasPath(result.Connections, []string{"B", "OUT"}) {
-		t.Error("the state rejected by the node limit was expanded")
+		t.Error("the state rejected by the state limit was expanded")
 	}
 }
 
@@ -914,7 +914,7 @@ func TestTraversePropagatesShorterNestedScopeDistance(t *testing.T) {
 	}
 }
 
-func TestTraverseKeepsShortestConfirmedDependencyDistanceSeparately(t *testing.T) {
+func TestTraverseRecordsConfirmedPathDistanceSeparately(t *testing.T) {
 	candidate := relation("1", "START", "DESTINATION", "precedes")
 	candidate.certainty = "candidate"
 	nodes := []testNode{
@@ -1036,7 +1036,7 @@ func TestTraverseDistinguishesSameNamedJobsByPathAndParentID(t *testing.T) {
 	}
 }
 
-func TestTraverseReportsGraphDepthAndNodeFrontiers(t *testing.T) {
+func TestTraverseReportsGraphDepthAndStateFrontiers(t *testing.T) {
 	nodes := []testNode{{id: "A", typeName: "job"}, {id: "B", typeName: "job"}, {id: "C", typeName: "job"}, {id: "D", typeName: "job"}}
 	relations := []testRelation{
 		relation("1", "A", "B", "precedes"), relation("2", "B", "C", "precedes"), relation("3", "C", "D", "precedes"),
@@ -1052,19 +1052,19 @@ func TestTraverseReportsGraphDepthAndNodeFrontiers(t *testing.T) {
 		t.Error("graph-depth-limited result retained an untraversed connection")
 	}
 
-	nodeResult, err := Traverse(context.Background(), db, "A", Limits{MaxVisitedNodes: 2})
+	stateResult, err := Traverse(context.Background(), db, "A", Limits{MaxVisitedStates: 2})
 	if err != nil {
 		t.Fatal(err)
 	}
-	assertFrontier(t, nodeResult, "C", 2, 2, TruncationNodeLimit)
-	if got := visitIDs(nodeResult.Nodes); !slices.Equal(got, []string{"A", "B"}) {
+	assertFrontier(t, stateResult, "C", 2, 2, TruncationStateLimit)
+	if got := visitIDs(stateResult.Nodes); !slices.Equal(got, []string{"A", "B"}) {
 		t.Errorf("visited nodes = %v, want [A B]", got)
 	}
-	if !hasPath(nodeResult.Connections, []string{"B", "C"}) {
-		t.Error("node-limited result did not retain the connection to frontier")
+	if !hasPath(stateResult.Connections, []string{"B", "C"}) {
+		t.Error("state-limited result did not retain the connection to frontier")
 	}
-	if hasPath(nodeResult.Connections, []string{"C", "D"}) {
-		t.Error("node-limited result investigated beyond frontier")
+	if hasPath(stateResult.Connections, []string{"C", "D"}) {
+		t.Error("state-limited result investigated beyond frontier")
 	}
 }
 
@@ -1295,9 +1295,9 @@ func TestResolveLimitsUsesServiceDefaults(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := Limits{
-		MaxVisitedNodes: DefaultMaxVisitedNodes,
-		MaxGraphDepth:   DefaultMaxGraphDepth,
-		MaxConnections:  DefaultMaxConnections,
+		MaxVisitedStates: DefaultMaxVisitedStates,
+		MaxGraphDepth:    DefaultMaxGraphDepth,
+		MaxConnections:   DefaultMaxConnections,
 	}
 	if resolved != want {
 		t.Errorf("resolveLimits(Limits{}) = %#v, want %#v", resolved, want)

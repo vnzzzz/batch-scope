@@ -13,10 +13,10 @@ import (
 )
 
 const (
-	// DefaultMaxVisitedNodes は、一回の探索が保持する訪問状態の量を制限する。
+	// DefaultMaxVisitedStates は、一回の探索が受理するPareto探索状態の量を制限する。
 	// 上限へ達した結果は完了扱いにせず、Result.Frontierに未調査の開始地点を残す。
 	// 実データのメモリ使用量を測定する前の暫定値であり、対応可能規模を示す値ではない。
-	DefaultMaxVisitedNodes = 2_000_000
+	DefaultMaxVisitedStates = 2_000_000
 	// DefaultMaxGraphDepth は、異常に長い依存経路による処理時間と経路状態の肥大化を防ぐ。
 	DefaultMaxGraphDepth = 1_000
 	// DefaultMaxConnections は、依存関係とscope展開でSQLiteから受け取る行数を制限する。
@@ -35,9 +35,9 @@ var (
 // Limits は探索内部の処理量を制限する。ゼロ値には既定値を適用する。
 // MaxConnectionsは、外向きrelation、scope配下ノード、scope入口判定で逆向きに読むrelationの行数へ適用する。
 type Limits struct {
-	MaxVisitedNodes int
-	MaxGraphDepth   int
-	MaxConnections  int
+	MaxVisitedStates int
+	MaxGraphDepth    int
+	MaxConnections   int
 }
 
 // Node は探索と経路整形に必要なノード情報を表す。
@@ -60,6 +60,8 @@ type Relation struct {
 }
 
 // Visit は実際に後続を調べたノードと、採用した経路上の二種類の距離を表す。
+// GraphDepthは処理上限、探索状態、経路説明に使い、DependencyDistanceは代表経路の選択と説明に使う。
+// どちらもリミットの緊急度、返却可否、全件一覧の順序には使わない。
 type Visit struct {
 	Node               Node
 	GraphDepth         int
@@ -77,7 +79,8 @@ type Connection struct {
 }
 
 // Downstream は対象範囲の外で到達したjobまたはjob_networkを表す。
-// ConfirmedDependencyDistanceはdeclaredまたはconfirmedの経路で到達できない場合にnilとなる。
+// ConfirmedDependencyDistanceは確定relationだけでの到達可否と説明用経路の選択に使い、
+// declaredまたはconfirmedの経路で到達できない場合にnilとなる。リミットの順序には使わない。
 type Downstream struct {
 	Node                        Node
 	GraphDepth                  int
@@ -115,7 +118,7 @@ type Cycle struct {
 type TruncationReason string
 
 const (
-	TruncationNodeLimit       TruncationReason = "node_limit"
+	TruncationStateLimit      TruncationReason = "state_limit"
 	TruncationGraphDepthLimit TruncationReason = "graph_depth_limit"
 	TruncationConnectionLimit TruncationReason = "connection_limit"
 )
@@ -136,7 +139,7 @@ type ScopeEntry struct {
 	Fallback    bool
 }
 
-// Result は後続のリミット選定と経路ツリー作成に必要な探索結果を保持する。
+// Result は後続のリミット設定済みジョブの全件抽出と経路ツリー作成に必要な探索結果を保持する。
 // StartNodesは論理ルートだけを、ScopeEntriesは各ジョブネット配下の探索開始点を保持する。
 // 各スライスは、同じ入力と処理上限に対して同じ順序で返す。
 type Result struct {
@@ -325,11 +328,11 @@ func Traverse(ctx context.Context, db *sql.DB, targetID string, limits Limits) (
 }
 
 func resolveLimits(limits Limits) (Limits, error) {
-	if limits.MaxVisitedNodes < 0 || limits.MaxGraphDepth < 0 || limits.MaxConnections < 0 {
+	if limits.MaxVisitedStates < 0 || limits.MaxGraphDepth < 0 || limits.MaxConnections < 0 {
 		return Limits{}, errors.New("traversal limits must not be negative")
 	}
-	if limits.MaxVisitedNodes == 0 {
-		limits.MaxVisitedNodes = DefaultMaxVisitedNodes
+	if limits.MaxVisitedStates == 0 {
+		limits.MaxVisitedStates = DefaultMaxVisitedStates
 	}
 	if limits.MaxGraphDepth == 0 {
 		limits.MaxGraphDepth = DefaultMaxGraphDepth
@@ -887,9 +890,9 @@ func (state *traversalState) schedule(node Node, candidate distance) bool {
 	}
 	// 依存辺はgraphを1だけ増やし、scope辺は両方を増やさないため、受理し得る組は
 	// 0 <= dependency <= graph <= MaxGraphDepthに限られる。同じ組を再受理せず、ノードごとの
-	// 探索状態数をMaxGraphDepthから決まる有限個へ抑えたうえで、全ノードの総数にも予算を適用する。
-	if state.visitedStates >= state.limits.MaxVisitedNodes {
-		state.addFrontier(node, candidate, TruncationNodeLimit)
+	// 探索状態数をMaxGraphDepthから決まる有限個へ抑えたうえで、探索全体の受理状態数にも予算を適用する。
+	if state.visitedStates >= state.limits.MaxVisitedStates {
+		state.addFrontier(node, candidate, TruncationStateLimit)
 		return false
 	}
 
@@ -967,7 +970,7 @@ func dominates(left, right distance) bool {
 }
 
 func lessDistance(left, right distance) bool {
-	// 後続のdependencyDistanceを最短に保ち、同値の場合だけ依存関係の本数が少ない経路を採用する。
+	// 非論理ノードの詳細度に左右されない経路を優先し、同値の場合は依存関係の本数で代表状態を固定する。
 	if left.dependency != right.dependency {
 		return left.dependency < right.dependency
 	}
