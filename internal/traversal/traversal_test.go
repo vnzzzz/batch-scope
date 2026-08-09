@@ -153,6 +153,57 @@ func TestTraverseDetectsStronglyConnectedComponentsAndContinuesPastCycle(t *test
 	}
 }
 
+func TestTraverseDetectsCycleAcrossScopeAndRelationAndContinuesPastCycle(t *testing.T) {
+	network := "NETWORK"
+	nodes := []testNode{
+		{id: network, typeName: "job_network"},
+		{id: "CHILD", typeName: "job", parentID: &network},
+		{id: "AFTER", typeName: "job"},
+	}
+	relations := []testRelation{
+		relation("1", "CHILD", network, "precedes"),
+		relation("2", "CHILD", "AFTER", "precedes"),
+	}
+
+	result, err := Traverse(context.Background(), openTestDB(t, nodes, relations), network)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantCycles := []Cycle{{NodeIDs: []string{"CHILD", network}}}
+	if !reflect.DeepEqual(result.Cycles, wantCycles) {
+		t.Errorf("Cycles = %#v, want %#v", result.Cycles, wantCycles)
+	}
+	wantScopeEdges := []ScopeEdge{{ParentID: network, ChildID: "CHILD"}}
+	if !reflect.DeepEqual(result.ScopeEdges, wantScopeEdges) {
+		t.Errorf("ScopeEdges = %#v, want %#v", result.ScopeEdges, wantScopeEdges)
+	}
+	if hasConnection(result.Connections, network, "CHILD") {
+		t.Errorf("scope edge %s -> CHILD was mixed into Connections", network)
+	}
+	for _, pair := range [][2]string{{"CHILD", network}, {"CHILD", "AFTER"}} {
+		if !hasConnection(result.Connections, pair[0], pair[1]) {
+			t.Errorf("connection %s -> %s was not returned", pair[0], pair[1])
+		}
+	}
+	if got := findReached(t, result.Nodes, "AFTER").Membership; got != MembershipDownstream {
+		t.Errorf("AFTER membership = %q, want %q", got, MembershipDownstream)
+	}
+}
+
+func TestFindCyclesDoesNotTreatScopeSelfLoopAsCycle(t *testing.T) {
+	cycles, err := findCycles(
+		context.Background(),
+		nil,
+		[]ScopeEdge{{ParentID: "NETWORK", ChildID: "NETWORK"}},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cycles) != 0 {
+		t.Errorf("Cycles = %#v, want scope self-loop to be ignored", cycles)
+	}
+}
+
 func TestTraverseTargetJobNetworkExploresOwnRelationsAndAllScope(t *testing.T) {
 	root := "ROOT"
 	sub := "SUB"
@@ -307,6 +358,9 @@ func TestTraverseDeeplyNestedJobNetworks(t *testing.T) {
 	}
 	if got, want := result.Stats.ScopeQueries, depth+1; got != want {
 		t.Errorf("ScopeQueries = %d, want %d", got, want)
+	}
+	if len(result.Cycles) != 0 {
+		t.Errorf("Cycles = %#v, want no cycle from parent-child scope alone", result.Cycles)
 	}
 }
 

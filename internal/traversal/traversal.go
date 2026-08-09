@@ -394,7 +394,7 @@ func (state *traversalState) finish() (Result, error) {
 		endpoints = append(endpoints, state.endpoints[id])
 	}
 
-	cycles, err := findCycles(state.ctx, connections)
+	cycles, err := findCycles(state.ctx, connections, scopeEdges)
 	if err != nil {
 		return Result{}, err
 	}
@@ -504,9 +504,10 @@ func containedNodeIDs(ctx context.Context, target Node, edges []ScopeEdge) (map[
 	return contained, nil
 }
 
-// findCyclesはscope遷移を受け取らず、依存関係だけを強連結成分へ分解する。
+// findCyclesはscopeと依存関係を同じ有向グラフとして強連結成分へ分解する。
+// scopeを含めることで、子ジョブから親ジョブネットへ戻るrelationが作る循環を検出できる。
 // 全単純閉路ではなく成分を返すため、大きな循環でも結果件数が閉路の組合せ数に膨らまない。
-func findCycles(ctx context.Context, connections []Connection) ([]Cycle, error) {
+func findCycles(ctx context.Context, connections []Connection, scopeEdges []ScopeEdge) ([]Cycle, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -522,6 +523,12 @@ func findCycles(ctx context.Context, connections []Connection) ([]Cycle, error) 
 		if connection.FromID == connection.ToID {
 			selfLoops[connection.FromID] = struct{}{}
 		}
+	}
+	for _, edge := range scopeEdges {
+		vertices[edge.ParentID] = struct{}{}
+		vertices[edge.ChildID] = struct{}{}
+		adjacency[edge.ParentID] = append(adjacency[edge.ParentID], edge.ChildID)
+		reverse[edge.ChildID] = append(reverse[edge.ChildID], edge.ParentID)
 	}
 	ids := make([]string, 0, len(vertices))
 	for id := range vertices {
