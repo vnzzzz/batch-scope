@@ -249,6 +249,7 @@ flowchart LR
 | `ranking` | 並べ替えに使った値 |
 | `tree[].viaRelations` | 親ノードから到達した依存関係と確実性 |
 | `analysisComplete` | 設定した範囲を最後まで調べたか |
-| `truncated`、`truncationReason` | 処理上限により結果を省略したか、その理由 |
-| `frontier` | 先を調べられなかった地点 |
+| `truncated` | 処理上限により結果を省略したか |
+| `truncationReason` | 最初に発生した代表の打切り理由。すべての理由は`frontier`で確認する |
+| `frontier` | 先を調べられなかった地点と打切り理由の正本。複数の理由が同時に含まれる場合がある |
 | `cycles` | 検出した循環と一周分の経路 |

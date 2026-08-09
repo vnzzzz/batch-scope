@@ -15,11 +15,13 @@ import (
 const (
 	// DefaultMaxVisitedNodes は、一回の探索が保持する訪問状態の量を制限する。
 	// 上限へ達した結果は完了扱いにせず、Result.Frontierに未調査の開始地点を残す。
+	// 実データのメモリ使用量を測定する前の暫定値であり、対応可能規模を示す値ではない。
 	DefaultMaxVisitedNodes = 2_000_000
 	// DefaultMaxGraphDepth は、異常に長い依存経路による処理時間と経路状態の肥大化を防ぐ。
 	DefaultMaxGraphDepth = 1_000
 	// DefaultMaxConnections は、依存関係とscope展開でSQLiteから受け取る行数を制限する。
 	// 上限到達時は未確認の取得元をFrontierへ残し、全件を確認した結果として扱わない。
+	// 実データのメモリ使用量を測定する前の暫定値であり、対応可能規模を示す値ではない。
 	DefaultMaxConnections = 4_000_000
 
 	queryBatchSize = 500
@@ -31,7 +33,7 @@ var (
 )
 
 // Limits は探索内部の処理量を制限する。ゼロ値には既定値を適用する。
-// MaxConnectionsは、外向きrelation、scope配下ノード、scopeのincoming relationで読み込む行の合計へ適用する。
+// MaxConnectionsは、外向きrelation、scope配下ノード、scope入口判定で逆向きに読むrelationの行数へ適用する。
 type Limits struct {
 	MaxVisitedNodes int
 	MaxGraphDepth   int
@@ -150,7 +152,9 @@ type Result struct {
 	Shared            []Shared
 	Frontier          []Frontier
 	Truncated         bool
-	TruncationReason  TruncationReason
+	// TruncationReasonは最初に発生した打切り理由を代表として保持する。
+	// 複数の理由が生じ得るため全理由の正本はFrontierとし、最初の制約を後から上書きしない。
+	TruncationReason TruncationReason
 }
 
 type distance struct {
@@ -181,9 +185,24 @@ func (values *distanceHeap) Pop() any {
 }
 
 type scopeState struct {
-	rootID  string
-	base    distance
-	members []Node
+	root          Node
+	members       []Node
+	entries       []Node
+	fallbacks     []Node
+	fallbackByID  map[string]struct{}
+	appliedBases  map[distance]struct{}
+	attemptedSeed map[scopeSeedKey]struct{}
+	recordEntries bool
+}
+
+type scopeSeedKey struct {
+	nodeID string
+	base   distance
+}
+
+type nodeStateKey struct {
+	nodeID string
+	distance
 }
 
 type traversalState struct {
@@ -192,11 +211,12 @@ type traversalState struct {
 	limits           Limits
 	result           Result
 	targetScope      map[string]struct{}
-	best             map[string]queuedNode
-	processed        map[string]struct{}
+	pareto           map[string][]queuedNode
+	processed        map[nodeStateKey]struct{}
 	queueBuckets     map[distance][]queuedNode
 	queueDistances   distanceHeap
 	scopes           []*scopeState
+	scopesByRoot     map[string]*scopeState
 	registeredScopes map[string]struct{}
 	downstreamByID   map[string]int
 	unexploredByKey  map[unexploredKey]int
@@ -204,6 +224,7 @@ type traversalState struct {
 	connectionsByKey map[connectionKey]int
 	scopeEntries     map[string]struct{}
 	connectionsRead  int
+	visitedStates    int
 }
 
 // Traverse はtargetIDの後続をSQLiteから段階ごとに取得する。
@@ -230,9 +251,10 @@ func Traverse(ctx context.Context, db *sql.DB, targetID string, limits Limits) (
 		limits:           resolved,
 		result:           Result{Target: target, StartNodes: []Node{target}},
 		targetScope:      make(map[string]struct{}),
-		best:             make(map[string]queuedNode),
-		processed:        make(map[string]struct{}),
+		pareto:           make(map[string][]queuedNode),
+		processed:        make(map[nodeStateKey]struct{}),
 		queueBuckets:     make(map[distance][]queuedNode),
+		scopesByRoot:     make(map[string]*scopeState),
 		registeredScopes: make(map[string]struct{}),
 		downstreamByID:   make(map[string]int),
 		unexploredByKey:  make(map[unexploredKey]int),
@@ -382,57 +404,140 @@ LIMIT ?`, networkID, limit+1)
 
 func selectScopeIncoming(
 	ctx context.Context, db *sql.DB, nodes []Node, limit int,
-) (map[string]struct{}, int, bool, error) {
-	incoming := make(map[string]struct{})
+) (map[string]map[string]struct{}, int, bool, error) {
+	incoming := make(map[string]map[string]struct{})
 	members := make(map[string]struct{}, len(nodes))
 	for _, node := range nodes {
 		members[node.ID] = struct{}{}
 	}
+	states := make([]scopeProjectionState, 0)
 	read := 0
 	for offset := 0; offset < len(nodes); offset += queryBatchSize {
 		if read == limit {
 			return incoming, read, true, nil
 		}
 		end := min(offset+queryBatchSize, len(nodes))
-		args := make([]any, 0, end-offset)
+		toIDs := make([]string, 0, end-offset)
 		for _, node := range nodes[offset:end] {
-			args = append(args, node.ID)
+			toIDs = append(toIDs, node.ID)
 		}
-		query := `
-SELECT from_id, to_id
-FROM relation
-WHERE to_id IN (` + placeholders(len(args)) + `)
-ORDER BY to_id, from_id, relation_id
-LIMIT ?`
-		args = append(args, limit-read+1)
-		rows, err := db.QueryContext(ctx, query, args...)
+		rows, truncated, err := selectIncomingRows(ctx, db, toIDs, limit-read)
 		if err != nil {
-			return nil, 0, false, fmt.Errorf("select scope incoming relations: %w", err)
+			return nil, 0, false, err
 		}
-		for rows.Next() {
-			var fromID, toID string
-			if err := rows.Scan(&fromID, &toID); err != nil {
-				_ = rows.Close()
-				return nil, 0, false, fmt.Errorf("scan scope incoming relation: %w", err)
-			}
-			if read == limit {
-				_ = rows.Close()
-				return incoming, read, true, nil
-			}
-			read++
-			if _, internal := members[fromID]; internal && fromID != toID {
-				incoming[toID] = struct{}{}
-			}
+		read += len(rows)
+		if truncated {
+			return incoming, read, true, nil
 		}
-		if err := rows.Err(); err != nil {
-			_ = rows.Close()
-			return nil, 0, false, fmt.Errorf("select scope incoming relations: %w", err)
+		for _, row := range rows {
+			states = appendScopeProjection(incoming, members, states, row.toID, row)
 		}
-		if err := rows.Close(); err != nil {
-			return nil, 0, false, fmt.Errorf("close scope incoming relations: %w", err)
+	}
+
+	// 論理ノードを越えて逆走するとscope外の依存を内部扱いするため、
+	// fileなどの非論理ノードだけを中間点として、入口候補ごとに訪問済み状態を分ける。
+	visited := make(map[scopeProjectionState]struct{})
+	for len(states) > 0 {
+		current := states[0]
+		states = states[1:]
+		if _, exists := visited[current]; exists {
+			continue
+		}
+		visited[current] = struct{}{}
+		if read == limit {
+			return incoming, read, true, nil
+		}
+		rows, truncated, err := selectIncomingRows(ctx, db, []string{current.nodeID}, limit-read)
+		if err != nil {
+			return nil, 0, false, err
+		}
+		read += len(rows)
+		if truncated {
+			return incoming, read, true, nil
+		}
+		for _, row := range rows {
+			states = appendScopeProjection(incoming, members, states, current.endpointID, row)
 		}
 	}
 	return incoming, read, false, nil
+}
+
+type scopeIncomingRow struct {
+	fromID   string
+	toID     string
+	fromType string
+}
+
+type scopeProjectionState struct {
+	endpointID string
+	nodeID     string
+}
+
+func selectIncomingRows(
+	ctx context.Context, db *sql.DB, toIDs []string, limit int,
+) ([]scopeIncomingRow, bool, error) {
+	args := make([]any, 0, len(toIDs)+1)
+	for _, id := range toIDs {
+		args = append(args, id)
+	}
+	query := `
+SELECT relation.from_id, relation.to_id, source.node_type
+FROM relation
+JOIN node AS source ON source.node_id = relation.from_id
+WHERE relation.to_id IN (` + placeholders(len(toIDs)) + `)
+ORDER BY relation.to_id, relation.from_id, relation.relation_id
+LIMIT ?`
+	args = append(args, limit+1)
+	rows, err := db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, false, fmt.Errorf("select scope incoming relations: %w", err)
+	}
+	defer rows.Close()
+
+	result := make([]scopeIncomingRow, 0)
+	for rows.Next() {
+		if len(result) == limit {
+			return result, true, nil
+		}
+		var row scopeIncomingRow
+		if err := rows.Scan(&row.fromID, &row.toID, &row.fromType); err != nil {
+			return nil, false, fmt.Errorf("scan scope incoming relation: %w", err)
+		}
+		result = append(result, row)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, false, fmt.Errorf("select scope incoming relations: %w", err)
+	}
+	return result, false, nil
+}
+
+func appendScopeProjection(
+	incoming map[string]map[string]struct{}, members map[string]struct{}, states []scopeProjectionState,
+	endpointID string, row scopeIncomingRow,
+) []scopeProjectionState {
+	if _, internal := members[row.fromID]; internal {
+		// scope内から同じ論理ノードへ戻る経路は、入口を失わせる内部incomingとは扱わない。
+		if row.fromID != endpointID {
+			if incoming[endpointID] == nil {
+				incoming[endpointID] = make(map[string]struct{})
+			}
+			incoming[endpointID][row.fromID] = struct{}{}
+		}
+		return states
+	}
+	if isScopeProjectionIntermediate(row.fromType) {
+		return append(states, scopeProjectionState{endpointID: endpointID, nodeID: row.fromID})
+	}
+	return states
+}
+
+func isScopeProjectionIntermediate(nodeType string) bool {
+	switch nodeType {
+	case "file", "file_pattern", "job_status", "external_event":
+		return true
+	default:
+		return false
+	}
 }
 
 func selectOutgoing(
@@ -573,6 +678,10 @@ func placeholders(count int) string {
 }
 
 func (state *traversalState) registerScope(network queuedNode) error {
+	if scope := state.scopesByRoot[network.node.ID]; scope != nil {
+		state.applyCachedScopeBases(scope)
+		return nil
+	}
 	if _, registered := state.registeredScopes[network.node.ID]; registered {
 		return nil
 	}
@@ -599,35 +708,89 @@ func (state *traversalState) registerScope(network queuedNode) error {
 		state.addFrontier(network.node, network.distance, TruncationConnectionLimit)
 		return nil
 	}
-	scope := &scopeState{
-		rootID:  network.node.ID,
-		base:    network.distance,
-		members: members,
-	}
-	// scopeは子孫全体を含むため、配下のジョブネットを訪問したときに同じ子孫を再展開しない。
-	for _, member := range members {
-		if member.Type == "job_network" {
-			state.registeredScopes[member.ID] = struct{}{}
-		}
-	}
-	state.scopes = append(state.scopes, scope)
+	cached := state.cacheScopeHierarchy(network.node, members, incoming)
 	if network.node.ID == state.result.Target.ID {
 		for _, member := range members {
 			state.targetScope[member.ID] = struct{}{}
 		}
 	}
-
-	for _, member := range members {
-		if _, hasIncoming := incoming[member.ID]; hasIncoming {
-			continue
-		}
-		state.addScopeEntry(scope, member, false)
-		if scope.rootID != state.result.Target.ID && state.isDownstream(member) {
-			state.addDownstream(member, scope.base)
-		}
-		state.schedule(member, scope.base)
+	for _, scope := range cached {
+		state.applyCachedScopeBases(scope)
 	}
 	return nil
+}
+
+func (state *traversalState) cacheScopeHierarchy(
+	root Node, members []Node, incoming map[string]map[string]struct{},
+) []*scopeState {
+	roots := []Node{root}
+	rootIDs := map[string]struct{}{root.ID: {}}
+	for _, member := range members {
+		if member.Type == "job_network" {
+			roots = append(roots, member)
+			rootIDs[member.ID] = struct{}{}
+		}
+	}
+	byID := make(map[string]Node, len(members))
+	for _, member := range members {
+		byID[member.ID] = member
+	}
+	membersByRoot := make(map[string][]Node, len(roots))
+	for _, member := range members {
+		for parentID := member.ParentID; parentID != nil; {
+			if _, isScopeRoot := rootIDs[*parentID]; isScopeRoot {
+				membersByRoot[*parentID] = append(membersByRoot[*parentID], member)
+			}
+			parent, exists := byID[*parentID]
+			if !exists {
+				break
+			}
+			parentID = parent.ParentID
+		}
+	}
+
+	cached := make([]*scopeState, 0, len(roots))
+	for index, scopeRoot := range roots {
+		if state.scopesByRoot[scopeRoot.ID] != nil {
+			continue
+		}
+		scopeMembers := membersByRoot[scopeRoot.ID]
+		scope := &scopeState{
+			root:          scopeRoot,
+			members:       scopeMembers,
+			entries:       scopeEntries(scopeMembers, incoming),
+			fallbackByID:  make(map[string]struct{}),
+			appliedBases:  make(map[distance]struct{}),
+			attemptedSeed: make(map[scopeSeedKey]struct{}),
+			recordEntries: index == 0,
+		}
+		state.scopesByRoot[scopeRoot.ID] = scope
+		state.registeredScopes[scopeRoot.ID] = struct{}{}
+		state.scopes = append(state.scopes, scope)
+		cached = append(cached, scope)
+	}
+	return cached
+}
+
+func scopeEntries(members []Node, incoming map[string]map[string]struct{}) []Node {
+	memberIDs := make(map[string]struct{}, len(members))
+	for _, member := range members {
+		memberIDs[member.ID] = struct{}{}
+	}
+	entries := make([]Node, 0, len(members))
+	for _, member := range members {
+		hasInternalIncoming := false
+		for fromID := range incoming[member.ID] {
+			if _, exists := memberIDs[fromID]; exists {
+				hasInternalIncoming = true
+				break
+			}
+		}
+		if !hasInternalIncoming {
+			entries = append(entries, member)
+		}
+	}
+	return entries
 }
 
 func (state *traversalState) remainingConnections() int {
@@ -635,13 +798,13 @@ func (state *traversalState) remainingConnections() int {
 }
 
 func (state *traversalState) addScopeEntry(scope *scopeState, node Node, fallback bool) {
-	key := scope.rootID + "\x00" + node.ID
+	key := scope.root.ID + "\x00" + node.ID
 	if _, exists := state.scopeEntries[key]; exists {
 		return
 	}
 	state.scopeEntries[key] = struct{}{}
 	state.result.ScopeEntries = append(state.result.ScopeEntries, ScopeEntry{
-		ScopeRootID: scope.rootID,
+		ScopeRootID: scope.root.ID,
 		Node:        node,
 		Fallback:    fallback,
 	})
@@ -649,51 +812,113 @@ func (state *traversalState) addScopeEntry(scope *scopeState, node Node, fallbac
 
 func (state *traversalState) seedScopeFallback() bool {
 	// 通常の入口から到達できる経路を先に調べ、残った成分だけを救済対象とする。
-	// scopesとmembersは登録順、ID順なので、複数の成分があっても開始順は変わらない。
+	// scopesとmembersは登録順、ID順で、baseも距離順に適用するため、複数の成分があっても開始順は変わらない。
 	for _, scope := range state.scopes {
 		for _, member := range scope.members {
-			if _, visited := state.best[member.ID]; visited {
+			if len(state.pareto[member.ID]) > 0 {
 				continue
 			}
 			state.result.UsedScopeFallback = true
-			state.addScopeEntry(scope, member, true)
-			if scope.rootID != state.result.Target.ID && state.isDownstream(member) {
-				state.addDownstream(member, scope.base)
+			if _, cached := scope.fallbackByID[member.ID]; !cached {
+				scope.fallbackByID[member.ID] = struct{}{}
+				scope.fallbacks = append(scope.fallbacks, member)
 			}
-			if len(state.best) >= state.limits.MaxVisitedNodes {
-				state.addFrontier(member, scope.base, TruncationNodeLimit)
-				continue
+			bases := make([]distance, 0, len(scope.appliedBases))
+			for base := range scope.appliedBases {
+				bases = append(bases, base)
 			}
-			state.schedule(member, scope.base)
-			return true
+			sort.Slice(bases, func(i, j int) bool { return lessDistance(bases[i], bases[j]) })
+			scheduled := false
+			for _, base := range bases {
+				if state.applyScopeSeed(scope, member, base, true) {
+					scheduled = true
+				}
+			}
+			if scheduled {
+				return true
+			}
 		}
 	}
 	return false
 }
 
-func (state *traversalState) schedule(node Node, candidate distance) {
-	if current, exists := state.best[node.ID]; exists {
-		if lessDistance(candidate, current.distance) {
-			current.distance = candidate
-			state.best[node.ID] = current
-			// 再展開は非負の距離が厳密に減少した場合だけなので、一つのノードに対する再展開は有限回で終了する。
-			delete(state.processed, node.ID)
-			state.enqueue(current)
-		}
+func (state *traversalState) applyCachedScopeBases(scope *scopeState) {
+	for _, rootState := range state.pareto[scope.root.ID] {
+		state.applyScopeBase(scope, rootState.distance)
+	}
+}
+
+func (state *traversalState) applyScopeBase(scope *scopeState, base distance) {
+	if _, applied := scope.appliedBases[base]; applied {
 		return
 	}
-	if len(state.best) >= state.limits.MaxVisitedNodes {
+	scope.appliedBases[base] = struct{}{}
+	for _, entry := range scope.entries {
+		state.applyScopeSeed(scope, entry, base, false)
+	}
+	for _, fallback := range scope.fallbacks {
+		state.applyScopeSeed(scope, fallback, base, true)
+	}
+}
+
+func (state *traversalState) applyScopeSeed(
+	scope *scopeState, node Node, base distance, fallback bool,
+) bool {
+	key := scopeSeedKey{nodeID: node.ID, base: base}
+	if _, attempted := scope.attemptedSeed[key]; attempted {
+		return false
+	}
+	scope.attemptedSeed[key] = struct{}{}
+	if scope.recordEntries {
+		state.addScopeEntry(scope, node, fallback)
+	}
+	if scope.root.ID != state.result.Target.ID && state.isDownstream(node) {
+		state.addDownstream(node, base)
+	}
+	return state.schedule(node, base)
+}
+
+func (state *traversalState) schedule(node Node, candidate distance) bool {
+	current := state.pareto[node.ID]
+	for _, existing := range current {
+		if dominates(existing.distance, candidate) {
+			return false
+		}
+	}
+	// 依存辺はgraphを1だけ増やし、scope辺は両方を増やさないため、受理し得る組は
+	// 0 <= dependency <= graph <= MaxGraphDepthに限られる。同じ組を再受理せず、ノードごとの
+	// 探索状態数をMaxGraphDepthから決まる有限個へ抑えたうえで、全ノードの総数にも予算を適用する。
+	if state.visitedStates >= state.limits.MaxVisitedNodes {
 		state.addFrontier(node, candidate, TruncationNodeLimit)
-		return
+		return false
+	}
+
+	retained := current[:0]
+	for _, existing := range current {
+		if !dominates(candidate, existing.distance) {
+			retained = append(retained, existing)
+		}
 	}
 	queued := queuedNode{node: node, distance: candidate}
-	state.best[node.ID] = queued
+	retained = append(retained, queued)
+	sort.Slice(retained, func(i, j int) bool { return lessDistance(retained[i].distance, retained[j].distance) })
+	state.pareto[node.ID] = retained
+	state.visitedStates++
 	state.enqueue(queued)
+	if scope := state.scopesByRoot[node.ID]; scope != nil {
+		for base := range scope.appliedBases {
+			if !state.hasExactState(node.ID, base) {
+				delete(scope.appliedBases, base)
+			}
+		}
+		state.applyScopeBase(scope, candidate)
+	}
+	return true
 }
 
 func (state *traversalState) enqueue(node queuedNode) {
 	// 処理済みの距離が後から短縮される場合も、現在キューにない距離はヒープへ再登録する。
-	// 古い候補はbestとの比較で除外し、同じ距離の有効な候補だけをノードID順へまとめる。
+	// 古い候補は現在のPareto集合との比較で除外し、同じ距離の有効な候補だけをノードID順へまとめる。
 	if _, exists := state.queueBuckets[node.distance]; !exists {
 		heap.Push(&state.queueDistances, node.distance)
 	}
@@ -711,14 +936,14 @@ func (state *traversalState) takeNextBatch() []queuedNode {
 
 		current := make([]queuedNode, 0, len(candidates))
 		for _, candidate := range candidates {
-			best := state.best[candidate.node.ID]
-			if best.distance != candidate.distance {
+			if !state.hasExactState(candidate.node.ID, candidate.distance) {
 				continue
 			}
-			if _, done := state.processed[candidate.node.ID]; done {
+			key := nodeStateKey{nodeID: candidate.node.ID, distance: candidate.distance}
+			if _, done := state.processed[key]; done {
 				continue
 			}
-			state.processed[candidate.node.ID] = struct{}{}
+			state.processed[key] = struct{}{}
 			current = append(current, candidate)
 		}
 		if len(current) > 0 {
@@ -726,6 +951,19 @@ func (state *traversalState) takeNextBatch() []queuedNode {
 		}
 	}
 	return nil
+}
+
+func (state *traversalState) hasExactState(nodeID string, candidate distance) bool {
+	for _, current := range state.pareto[nodeID] {
+		if current.distance == candidate {
+			return true
+		}
+	}
+	return false
+}
+
+func dominates(left, right distance) bool {
+	return left.dependency <= right.dependency && left.graph <= right.graph
 }
 
 func lessDistance(left, right distance) bool {
@@ -875,6 +1113,11 @@ type confirmedQueueItem struct {
 	distance int
 }
 
+type confirmedEdge struct {
+	toID      string
+	increment int
+}
+
 type confirmedQueue []confirmedQueueItem
 
 func (values confirmedQueue) Len() int { return len(values) }
@@ -900,17 +1143,27 @@ func (values *confirmedQueue) Pop() any {
 }
 
 func (state *traversalState) setConfirmedDependencyDistances() {
-	adjacency := make(map[string][]int)
-	for index, connection := range state.result.Connections {
+	adjacency := make(map[string][]confirmedEdge)
+	for _, connection := range state.result.Connections {
 		if !hasConfirmedRelation(connection.Relations) {
 			continue
 		}
-		adjacency[connection.FromID] = append(adjacency[connection.FromID], index)
+		adjacency[connection.FromID] = append(adjacency[connection.FromID], confirmedEdge{
+			toID:      connection.To.ID,
+			increment: logicalNodeIncrement(connection.To),
+		})
 	}
 	// 親子関係は取込時に検査済みなので確定経路へ含めるが、依存関係ではないため距離を増やさない。
-	// 負数はScopeEntriesの添字を表し、Connectionsを複製せず再走査用の索引だけを保持する。
-	for index, entry := range state.result.ScopeEntries {
-		adjacency[entry.ScopeRootID] = append(adjacency[entry.ScopeRootID], -index-1)
+	// 下位ジョブネット用に導出した入口も再走査へ含め、短縮されたscope rootの距離を子孫へ伝える。
+	for _, scope := range state.scopes {
+		seen := make(map[string]struct{}, len(scope.entries)+len(scope.fallbacks))
+		for _, node := range append(append([]Node(nil), scope.entries...), scope.fallbacks...) {
+			if _, exists := seen[node.ID]; exists {
+				continue
+			}
+			seen[node.ID] = struct{}{}
+			adjacency[scope.root.ID] = append(adjacency[scope.root.ID], confirmedEdge{toID: node.ID})
+		}
 	}
 
 	distances := map[string]int{state.result.Target.ID: 0}
@@ -921,23 +1174,14 @@ func (state *traversalState) setConfirmedDependencyDistances() {
 		if distances[current.nodeID] != current.distance {
 			continue
 		}
-		for _, edgeIndex := range adjacency[current.nodeID] {
-			var toID string
-			increment := 0
-			if edgeIndex >= 0 {
-				connection := state.result.Connections[edgeIndex]
-				toID = connection.To.ID
-				increment = logicalNodeIncrement(connection.To)
-			} else {
-				toID = state.result.ScopeEntries[-edgeIndex-1].Node.ID
-			}
-			candidate := current.distance + increment
-			known, exists := distances[toID]
+		for _, edge := range adjacency[current.nodeID] {
+			candidate := current.distance + edge.increment
+			known, exists := distances[edge.toID]
 			if exists && known <= candidate {
 				continue
 			}
-			distances[toID] = candidate
-			heap.Push(&queue, confirmedQueueItem{nodeID: toID, distance: candidate})
+			distances[edge.toID] = candidate
+			heap.Push(&queue, confirmedQueueItem{nodeID: edge.toID, distance: candidate})
 		}
 	}
 
@@ -961,8 +1205,14 @@ func hasConfirmedRelation(relations []Relation) bool {
 
 func (state *traversalState) finish() {
 	state.setConfirmedDependencyDistances()
-	state.result.Nodes = make([]Visit, 0, len(state.best))
-	for _, current := range state.best {
+	state.result.Nodes = make([]Visit, 0, len(state.pareto))
+	for _, candidates := range state.pareto {
+		current := candidates[0]
+		for _, candidate := range candidates[1:] {
+			if lessDistance(candidate.distance, current.distance) {
+				current = candidate
+			}
+		}
 		state.result.Nodes = append(state.result.Nodes, Visit{
 			Node:               current.node,
 			GraphDepth:         current.graph,
