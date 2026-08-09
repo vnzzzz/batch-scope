@@ -93,12 +93,15 @@ type candidate struct {
 }
 
 type scanState struct {
-	ctx         context.Context
-	db          *sql.DB
-	reached     map[string]traversal.Reached
-	reachedIDs  []string
-	scopeParent map[string]string
-	candidates  map[string]candidate
+	ctx                       context.Context
+	db                        *sql.DB
+	reached                   map[string]traversal.Reached
+	reachedIDs                []string
+	scopeParent               map[string]string
+	scopeNodeIDs              []string
+	scopeRoots                map[string]Node
+	scopeParentReferenceCount int
+	candidates                map[string]candidate
 }
 
 // Scan は到達済みノードに設定されたリミットを全件読み、区分と種類ごとの閲覧順で返す。
@@ -111,14 +114,24 @@ func Scan(ctx context.Context, db *sql.DB, traversalResult traversal.Result) (Re
 		return Result{}, errors.New("limit scan database is nil")
 	}
 
-	state := scanState{
-		ctx:         ctx,
-		db:          db,
-		reached:     make(map[string]traversal.Reached, len(traversalResult.Nodes)),
-		reachedIDs:  make([]string, 0, len(traversalResult.Nodes)),
-		scopeParent: make(map[string]string, len(traversalResult.ScopeEdges)),
-		candidates:  make(map[string]candidate),
+	state := newScanState(ctx, db, traversalResult)
+	return state.run(traversalResult)
+}
+
+func newScanState(ctx context.Context, db *sql.DB, traversalResult traversal.Result) *scanState {
+	return &scanState{
+		ctx:          ctx,
+		db:           db,
+		reached:      make(map[string]traversal.Reached, len(traversalResult.Nodes)),
+		reachedIDs:   make([]string, 0, len(traversalResult.Nodes)),
+		scopeParent:  make(map[string]string, len(traversalResult.ScopeEdges)),
+		scopeNodeIDs: make([]string, 0, len(traversalResult.ScopeEdges)+1),
+		scopeRoots:   make(map[string]Node, len(traversalResult.ScopeEdges)),
+		candidates:   make(map[string]candidate),
 	}
+}
+
+func (state *scanState) run(traversalResult traversal.Result) (Result, error) {
 	if err := state.prepare(traversalResult); err != nil {
 		return Result{}, err
 	}
@@ -151,6 +164,7 @@ func (state *scanState) prepare(result traversal.Result) error {
 		// IDは入力どおりバッチへ渡し、別バッチから同じ主キー行を再取得してもlimit_idで一件へまとめる。
 		state.reachedIDs = append(state.reachedIDs, reached.Node.ID)
 	}
+	scopeNodeSet := make(map[string]struct{}, len(result.ScopeEdges)+1)
 	for _, edge := range result.ScopeEdges {
 		if err := state.ctx.Err(); err != nil {
 			return err
@@ -159,6 +173,78 @@ func (state *scanState) prepare(result traversal.Result) error {
 			return fmt.Errorf("scope child %q has multiple parents", edge.ChildID)
 		}
 		state.scopeParent[edge.ChildID] = edge.ParentID
+		if _, seen := scopeNodeSet[edge.ChildID]; !seen {
+			scopeNodeSet[edge.ChildID] = struct{}{}
+			state.scopeNodeIDs = append(state.scopeNodeIDs, edge.ChildID)
+		}
+		if _, seen := scopeNodeSet[edge.ParentID]; !seen {
+			scopeNodeSet[edge.ParentID] = struct{}{}
+			state.scopeNodeIDs = append(state.scopeNodeIDs, edge.ParentID)
+		}
+	}
+	// リミットがないscopeも入力結果の一部であるため、SQLでlimit ownerを読む前に全経路を検査する。
+	// これにより、リミットの有無によって循環や不正なrootの検出結果が変わらない。
+	return state.prepareScopeRoots()
+}
+
+func (state *scanState) prepareScopeRoots() error {
+	for _, startID := range state.scopeNodeIDs {
+		if err := state.ctx.Err(); err != nil {
+			return err
+		}
+		if _, resolved := state.scopeRoots[startID]; resolved {
+			continue
+		}
+
+		path := make([]string, 0)
+		pathSeen := make(map[string]struct{})
+		currentID := startID
+		for {
+			if err := state.ctx.Err(); err != nil {
+				return err
+			}
+			if root, resolved := state.scopeRoots[currentID]; resolved {
+				if err := state.cacheScopePath(path, root); err != nil {
+					return err
+				}
+				break
+			}
+			if _, seen := pathSeen[currentID]; seen {
+				return fmt.Errorf("scope edges contain a cycle at %q", currentID)
+			}
+			pathSeen[currentID] = struct{}{}
+			path = append(path, currentID)
+
+			state.scopeParentReferenceCount++
+			parentID, hasParent := state.scopeParent[currentID]
+			if hasParent {
+				currentID = parentID
+				continue
+			}
+
+			reached, ok := state.reached[currentID]
+			if !ok {
+				return fmt.Errorf("scope root %q is not in traversal result", currentID)
+			}
+			if reached.Node.Type != "job_network" {
+				return fmt.Errorf("scope root %q has type %q, want job_network", currentID, reached.Node.Type)
+			}
+			root := Node{ID: reached.Node.ID, Type: reached.Node.Type, Name: reached.Node.Name}
+			if err := state.cacheScopePath(path, root); err != nil {
+				return err
+			}
+			break
+		}
+	}
+	return nil
+}
+
+func (state *scanState) cacheScopePath(path []string, root Node) error {
+	for _, nodeID := range path {
+		if err := state.ctx.Err(); err != nil {
+			return err
+		}
+		state.scopeRoots[nodeID] = root
 	}
 	return nil
 }
@@ -282,45 +368,12 @@ func (state *scanState) scanCandidate(row rowScanner) (candidate, error) {
 		return candidate{}, fmt.Errorf("limit %q has unsupported kind %q", fact.ID, fact.Kind)
 	}
 	if current.membership == traversal.MembershipDownstream {
-		root, err := state.scopeRoot(ownerNodeID.String)
-		if err != nil {
-			return candidate{}, fmt.Errorf("resolve scope root for limit %q: %w", fact.ID, err)
+		if root, ok := state.scopeRoots[ownerNodeID.String]; ok {
+			rootCopy := root
+			current.item.ScopeRoot = &rootCopy
 		}
-		current.item.ScopeRoot = root
 	}
 	return current, nil
-}
-
-func (state *scanState) scopeRoot(ownerID string) (*Node, error) {
-	parentID, ok := state.scopeParent[ownerID]
-	if !ok {
-		return nil, nil
-	}
-	seen := map[string]struct{}{ownerID: {}}
-	rootID := parentID
-	for {
-		if err := state.ctx.Err(); err != nil {
-			return nil, err
-		}
-		if _, duplicate := seen[rootID]; duplicate {
-			return nil, fmt.Errorf("scope edges contain a cycle at %q", rootID)
-		}
-		seen[rootID] = struct{}{}
-		parentID, ok = state.scopeParent[rootID]
-		if !ok {
-			break
-		}
-		rootID = parentID
-	}
-	reached, ok := state.reached[rootID]
-	if !ok {
-		return nil, fmt.Errorf("scope root %q is not in traversal result", rootID)
-	}
-	if reached.Node.Type != "job_network" {
-		return nil, fmt.Errorf("scope root %q has type %q, want job_network", rootID, reached.Node.Type)
-	}
-	root := Node{ID: reached.Node.ID, Type: reached.Node.Type, Name: reached.Node.Name}
-	return &root, nil
 }
 
 func (state *scanState) finish() (Result, error) {

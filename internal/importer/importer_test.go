@@ -18,7 +18,9 @@ import (
 	"sync"
 	"testing"
 
+	"batchscope/internal/limitscan"
 	"batchscope/internal/store"
+	"batchscope/internal/traversal"
 )
 
 func TestRunImportsDemoSnapshotWithIndexes(t *testing.T) {
@@ -61,6 +63,57 @@ func TestRunImportsDemoSnapshotWithIndexes(t *testing.T) {
 	}
 	if !reflect.DeepEqual(indexes, wantIndexes) {
 		t.Fatalf("indexes = %v, want %v", indexes, wantIndexes)
+	}
+}
+
+func TestRunDemoSnapshotSupportsDownstreamLimitScan(t *testing.T) {
+	ctx := context.Background()
+	archive := demoArchive(t)
+	workspace := t.TempDir()
+	storage := newImporterTestStore(t, filepath.Join(workspace, "data"))
+	if _, err := Run(ctx, workspace, bytes.NewReader(archive), storage); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+
+	db, release, err := storage.Acquire()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+	reached, err := traversal.Traverse(ctx, db, "JOB-A")
+	if err != nil {
+		t.Fatalf("Traverse() error = %v", err)
+	}
+	got, err := limitscan.Scan(ctx, db, reached)
+	if err != nil {
+		t.Fatalf("Scan() error = %v", err)
+	}
+
+	if len(got.Downstream.FinishByGroups) != 1 {
+		t.Fatalf("finish_by groups = %#v, want one group", got.Downstream.FinishByGroups)
+	}
+	finishGroup := got.Downstream.FinishByGroups[0]
+	finishItems := finishGroup.Items
+	if finishGroup.Total != 2 || len(finishItems) != 2 {
+		t.Fatalf("finish_by total = %d, items = %d, want both 2", finishGroup.Total, len(finishItems))
+	}
+	if ids := limitFactIDs(finishItems); !reflect.DeepEqual(ids, []string{
+		"LIMIT-JOB-C-FINISH",
+		"LIMIT-JOB-B-FINISH",
+	}) {
+		t.Errorf("finish_by IDs = %v", ids)
+	}
+	if got.Downstream.MaxElapsed.Total != 1 || got.Downstream.MaxElapsed.Items[0].Fact.ID != "LIMIT-JOB-B-ELAPSED" {
+		t.Errorf("max_elapsed = %#v, want LIMIT-JOB-B-ELAPSED", got.Downstream.MaxElapsed)
+	}
+	if total := len(finishItems) + got.Downstream.MaxElapsed.Total + got.Downstream.Raw.Total; total != 3 {
+		t.Errorf("downstream limit total = %d, want 3", total)
+	}
+	if finishItems[0].ScopeRoot == nil || finishItems[0].ScopeRoot.ID != "NET-CLOSE" {
+		t.Errorf("JOB-C ScopeRoot = %#v, want NET-CLOSE", finishItems[0].ScopeRoot)
+	}
+	if finishItems[1].ScopeRoot != nil || got.Downstream.MaxElapsed.Items[0].ScopeRoot != nil {
+		t.Errorf("JOB-B ScopeRoots = finish %#v, elapsed %#v, want nil", finishItems[1].ScopeRoot, got.Downstream.MaxElapsed.Items[0].ScopeRoot)
 	}
 }
 
@@ -378,4 +431,12 @@ func assertCount(t *testing.T, db *sql.DB, table string, want int) {
 	if got != want {
 		t.Errorf("%s rows = %d, want %d", table, got, want)
 	}
+}
+
+func limitFactIDs(items []limitscan.Item) []string {
+	ids := make([]string, len(items))
+	for index, item := range items {
+		ids[index] = item.Fact.ID
+	}
+	return ids
 }
