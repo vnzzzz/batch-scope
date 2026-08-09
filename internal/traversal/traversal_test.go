@@ -3,9 +3,9 @@ package traversal
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"slices"
 	"testing"
 
@@ -30,1309 +30,459 @@ type testRelation struct {
 	evidence  *string
 }
 
-func TestTraverseDependencyPatterns(t *testing.T) {
-	nodes := []testNode{
-		{id: "START", typeName: "job"},
-		{id: "SERIAL", typeName: "job"},
-		{id: "FILE", typeName: "file"}, {id: "FILE-JOB", typeName: "job"},
-		{id: "PATTERN", typeName: "file_pattern"}, {id: "PATTERN-JOB", typeName: "job"},
-		{id: "STATUS", typeName: "job_status"}, {id: "STATUS-JOB", typeName: "job"},
-		{id: "VENDOR-EVENT", typeName: "external_event"}, {id: "VENDOR-JOB", typeName: "job"},
-		{id: "SERVERLESS-EVENT", typeName: "external_event"}, {id: "SERVERLESS-JOB", typeName: "job"},
-		{id: "LEFT", typeName: "job"}, {id: "RIGHT", typeName: "job"}, {id: "MERGED", typeName: "job"},
-		{id: "C1-A", typeName: "job"}, {id: "C1-FILE", typeName: "file"}, {id: "C1-B", typeName: "job"},
-		{id: "C1-BRANCH", typeName: "job"},
-		{id: "C2-A", typeName: "job"}, {id: "C2-EVENT", typeName: "external_event"}, {id: "C2-B", typeName: "job"},
+func TestTraverseReachesEndOfLongSerialPath(t *testing.T) {
+	const edgeCount = 2_001
+	nodes := make([]testNode, 0, edgeCount+1)
+	relations := make([]testRelation, 0, edgeCount)
+	for index := 0; index <= edgeCount; index++ {
+		id := fmt.Sprintf("N-%04d", index)
+		nodes = append(nodes, testNode{id: id, typeName: "job"})
+		if index > 0 {
+			relations = append(relations, relation(
+				fmt.Sprintf("R-%04d", index),
+				fmt.Sprintf("N-%04d", index-1),
+				id,
+				"precedes",
+			))
+		}
 	}
-	relations := []testRelation{
-		relation("01", "START", "SERIAL", "precedes"),
-		relation("02", "START", "SERIAL", "triggers"),
-		relation("03", "START", "FILE", "produces"), relation("04", "FILE", "FILE-JOB", "triggers"),
-		relation("05", "START", "PATTERN", "produces"), relation("06", "PATTERN", "PATTERN-JOB", "consumed_by"),
-		relation("07", "START", "STATUS", "produces"), relation("08", "STATUS", "STATUS-JOB", "observed_by"),
-		relation("09", "START", "VENDOR-EVENT", "triggers"), relation("10", "VENDOR-EVENT", "VENDOR-JOB", "triggers"),
-		relation("11", "START", "SERVERLESS-EVENT", "triggers"), relation("12", "SERVERLESS-EVENT", "SERVERLESS-JOB", "triggers"),
-		relation("13", "START", "LEFT", "precedes"), relation("14", "START", "RIGHT", "precedes"),
-		relation("15", "LEFT", "MERGED", "precedes"), relation("16", "RIGHT", "MERGED", "precedes"),
-		relation("17", "START", "C1-A", "precedes"), relation("18", "START", "C1-B", "precedes"),
-		relation("19", "C1-A", "C1-FILE", "produces"), relation("20", "C1-FILE", "C1-B", "triggers"),
-		relation("21", "C1-B", "C1-A", "precedes"), relation("22", "C1-B", "C1-BRANCH", "precedes"),
-		relation("23", "START", "C2-A", "precedes"), relation("24", "C2-A", "C2-EVENT", "triggers"),
-		relation("25", "C2-EVENT", "C2-B", "triggers"), relation("26", "C2-B", "C2-A", "precedes"),
-	}
-	evidence := `[{"source":"job-definition"}]`
-	relations[0].evidence = &evidence
-	db := openTestDB(t, nodes, relations)
 
-	result, err := Traverse(context.Background(), db, "START", Limits{})
+	result, err := Traverse(context.Background(), openTestDB(t, nodes, relations), "N-0000")
 	if err != nil {
-		t.Fatalf("Traverse() error = %v", err)
+		t.Fatal(err)
 	}
-
-	for name, path := range map[string][]string{
-		"serial job definition": {"START", "SERIAL"},
-		"file":                  {"START", "FILE", "FILE-JOB"},
-		"file pattern":          {"START", "PATTERN", "PATTERN-JOB"},
-		"job status":            {"START", "STATUS", "STATUS-JOB"},
-		"vendor event":          {"START", "VENDOR-EVENT", "VENDOR-JOB"},
-		"serverless event":      {"START", "SERVERLESS-EVENT", "SERVERLESS-JOB"},
-		"branch outside cycle":  {"START", "C1-A", "C1-FILE", "C1-B", "C1-BRANCH"},
-	} {
-		t.Run(name, func(t *testing.T) {
-			if !hasPath(result.Connections, path) {
-				t.Errorf("connections do not contain path %v", path)
-			}
-		})
+	if got := result.Nodes[len(result.Nodes)-1].Node.ID; got != "N-2001" {
+		t.Fatalf("last reached node = %q, want N-2001", got)
 	}
-
-	serial := findConnection(t, result.Connections, "START", "SERIAL")
-	if got := relationIDs(serial.Relations); !slices.Equal(got, []string{"01", "02"}) {
-		t.Errorf("relations between START and SERIAL = %v", got)
+	if got, want := len(result.Nodes), edgeCount+1; got != want {
+		t.Errorf("len(Nodes) = %d, want %d", got, want)
 	}
-	if got := string(serial.Relations[0].Evidence); got != evidence {
-		t.Errorf("relation evidence = %s, want %s", got, evidence)
+	if got, want := result.Stats.ExpandedNodes, edgeCount+1; got != want {
+		t.Errorf("ExpandedNodes = %d, want %d", got, want)
 	}
-	if !slices.ContainsFunc(result.Shared, func(shared Shared) bool {
-		return shared.FromID == "RIGHT" && shared.ToID == "MERGED"
-	}) {
-		t.Errorf("Shared = %#v, want RIGHT -> MERGED", result.Shared)
-	}
-
-	wantCycles := [][]string{
-		{"C1-A", "C1-FILE", "C1-B", "C1-A"},
-		{"C2-A", "C2-EVENT", "C2-B", "C2-A"},
-	}
-	if got := cyclePaths(result.Cycles); !slices.EqualFunc(got, wantCycles, slices.Equal[[]string]) {
-		t.Errorf("Cycles = %v, want %v", got, wantCycles)
-	}
-	if result.Truncated {
-		t.Errorf("Truncated = true, frontier = %#v", result.Frontier)
-	}
-	if !slices.ContainsFunc(result.Downstream, func(node Downstream) bool { return node.Node.ID == "C1-BRANCH" }) {
-		t.Error("cycle-independent branch was not returned")
+	if got, want := result.Stats.RelationRows, edgeCount; got != want {
+		t.Errorf("RelationRows = %d, want %d", got, want)
 	}
 }
 
-func TestTraverseCycleTerminatesAndDeduplicatesRotatedCycle(t *testing.T) {
-	nodes := []testNode{{id: "START", typeName: "job"}, {id: "A", typeName: "job"}, {id: "B", typeName: "file"}, {id: "C", typeName: "job"}}
-	relations := []testRelation{
-		relation("1", "START", "A", "precedes"), relation("2", "START", "B", "precedes"),
-		relation("3", "A", "B", "produces"), relation("4", "B", "C", "triggers"), relation("5", "C", "A", "precedes"),
+func TestTraverseReachesEveryHighFanOutBranchInBatches(t *testing.T) {
+	const branches = 1_200
+	nodes := []testNode{{id: "START", typeName: "job"}}
+	relations := make([]testRelation, 0, branches)
+	for index := 0; index < branches; index++ {
+		id := fmt.Sprintf("BRANCH-%04d", index)
+		nodes = append(nodes, testNode{id: id, typeName: "job"})
+		relations = append(relations, relation(fmt.Sprintf("R-%04d", index), "START", id, "precedes"))
 	}
-	db := openTestDB(t, nodes, relations)
 
-	result, err := Traverse(context.Background(), db, "START", Limits{})
+	result, err := Traverse(context.Background(), openTestDB(t, nodes, relations), "START")
 	if err != nil {
-		t.Fatalf("Traverse() error = %v", err)
+		t.Fatal(err)
 	}
-	if got, want := cyclePaths(result.Cycles), [][]string{{"A", "B", "C", "A"}}; !slices.EqualFunc(got, want, slices.Equal[[]string]) {
-		t.Fatalf("Cycles = %v, want one normalized cycle %v", got, want)
+	if got, want := len(result.Nodes), branches+1; got != want {
+		t.Errorf("len(Nodes) = %d, want %d", got, want)
+	}
+	if got, want := result.Stats.RelationQueries, 4; got != want {
+		t.Errorf("RelationQueries = %d, want %d", got, want)
+	}
+	if got, want := result.Stats.RelationRows, branches; got != want {
+		t.Errorf("RelationRows = %d, want %d", got, want)
 	}
 }
 
-func TestNormalizeCycleUsesSmallestFullRotation(t *testing.T) {
-	path := []string{"A", "C", "A", "B"}
-	if got, want := normalizeCycle(path), []string{"A", "B", "A", "C"}; !slices.Equal(got, want) {
-		t.Errorf("normalizeCycle(%v) = %v, want %v", path, got, want)
+func TestTraverseExpandsMergedNodeOnce(t *testing.T) {
+	nodes := jobs("START", "LEFT", "RIGHT", "MERGED", "END")
+	relations := []testRelation{
+		relation("1", "START", "LEFT", "precedes"),
+		relation("2", "START", "RIGHT", "precedes"),
+		relation("3", "LEFT", "MERGED", "precedes"),
+		relation("4", "RIGHT", "MERGED", "precedes"),
+		relation("5", "MERGED", "END", "precedes"),
+	}
+
+	result, err := Traverse(context.Background(), openTestDB(t, nodes, relations), "START")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := result.Stats.ExpandedNodes, 5; got != want {
+		t.Errorf("ExpandedNodes = %d, want %d", got, want)
+	}
+	if got, want := result.Stats.RelationRows, 5; got != want {
+		t.Errorf("RelationRows = %d, want %d", got, want)
+	}
+	if !hasConnection(result.Connections, "MERGED", "END") {
+		t.Error("connection MERGED -> END was not returned")
 	}
 }
 
-func TestTraverseJobNetworkStartsAndExcludesContainedNodes(t *testing.T) {
+func TestTraverseDetectsStronglyConnectedComponentsAndContinuesPastCycle(t *testing.T) {
+	const cycleSize = 40
+	nodes := jobs("START", "EXIT", "SELF", "X", "Y")
+	relations := []testRelation{
+		relation("START-C", "START", "C-00", "precedes"),
+		relation("START-SELF", "START", "SELF", "precedes"),
+		relation("START-X", "START", "X", "precedes"),
+		relation("SELF", "SELF", "SELF", "precedes"),
+		relation("X-Y", "X", "Y", "precedes"),
+		relation("Y-X", "Y", "X", "precedes"),
+	}
+	largeCycle := make([]string, 0, cycleSize)
+	for index := 0; index < cycleSize; index++ {
+		id := fmt.Sprintf("C-%02d", index)
+		next := fmt.Sprintf("C-%02d", (index+1)%cycleSize)
+		nodes = append(nodes, testNode{id: id, typeName: "job"})
+		largeCycle = append(largeCycle, id)
+		relations = append(relations, relation(fmt.Sprintf("C-R-%02d", index), id, next, "precedes"))
+	}
+	relations = append(relations, relation("C-EXIT", "C-17", "EXIT", "precedes"))
+
+	result, err := Traverse(context.Background(), openTestDB(t, nodes, relations), "START")
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantCycles := []Cycle{
+		{NodeIDs: largeCycle},
+		{NodeIDs: []string{"SELF"}},
+		{NodeIDs: []string{"X", "Y"}},
+	}
+	if !reflect.DeepEqual(result.Cycles, wantCycles) {
+		t.Errorf("Cycles = %#v, want %#v", result.Cycles, wantCycles)
+	}
+	if findReached(t, result.Nodes, "EXIT").Membership != MembershipDownstream {
+		t.Error("branch outside cycle was not explored")
+	}
+}
+
+func TestTraverseTargetJobNetworkExploresOwnRelationsAndAllScope(t *testing.T) {
 	root := "ROOT"
 	sub := "SUB"
 	nodes := []testNode{
 		{id: root, typeName: "job_network"},
 		{id: sub, typeName: "job_network", parentID: &root},
-		{id: "ENTRY-A", typeName: "job", parentID: &sub},
-		{id: "ENTRY-B", typeName: "job", parentID: &root},
-		{id: "INTERNAL", typeName: "job", parentID: &sub},
-		{id: "EXTERNAL", typeName: "job"},
+		{id: "DIRECT", typeName: "job", parentID: &root},
+		{id: "NESTED", typeName: "job", parentID: &sub},
+		{id: "ROOT-OUT", typeName: "job"},
+		{id: "DIRECT-OUT", typeName: "job"},
+		{id: "NESTED-OUT", typeName: "job"},
 	}
 	relations := []testRelation{
-		relation("1", "ENTRY-A", "INTERNAL", "precedes"),
-		relation("2", "ENTRY-B", "SUB", "precedes"),
-		relation("3", "INTERNAL", "EXTERNAL", "precedes"),
-	}
-	db := openTestDB(t, nodes, relations)
-
-	result, err := Traverse(context.Background(), db, root, Limits{})
-	if err != nil {
-		t.Fatalf("Traverse() error = %v", err)
-	}
-	if got, want := nodeIDs(result.StartNodes), []string{root}; !slices.Equal(got, want) {
-		t.Errorf("StartNodes = %v, want %v", got, want)
-	}
-	if got, want := scopeEntryNodeIDs(result.ScopeEntries, root), []string{"ENTRY-A", "ENTRY-B"}; !slices.Equal(got, want) {
-		t.Errorf("ScopeEntries = %v, want %v", got, want)
-	}
-	if result.UsedScopeFallback {
-		t.Error("UsedScopeFallback = true")
-	}
-	if got, want := downstreamIDs(result.Downstream), []string{"EXTERNAL"}; !slices.Equal(got, want) {
-		t.Errorf("Downstream = %v, want %v", got, want)
-	}
-	if !hasPath(result.Connections, []string{"ENTRY-A", "INTERNAL", "EXTERNAL"}) {
-		t.Error("contained outgoing path was not connected to external downstream")
-	}
-}
-
-func TestTraverseJobNetworkProjectsInternalIncomingThroughNonLogicalNode(t *testing.T) {
-	tests := []struct {
-		name             string
-		intermediateType string
-		firstKind        string
-		secondKind       string
-	}{
-		{name: "file", intermediateType: "file", firstKind: "produces", secondKind: "triggers"},
-		{name: "file pattern", intermediateType: "file_pattern", firstKind: "produces", secondKind: "consumed_by"},
-		{name: "job status", intermediateType: "job_status", firstKind: "produces", secondKind: "observed_by"},
-		{name: "external event", intermediateType: "external_event", firstKind: "triggers", secondKind: "triggers"},
+		relation("1", root, "ROOT-OUT", "precedes"),
+		relation("2", "DIRECT", "DIRECT-OUT", "precedes"),
+		relation("3", "NESTED", "NESTED-OUT", "precedes"),
 	}
 
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			root := "ROOT"
-			nodes := []testNode{
-				{id: root, typeName: "job_network"},
-				{id: "JOB-A", typeName: "job", parentID: &root},
-				{id: "JOB-B", typeName: "job", parentID: &root},
-				{id: "INTERMEDIATE", typeName: test.intermediateType},
-				{id: "EXTERNAL", typeName: "job"},
-			}
-			relations := []testRelation{
-				relation("1", "JOB-A", "INTERMEDIATE", test.firstKind),
-				relation("2", "INTERMEDIATE", "JOB-B", test.secondKind),
-				relation("3", "JOB-B", "EXTERNAL", "precedes"),
-			}
-
-			result, err := Traverse(context.Background(), openTestDB(t, nodes, relations), root, Limits{})
-			if err != nil {
-				t.Fatal(err)
-			}
-
-			if got, want := scopeEntryNodeIDs(result.ScopeEntries, root), []string{"JOB-A"}; !slices.Equal(got, want) {
-				t.Errorf("ScopeEntries = %v, want %v", got, want)
-			}
-			if result.UsedScopeFallback {
-				t.Error("UsedScopeFallback = true, projected internal incoming should make JOB-B reachable from JOB-A")
-			}
-			if !hasPath(result.Connections, []string{"JOB-A", "INTERMEDIATE", "JOB-B", "EXTERNAL"}) {
-				t.Error("projected internal dependency path was not explored")
-			}
-			if hasPath(result.Connections, []string{root, "INTERMEDIATE"}) {
-				t.Error("non-logical intermediate was mixed into containment connections")
-			}
-			assertVisitDistance(t, result.Nodes, "INTERMEDIATE", 1, 0)
-			assertVisitDistance(t, result.Nodes, "JOB-B", 2, 1)
-			assertDownstreamDistance(t, result.Downstream, "EXTERNAL", 3, 2)
-			external := findDownstream(t, result.Downstream, "EXTERNAL")
-			if external.ConfirmedDependencyDistance == nil || *external.ConfirmedDependencyDistance != 2 {
-				t.Errorf("EXTERNAL ConfirmedDependencyDistance = %v, want 2", external.ConfirmedDependencyDistance)
-			}
-		})
-	}
-}
-
-func TestTraverseJobNetworkProjectsInternalIncomingThroughNonLogicalChainAndCycle(t *testing.T) {
-	root := "ROOT"
-	nodes := []testNode{
-		{id: root, typeName: "job_network"},
-		{id: "JOB-A", typeName: "job", parentID: &root},
-		{id: "JOB-B", typeName: "job", parentID: &root},
-		{id: "FILE", typeName: "file"},
-		{id: "PATTERN", typeName: "file_pattern"},
-		{id: "STATUS", typeName: "job_status"},
-		{id: "EVENT", typeName: "external_event"},
-		{id: "EXTERNAL", typeName: "job"},
-	}
-	relations := []testRelation{
-		relation("1", "JOB-A", "FILE", "produces"),
-		relation("2", "FILE", "PATTERN", "produces"),
-		relation("3", "PATTERN", "STATUS", "observed_by"),
-		relation("4", "STATUS", "EVENT", "triggers"),
-		relation("5", "EVENT", "JOB-B", "triggers"),
-		relation("6", "STATUS", "FILE", "produces"),
-		relation("7", "JOB-B", "EXTERNAL", "precedes"),
-	}
-
-	result, err := Traverse(context.Background(), openTestDB(t, nodes, relations), root, Limits{})
+	result, err := Traverse(context.Background(), openTestDB(t, nodes, relations), root)
 	if err != nil {
 		t.Fatal(err)
 	}
-
-	if got, want := scopeEntryNodeIDs(result.ScopeEntries, root), []string{"JOB-A"}; !slices.Equal(got, want) {
-		t.Errorf("ScopeEntries = %v, want %v", got, want)
+	wantEdges := []ScopeEdge{
+		{ParentID: root, ChildID: "DIRECT"},
+		{ParentID: root, ChildID: sub},
+		{ParentID: sub, ChildID: "NESTED"},
 	}
-	if result.UsedScopeFallback {
-		t.Error("UsedScopeFallback = true, non-logical reverse cycle should terminate without rescuing JOB-B")
+	if !reflect.DeepEqual(result.ScopeEdges, wantEdges) {
+		t.Errorf("ScopeEdges = %#v, want %#v", result.ScopeEdges, wantEdges)
 	}
-	if !hasPath(result.Connections, []string{"JOB-A", "FILE", "PATTERN", "STATUS", "EVENT", "JOB-B", "EXTERNAL"}) {
-		t.Error("multi-node projected internal dependency path was not explored")
-	}
-	assertVisitDistance(t, result.Nodes, "JOB-B", 5, 1)
-	assertDownstreamDistance(t, result.Downstream, "EXTERNAL", 6, 2)
-	external := findDownstream(t, result.Downstream, "EXTERNAL")
-	if external.ConfirmedDependencyDistance == nil || *external.ConfirmedDependencyDistance != 2 {
-		t.Errorf("EXTERNAL ConfirmedDependencyDistance = %v, want 2", external.ConfirmedDependencyDistance)
-	}
-}
-
-func TestTraverseReachedJobNetworkKeepsProjectedDependencyDistances(t *testing.T) {
-	root := "ROOT"
-	nodes := []testNode{
-		{id: "START", typeName: "job"},
-		{id: root, typeName: "job_network"},
-		{id: "JOB-A", typeName: "job", parentID: &root},
-		{id: "JOB-B", typeName: "job", parentID: &root},
-		{id: "FILE", typeName: "file"},
-		{id: "EXTERNAL", typeName: "job"},
-	}
-	relations := []testRelation{
-		relation("1", "START", root, "precedes"),
-		relation("2", "JOB-A", "FILE", "produces"),
-		relation("3", "FILE", "JOB-B", "triggers"),
-		relation("4", "JOB-B", "EXTERNAL", "precedes"),
-	}
-
-	result, err := Traverse(context.Background(), openTestDB(t, nodes, relations), "START", Limits{})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	if got, want := scopeEntryNodeIDs(result.ScopeEntries, root), []string{"JOB-A"}; !slices.Equal(got, want) {
-		t.Errorf("ScopeEntries = %v, want %v", got, want)
-	}
-	if !hasPath(result.Connections, []string{"JOB-A", "FILE", "JOB-B", "EXTERNAL"}) {
-		t.Error("projected dependency path in reached scope was not explored")
-	}
-	assertDownstreamDistance(t, result.Downstream, "JOB-B", 3, 2)
-	jobB := findDownstream(t, result.Downstream, "JOB-B")
-	if jobB.ConfirmedDependencyDistance == nil || *jobB.ConfirmedDependencyDistance != 2 {
-		t.Errorf("JOB-B ConfirmedDependencyDistance = %v, want 2", jobB.ConfirmedDependencyDistance)
-	}
-}
-
-func TestTraverseJobNetworkDoesNotTreatProjectedSelfLoopAsInternalIncoming(t *testing.T) {
-	root := "ROOT"
-	nodes := []testNode{
-		{id: root, typeName: "job_network"},
-		{id: "JOB-A", typeName: "job", parentID: &root},
-		{id: "FILE", typeName: "file"},
-	}
-	result, err := Traverse(context.Background(), openTestDB(t, nodes, []testRelation{
-		relation("1", "JOB-A", "FILE", "produces"),
-		relation("2", "FILE", "JOB-A", "triggers"),
-	}), root, Limits{})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	if got, want := scopeEntryNodeIDs(result.ScopeEntries, root), []string{"JOB-A"}; !slices.Equal(got, want) {
-		t.Errorf("ScopeEntries = %v, want projected self-loop origin %v", got, want)
-	}
-	if entry := findScopeEntry(t, result.ScopeEntries, root, "JOB-A"); entry.Fallback {
-		t.Errorf("scope entry = %#v, want normal entry", entry)
-	}
-}
-
-func TestTraverseJobNetworkDoesNotReturnTargetAsDownstream(t *testing.T) {
-	root := "ROOT"
-	nodes := []testNode{
-		{id: root, typeName: "job_network"},
-		{id: "ENTRY", typeName: "job", parentID: &root},
-	}
-	relations := []testRelation{
-		relation("1", "ENTRY", root, "precedes"),
-	}
-	db := openTestDB(t, nodes, relations)
-
-	result, err := Traverse(context.Background(), db, root, Limits{})
-	if err != nil {
-		t.Fatalf("Traverse() error = %v", err)
-	}
-	if !hasPath(result.Connections, []string{"ENTRY", root}) {
-		t.Error("connection from contained node back to target job network was not retained")
-	}
-	if slices.Contains(downstreamIDs(result.Downstream), root) {
-		t.Errorf("Downstream = %v, contains target job network %s", downstreamIDs(result.Downstream), root)
-	}
-}
-
-func TestTraverseJobNetworkFallsBackToUnvisitedScopeComponent(t *testing.T) {
-	root := "ROOT"
-	nodes := []testNode{
-		{id: root, typeName: "job_network"},
-		{id: "A", typeName: "job", parentID: &root},
-		{id: "B", typeName: "job", parentID: &root},
-		{id: "SUB", typeName: "job_network", parentID: &root},
-		{id: "OUT", typeName: "job"},
-	}
-	relations := []testRelation{
-		relation("1", "A", "B", "precedes"), relation("2", "B", "A", "precedes"),
-		relation("3", "A", "SUB", "precedes"), relation("4", "SUB", "A", "precedes"),
-		relation("5", "B", "OUT", "precedes"),
-	}
-	db := openTestDB(t, nodes, relations)
-
-	result, err := Traverse(context.Background(), db, root, Limits{})
-	if err != nil {
-		t.Fatalf("Traverse() error = %v", err)
-	}
-	if !result.UsedScopeFallback {
-		t.Error("UsedScopeFallback = false")
-	}
-	if got, want := nodeIDs(result.StartNodes), []string{root}; !slices.Equal(got, want) {
-		t.Errorf("StartNodes = %v, want logical root %v", got, want)
-	}
-	if got, want := scopeEntryNodeIDs(result.ScopeEntries, root), []string{"A"}; !slices.Equal(got, want) {
-		t.Errorf("fallback ScopeEntries = %v, want %v", got, want)
-	}
-	if got := downstreamIDs(result.Downstream); !slices.Equal(got, []string{"OUT"}) {
-		t.Errorf("Downstream = %v, want [OUT]", got)
-	}
-}
-
-func TestTraverseJobNetworkRootAndScopeDoNotCreateContainmentConnections(t *testing.T) {
-	root := "ROOT"
-	nodes := []testNode{
-		{id: root, typeName: "job_network"},
-		{id: "ENTRY", typeName: "job", parentID: &root},
-		{id: "FROM-ROOT", typeName: "job"},
-		{id: "FROM-ENTRY", typeName: "job"},
-	}
-	relations := []testRelation{
-		relation("1", root, "FROM-ROOT", "precedes"),
-		relation("2", "ENTRY", "FROM-ENTRY", "precedes"),
-	}
-	result, err := Traverse(context.Background(), openTestDB(t, nodes, relations), root, Limits{})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	if got, want := nodeIDs(result.StartNodes), []string{root}; !slices.Equal(got, want) {
-		t.Errorf("StartNodes = %v, want %v", got, want)
-	}
-	if got, want := scopeEntryNodeIDs(result.ScopeEntries, root), []string{"ENTRY"}; !slices.Equal(got, want) {
-		t.Errorf("ScopeEntries = %v, want %v", got, want)
-	}
-	if !hasPath(result.Connections, []string{root, "FROM-ROOT"}) ||
-		!hasPath(result.Connections, []string{"ENTRY", "FROM-ENTRY"}) {
-		t.Errorf("Connections = %#v, want outgoing relations from root and scope", result.Connections)
-	}
-	if hasPath(result.Connections, []string{root, "ENTRY"}) {
-		t.Error("containment was mixed into dependency connections")
-	}
-}
-
-func TestTraverseEmptyJobNetworkUsesLogicalRootOutgoingRelation(t *testing.T) {
-	root := "ROOT"
-	nodes := []testNode{
-		{id: root, typeName: "job_network"},
-		{id: "EXTERNAL", typeName: "job"},
-	}
-	result, err := Traverse(context.Background(), openTestDB(t, nodes, []testRelation{
-		relation("1", root, "EXTERNAL", "precedes"),
-	}), root, Limits{})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	if got, want := nodeIDs(result.StartNodes), []string{root}; !slices.Equal(got, want) {
-		t.Errorf("StartNodes = %v, want %v", got, want)
-	}
-	if len(result.ScopeEntries) != 0 {
-		t.Errorf("ScopeEntries = %#v, want no entries for an empty scope", result.ScopeEntries)
-	}
-	if got, want := downstreamIDs(result.Downstream), []string{"EXTERNAL"}; !slices.Equal(got, want) {
-		t.Errorf("Downstream = %v, want %v", got, want)
-	}
-	if !hasPath(result.Connections, []string{root, "EXTERNAL"}) {
-		t.Error("job network logical root outgoing relation was not explored")
-	}
-}
-
-func TestTraverseJobNetworkFallbackCoversDisconnectedScopeComponents(t *testing.T) {
-	root := "ROOT"
-	nodes := []testNode{
-		{id: root, typeName: "job_network"},
-		{id: "A", typeName: "job", parentID: &root},
-		{id: "B", typeName: "job", parentID: &root},
-		{id: "C", typeName: "job_network", parentID: &root},
-		{id: "D", typeName: "job", parentID: &root},
-		{id: "E", typeName: "job", parentID: &root},
-	}
-	relations := []testRelation{
-		relation("1", "A", "B", "precedes"),
-		relation("2", "C", "D", "precedes"),
-		relation("3", "D", "C", "precedes"),
-	}
-	result, err := Traverse(context.Background(), openTestDB(t, nodes, relations), root, Limits{})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	if !result.UsedScopeFallback {
-		t.Error("UsedScopeFallback = false, want rescue of the C-D cycle")
-	}
-	if got, want := scopeEntryNodeIDs(result.ScopeEntries, root), []string{"A", "C", "E"}; !slices.Equal(got, want) {
-		t.Errorf("ScopeEntries = %v, want incoming-free entries followed by rescued C", got)
-	}
-	for _, id := range []string{"A", "B", "C", "D", "E", root} {
-		if !slices.Contains(visitIDs(result.Nodes), id) {
-			t.Errorf("Nodes = %v, missing scope component node %s", visitIDs(result.Nodes), id)
+	for _, pair := range [][2]string{{root, "ROOT-OUT"}, {"DIRECT", "DIRECT-OUT"}, {"NESTED", "NESTED-OUT"}} {
+		if !hasConnection(result.Connections, pair[0], pair[1]) {
+			t.Errorf("connection %s -> %s was not returned", pair[0], pair[1])
 		}
 	}
-	if got, want := cyclePaths(result.Cycles), [][]string{{"C", "D", "C"}}; !slices.EqualFunc(got, want, slices.Equal[[]string]) {
-		t.Errorf("Cycles = %v, want %v", got, want)
+	for _, id := range []string{root, "DIRECT", sub, "NESTED", "ROOT-OUT", "DIRECT-OUT", "NESTED-OUT"} {
+		want := MembershipDownstream
+		switch id {
+		case root:
+			want = MembershipTarget
+		case "DIRECT", sub, "NESTED":
+			want = MembershipContained
+		}
+		if got := findReached(t, result.Nodes, id).Membership; got != want {
+			t.Errorf("membership of %s = %q, want %q", id, got, want)
+		}
+	}
+	for _, edge := range result.ScopeEdges {
+		if hasConnection(result.Connections, edge.ParentID, edge.ChildID) {
+			t.Errorf("scope edge %s -> %s was mixed into Connections", edge.ParentID, edge.ChildID)
+		}
 	}
 }
 
-func TestTraverseFallbackCoversCycleOfNestedJobNetworksAndOutgoingRelation(t *testing.T) {
+func TestTraverseKeepsContainedMembershipWhenDependencyPathsReachTargetScope(t *testing.T) {
 	root := "ROOT"
 	nodes := []testNode{
 		{id: root, typeName: "job_network"},
-		{id: "NETWORK-A", typeName: "job_network", parentID: &root},
-		{id: "NETWORK-B", typeName: "job_network", parentID: &root},
-		{id: "EXTERNAL", typeName: "job"},
+		{id: "FROM", typeName: "job", parentID: &root},
+		{id: "IN-SCOPE", typeName: "job", parentID: &root},
+		{id: "RETURNED", typeName: "job", parentID: &root},
+		{id: "OUTSIDE", typeName: "job"},
 	}
 	relations := []testRelation{
-		relation("1", "NETWORK-A", "NETWORK-B", "precedes"),
-		relation("2", "NETWORK-B", "NETWORK-A", "precedes"),
-		relation("3", "NETWORK-B", "EXTERNAL", "precedes"),
+		relation("1", "FROM", "IN-SCOPE", "precedes"),
+		relation("2", "FROM", "OUTSIDE", "precedes"),
+		relation("3", "OUTSIDE", "RETURNED", "precedes"),
 	}
-	result, err := Traverse(context.Background(), openTestDB(t, nodes, relations), root, Limits{})
+
+	result, err := Traverse(context.Background(), openTestDB(t, nodes, relations), root)
 	if err != nil {
 		t.Fatal(err)
 	}
-
-	if !result.UsedScopeFallback {
-		t.Error("UsedScopeFallback = false, want rescue of nested job network cycle")
+	for _, id := range []string{"IN-SCOPE", "RETURNED"} {
+		if got := findReached(t, result.Nodes, id).Membership; got != MembershipContained {
+			t.Errorf("membership of %s = %q, want %q", id, got, MembershipContained)
+		}
 	}
-	if got, want := scopeEntryNodeIDs(result.ScopeEntries, root), []string{"NETWORK-A"}; !slices.Equal(got, want) {
-		t.Errorf("ScopeEntries = %v, want %v", got, want)
+	if got := findReached(t, result.Nodes, "OUTSIDE").Membership; got != MembershipDownstream {
+		t.Errorf("membership of OUTSIDE = %q, want %q", got, MembershipDownstream)
 	}
-	if entry := findScopeEntry(t, result.ScopeEntries, root, "NETWORK-A"); !entry.Fallback {
-		t.Errorf("scope entry = %#v, want fallback entry", entry)
-	}
-	if got, want := cyclePaths(result.Cycles), [][]string{{"NETWORK-A", "NETWORK-B", "NETWORK-A"}}; !slices.EqualFunc(got, want, slices.Equal[[]string]) {
-		t.Errorf("Cycles = %v, want %v", got, want)
-	}
-	if got, want := downstreamIDs(result.Downstream), []string{"EXTERNAL"}; !slices.Equal(got, want) {
-		t.Errorf("Downstream = %v, want %v", got, want)
+	for _, pair := range [][2]string{{"FROM", "IN-SCOPE"}, {"FROM", "OUTSIDE"}, {"OUTSIDE", "RETURNED"}} {
+		if !hasConnection(result.Connections, pair[0], pair[1]) {
+			t.Errorf("connection %s -> %s was not returned", pair[0], pair[1])
+		}
 	}
 }
 
-func TestTraverseExpandsReachedJobNetworkAndKeepsLogicalNetwork(t *testing.T) {
+func TestTraverseExpandsJobNetworkReachedByScopeAndDependencyOnce(t *testing.T) {
+	root := "ROOT"
+	network := "SHARED-NETWORK"
+	peerNetwork := "PEER-NETWORK"
+	nodes := []testNode{
+		{id: root, typeName: "job_network"},
+		{id: "SOURCE", typeName: "job", parentID: &root},
+		{id: network, typeName: "job_network", parentID: &root},
+		{id: peerNetwork, typeName: "job_network", parentID: &root},
+		{id: "INNER", typeName: "job", parentID: &network},
+		{id: "PEER-INNER", typeName: "job", parentID: &peerNetwork},
+	}
+	relations := []testRelation{
+		relation("1", "SOURCE", network, "precedes"),
+	}
+
+	result, err := Traverse(context.Background(), openTestDB(t, nodes, relations), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantEdges := []ScopeEdge{
+		{ParentID: peerNetwork, ChildID: "PEER-INNER"},
+		{ParentID: root, ChildID: peerNetwork},
+		{ParentID: root, ChildID: network},
+		{ParentID: root, ChildID: "SOURCE"},
+		{ParentID: network, ChildID: "INNER"},
+	}
+	if !reflect.DeepEqual(result.ScopeEdges, wantEdges) {
+		t.Errorf("ScopeEdges = %#v, want %#v", result.ScopeEdges, wantEdges)
+	}
+	if !hasConnection(result.Connections, "SOURCE", network) {
+		t.Errorf("connection SOURCE -> %s was not returned", network)
+	}
+	if got, want := result.Stats.ScopeQueries, 2; got != want {
+		t.Errorf("ScopeQueries = %d, want %d", got, want)
+	}
+	if got, want := result.Stats.ScopeRows, 5; got != want {
+		t.Errorf("ScopeRows = %d, want %d", got, want)
+	}
+}
+
+func TestTraverseDeeplyNestedJobNetworks(t *testing.T) {
+	const depth = 35
+	nodes := []testNode{{id: "NET-00", typeName: "job_network"}}
+	parent := "NET-00"
+	for index := 1; index <= depth; index++ {
+		id := fmt.Sprintf("NET-%02d", index)
+		parentID := parent
+		nodes = append(nodes, testNode{id: id, typeName: "job_network", parentID: &parentID})
+		parent = id
+	}
+	leafParent := parent
+	nodes = append(nodes, testNode{id: "LEAF", typeName: "job", parentID: &leafParent})
+
+	result, err := Traverse(context.Background(), openTestDB(t, nodes, nil), "NET-00")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := len(result.ScopeEdges), depth+1; got != want {
+		t.Errorf("len(ScopeEdges) = %d, want %d", got, want)
+	}
+	if got := findReached(t, result.Nodes, "LEAF").Membership; got != MembershipContained {
+		t.Errorf("LEAF membership = %q, want %q", got, MembershipContained)
+	}
+	if got, want := result.Stats.ScopeQueries, depth+1; got != want {
+		t.Errorf("ScopeQueries = %d, want %d", got, want)
+	}
+}
+
+func TestTraverseReachedJobNetworkExploresScopeAndOutgoingRelations(t *testing.T) {
 	network := "NETWORK"
 	subnetwork := "SUBNETWORK"
 	nodes := []testNode{
 		{id: "START", typeName: "job"},
 		{id: network, typeName: "job_network"},
-		{id: "ENTRY", typeName: "job", parentID: &network},
-		{id: "INTERNAL", typeName: "job", parentID: &network},
+		{id: "CHILD", typeName: "job", parentID: &network},
 		{id: subnetwork, typeName: "job_network", parentID: &network},
-		{id: "DEEP", typeName: "job", parentID: &subnetwork},
-		{id: "FROM-NETWORK", typeName: "job"},
-		{id: "FROM-INTERNAL", typeName: "job"},
+		{id: "INNER", typeName: "job", parentID: &subnetwork},
+		{id: "OUT", typeName: "job"},
+		{id: "NETWORK-OUT", typeName: "job"},
 	}
 	relations := []testRelation{
 		relation("1", "START", network, "precedes"),
-		relation("2", network, "FROM-NETWORK", "precedes"),
-		relation("3", "ENTRY", "INTERNAL", "precedes"),
-		relation("4", "INTERNAL", "FROM-INTERNAL", "precedes"),
+		relation("2", "INNER", "OUT", "precedes"),
+		relation("3", network, "NETWORK-OUT", "precedes"),
 	}
-	result, err := Traverse(context.Background(), openTestDB(t, nodes, relations), "START", Limits{})
+
+	result, err := Traverse(context.Background(), openTestDB(t, nodes, relations), "START")
 	if err != nil {
 		t.Fatal(err)
 	}
-
-	for _, id := range []string{network, "ENTRY", "INTERNAL", subnetwork, "DEEP"} {
-		if !slices.Contains(downstreamIDs(result.Downstream), id) {
-			t.Errorf("Downstream = %v, missing reached network scope node %s", downstreamIDs(result.Downstream), id)
+	for _, id := range []string{network, "CHILD", subnetwork, "INNER", "OUT", "NETWORK-OUT"} {
+		if got := findReached(t, result.Nodes, id).Membership; got != MembershipDownstream {
+			t.Errorf("membership of %s = %q, want %q", id, got, MembershipDownstream)
 		}
 	}
-	if !hasPath(result.Connections, []string{network, "FROM-NETWORK"}) ||
-		!hasPath(result.Connections, []string{"INTERNAL", "FROM-INTERNAL"}) {
-		t.Errorf("Connections = %#v, reached network scope was not explored", result.Connections)
-	}
-	if hasPath(result.Connections, []string{network, "ENTRY"}) ||
-		hasPath(result.Connections, []string{subnetwork, "DEEP"}) {
-		t.Error("reached network containment was mixed into dependency connections")
-	}
-	if got, want := scopeEntryNodeIDs(result.ScopeEntries, network), []string{"DEEP", "ENTRY", subnetwork}; !slices.Equal(got, want) {
-		t.Errorf("reached network ScopeEntries = %v, want %v", got, want)
-	}
-	if got := scopeEntryNodeIDs(result.ScopeEntries, subnetwork); len(got) != 0 {
-		t.Errorf("nested network was redundantly expanded with ScopeEntries %v", got)
+	if !hasConnection(result.Connections, "INNER", "OUT") || !hasConnection(result.Connections, network, "NETWORK-OUT") {
+		t.Errorf("Connections = %#v, want scope and network outgoing relations", result.Connections)
 	}
 }
 
-func TestTraverseRecursivelyExcludesTargetNetworkScopeFromDownstream(t *testing.T) {
-	root, subnetwork := "ROOT", "SUBNETWORK"
-	nodes := []testNode{
-		{id: root, typeName: "job_network"},
-		{id: subnetwork, typeName: "job_network", parentID: &root},
-		{id: "DEEP", typeName: "job", parentID: &subnetwork},
-		{id: "EXTERNAL", typeName: "job"},
-	}
-	relations := []testRelation{
-		relation("1", "DEEP", "EXTERNAL", "precedes"),
-	}
-	result, err := Traverse(context.Background(), openTestDB(t, nodes, relations), root, Limits{})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	if got, want := downstreamIDs(result.Downstream), []string{"EXTERNAL"}; !slices.Equal(got, want) {
-		t.Errorf("Downstream = %v, want only target-scope external node %v", got, want)
-	}
-	for _, id := range []string{subnetwork, "DEEP"} {
-		if !slices.Contains(visitIDs(result.Nodes), id) {
-			t.Errorf("Nodes = %v, target scope descendant %s was not explored", visitIDs(result.Nodes), id)
-		}
-	}
-}
-
-func TestTraverseSeparatesGraphDepthAndDependencyDistance(t *testing.T) {
+func TestTraverseStopsAtNonTraversableNodeType(t *testing.T) {
 	nodes := []testNode{
 		{id: "START", typeName: "job"},
-		{id: "DIRECT", typeName: "job"},
+		{id: "UNIT", typeName: "management_unit"},
+		{id: "HIDDEN", typeName: "job"},
+	}
+	relations := []testRelation{
+		relation("1", "START", "UNIT", "precedes"),
+		relation("2", "UNIT", "HIDDEN", "precedes"),
+	}
+
+	result, err := Traverse(context.Background(), openTestDB(t, nodes, relations), "START")
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantEndpoints := []Endpoint{{
+		Node:   Node{ID: "UNIT", Type: "management_unit", Name: "UNIT"},
+		Reason: EndpointNonTraversableNodeType,
+	}}
+	if !reflect.DeepEqual(result.Endpoints, wantEndpoints) {
+		t.Errorf("Endpoints = %#v, want %#v", result.Endpoints, wantEndpoints)
+	}
+	if hasReached(result.Nodes, "UNIT") || hasReached(result.Nodes, "HIDDEN") {
+		t.Errorf("Nodes = %#v, contains node past non-traversable endpoint", result.Nodes)
+	}
+	if !hasConnection(result.Connections, "START", "UNIT") || hasConnection(result.Connections, "UNIT", "HIDDEN") {
+		t.Errorf("Connections = %#v, want only arrival at UNIT", result.Connections)
+	}
+}
+
+func TestTraverseFollowsDependencyIntermediateTypes(t *testing.T) {
+	nodes := []testNode{
+		{id: "START", typeName: "job"},
 		{id: "FILE", typeName: "file"},
-		{id: "VIA-FILE", typeName: "job"},
-	}
-	relations := []testRelation{
-		relation("1", "START", "DIRECT", "precedes"),
-		relation("2", "START", "FILE", "produces"),
-		relation("3", "FILE", "VIA-FILE", "triggers"),
-	}
-	result, err := Traverse(context.Background(), openTestDB(t, nodes, relations), "START", Limits{})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	assertVisitDistance(t, result.Nodes, "FILE", 1, 0)
-	assertVisitDistance(t, result.Nodes, "DIRECT", 1, 1)
-	assertVisitDistance(t, result.Nodes, "VIA-FILE", 2, 1)
-	assertDownstreamDistance(t, result.Downstream, "DIRECT", 1, 1)
-	assertDownstreamDistance(t, result.Downstream, "VIA-FILE", 2, 1)
-}
-
-func TestTraverseSelectsRepresentativeDownstreamByDependencyDistance(t *testing.T) {
-	nodes := []testNode{
-		{id: "START", typeName: "job"}, {id: "JOB", typeName: "job"},
-		{id: "FILE-1", typeName: "file"}, {id: "FILE-2", typeName: "file"},
-		{id: "DESTINATION", typeName: "job"},
-	}
-	relations := []testRelation{
-		relation("1", "START", "JOB", "precedes"),
-		relation("2", "JOB", "DESTINATION", "precedes"),
-		relation("3", "START", "FILE-1", "produces"),
-		relation("4", "FILE-1", "FILE-2", "produces"),
-		relation("5", "FILE-2", "DESTINATION", "triggers"),
-	}
-	result, err := Traverse(context.Background(), openTestDB(t, nodes, relations), "START", Limits{})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	assertDownstreamDistance(t, result.Downstream, "DESTINATION", 3, 1)
-	connection := findConnection(t, result.Connections, "JOB", "DESTINATION")
-	if connection.GraphDepth != 2 || connection.DependencyDistance != 2 {
-		t.Errorf("JOB -> DESTINATION distances = (%d, %d), want path-specific (2, 2)",
-			connection.GraphDepth, connection.DependencyDistance)
-	}
-}
-
-func TestTraverseReexpandsProcessedNodeAfterScopeFallbackFindsShorterDistance(t *testing.T) {
-	root := "NET"
-	nodes := []testNode{
-		{id: root, typeName: "job_network"},
-		{id: "A", typeName: "job", parentID: &root},
-		{id: "C", typeName: "job", parentID: &root},
-		{id: "D", typeName: "job", parentID: &root},
-		{id: "M", typeName: "job"},
-		{id: "N", typeName: "job"},
-		{id: "X", typeName: "job"},
-		{id: "Y", typeName: "job"},
-	}
-	relations := []testRelation{
-		relation("01", "A", "M", "precedes"),
-		relation("02", "M", "N", "precedes"),
-		relation("03", "N", "X", "precedes"),
-		relation("04", "C", "D", "precedes"),
-		relation("05", "D", "C", "precedes"),
-		relation("06", "C", "X", "precedes"),
-		relation("07", "X", "Y", "precedes"),
-		relation("08", "X", "Y", "triggers"),
-	}
-
-	var baseline []byte
-	for iteration := 0; iteration < 2; iteration++ {
-		orderedNodes := append([]testNode(nil), nodes...)
-		orderedRelations := append([]testRelation(nil), relations...)
-		if iteration == 1 {
-			slices.Reverse(orderedNodes)
-			slices.Reverse(orderedRelations)
-		}
-		result, err := Traverse(context.Background(), openTestDB(t, orderedNodes, orderedRelations), root, Limits{})
-		if err != nil {
-			t.Fatal(err)
-		}
-
-		if !result.UsedScopeFallback {
-			t.Error("UsedScopeFallback = false, want disconnected C-D component to be rescued")
-		}
-		assertVisitDistance(t, result.Nodes, "X", 1, 1)
-		assertVisitDistance(t, result.Nodes, "Y", 2, 2)
-		assertDownstreamDistance(t, result.Downstream, "X", 1, 1)
-		assertDownstreamDistance(t, result.Downstream, "Y", 2, 2)
-		connection := findConnection(t, result.Connections, "X", "Y")
-		if connection.GraphDepth != 2 || connection.DependencyDistance != 2 {
-			t.Errorf("X -> Y distances = (%d, %d), want re-expanded path distance (2, 2)",
-				connection.GraphDepth, connection.DependencyDistance)
-		}
-		if got, want := relationIDs(connection.Relations), []string{"07", "08"}; !slices.Equal(got, want) {
-			t.Errorf("X -> Y relations = %v, want one merged connection with relations %v", got, want)
-		}
-		count := 0
-		for _, candidate := range result.Connections {
-			if candidate.FromID == "X" && candidate.To.ID == "Y" {
-				count++
-			}
-		}
-		if count != 1 {
-			t.Errorf("X -> Y connection count = %d, want 1", count)
-		}
-
-		encoded, err := json.Marshal(result)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if baseline == nil {
-			baseline = encoded
-			continue
-		}
-		if string(encoded) != string(baseline) {
-			t.Fatalf("re-expansion result changed with insertion order\nfirst: %s\n got: %s", baseline, encoded)
-		}
-	}
-}
-
-func TestTraverseKeepsParetoStateThatCanExpandWithinGraphDepth(t *testing.T) {
-	nodes := []testNode{
-		{id: "START", typeName: "job"},
-		{id: "FILE-1", typeName: "file"},
-		{id: "FILE-2", typeName: "file"},
-		{id: "JOB-X", typeName: "job"},
-		{id: "B", typeName: "job"},
-		{id: "OUT", typeName: "job"},
-	}
-	relations := []testRelation{
-		relation("1", "START", "FILE-1", "produces"),
-		relation("2", "FILE-1", "FILE-2", "produces"),
-		relation("3", "FILE-2", "B", "triggers"),
-		relation("4", "START", "JOB-X", "precedes"),
-		relation("5", "JOB-X", "B", "precedes"),
-		relation("6", "B", "OUT", "precedes"),
-	}
-
-	result, err := Traverse(
-		context.Background(), openTestDB(t, nodes, relations), "START", Limits{MaxGraphDepth: 3},
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	if !hasPath(result.Connections, []string{"B", "OUT"}) {
-		t.Error("the graph-depth-feasible state of B was not expanded to OUT")
-	}
-	assertVisitDistance(t, result.Nodes, "B", 3, 1)
-	assertDownstreamDistance(t, result.Downstream, "B", 3, 1)
-	assertDownstreamDistance(t, result.Downstream, "OUT", 3, 3)
-	connection := findConnection(t, result.Connections, "B", "OUT")
-	if connection.GraphDepth != 3 || connection.DependencyDistance != 3 {
-		t.Errorf("B -> OUT distances = (%d, %d), want expansion state (3, 3)",
-			connection.GraphDepth, connection.DependencyDistance)
-	}
-}
-
-func TestTraverseCountsParetoStatesTowardStateLimit(t *testing.T) {
-	nodes := []testNode{
-		{id: "START", typeName: "job"},
-		{id: "FILE-1", typeName: "file"},
-		{id: "FILE-2", typeName: "file"},
-		{id: "JOB-X", typeName: "job"},
-		{id: "B", typeName: "job"},
-		{id: "OUT", typeName: "job"},
-	}
-	relations := []testRelation{
-		relation("1", "START", "FILE-1", "produces"),
-		relation("2", "FILE-1", "FILE-2", "produces"),
-		relation("3", "FILE-2", "B", "triggers"),
-		relation("4", "START", "JOB-X", "precedes"),
-		relation("5", "JOB-X", "B", "precedes"),
-		relation("6", "B", "OUT", "precedes"),
-	}
-
-	result, err := Traverse(context.Background(), openTestDB(t, nodes, relations), "START", Limits{
-		MaxVisitedStates: 5,
-		MaxGraphDepth:    3,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	assertFrontier(t, result, "B", 2, 2, TruncationStateLimit)
-	if hasPath(result.Connections, []string{"B", "OUT"}) {
-		t.Error("the state rejected by the state limit was expanded")
-	}
-}
-
-func TestTraversePropagatesShorterReachedScopeDistance(t *testing.T) {
-	root, network := "ROOT", "NET-X"
-	nodes := []testNode{
-		{id: root, typeName: "job_network"},
-		{id: "A", typeName: "job", parentID: &root},
-		{id: "J1", typeName: "job", parentID: &root},
-		{id: "J2", typeName: "job", parentID: &root},
-		{id: "C", typeName: "job", parentID: &root},
-		{id: "D", typeName: "job", parentID: &root},
-		{id: network, typeName: "job_network"},
-		{id: "CHILD", typeName: "job", parentID: &network},
-		{id: "OUT", typeName: "job"},
-	}
-	relations := []testRelation{
-		relation("01", "A", "J1", "precedes"),
-		relation("02", "J1", "J2", "precedes"),
-		relation("03", "J2", network, "precedes"),
-		relation("04", "C", "D", "precedes"),
-		relation("05", "D", "C", "precedes"),
-		relation("06", "C", network, "precedes"),
-		relation("07", "CHILD", "OUT", "precedes"),
-	}
-
-	var baseline []byte
-	for iteration := 0; iteration < 2; iteration++ {
-		orderedNodes := append([]testNode(nil), nodes...)
-		orderedRelations := append([]testRelation(nil), relations...)
-		if iteration == 1 {
-			slices.Reverse(orderedNodes)
-			slices.Reverse(orderedRelations)
-		}
-		result, err := Traverse(
-			context.Background(), openTestDB(t, orderedNodes, orderedRelations), root, Limits{},
-		)
-		if err != nil {
-			t.Fatal(err)
-		}
-
-		assertDownstreamDistance(t, result.Downstream, network, 1, 1)
-		assertDownstreamDistance(t, result.Downstream, "CHILD", 1, 1)
-		assertDownstreamDistance(t, result.Downstream, "OUT", 2, 2)
-		for _, id := range []string{network, "CHILD", "OUT"} {
-			downstream := findDownstream(t, result.Downstream, id)
-			if downstream.ConfirmedDependencyDistance == nil ||
-				*downstream.ConfirmedDependencyDistance != downstream.DependencyDistance {
-				t.Errorf("%s ConfirmedDependencyDistance = %v, want %d",
-					id, downstream.ConfirmedDependencyDistance, downstream.DependencyDistance)
-			}
-		}
-		for _, entry := range result.ScopeEntries {
-			if hasPath(result.Connections, []string{entry.ScopeRootID, entry.Node.ID}) {
-				t.Errorf("scope entry %s -> %s was also returned as a dependency connection",
-					entry.ScopeRootID, entry.Node.ID)
-			}
-		}
-		pairs := make(map[string]struct{}, len(result.Connections))
-		for _, connection := range result.Connections {
-			key := connection.FromID + "\x00" + connection.To.ID
-			if _, duplicate := pairs[key]; duplicate {
-				t.Errorf("duplicate connection pair %s -> %s", connection.FromID, connection.To.ID)
-			}
-			pairs[key] = struct{}{}
-		}
-
-		encoded, err := json.Marshal(result)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if baseline == nil {
-			baseline = encoded
-			continue
-		}
-		if string(encoded) != string(baseline) {
-			t.Fatalf("scope relaxation changed with insertion order\nfirst: %s\n got: %s", baseline, encoded)
-		}
-	}
-}
-
-func TestTraversePropagatesShorterNestedScopeDistance(t *testing.T) {
-	root, outer, nested := "ROOT", "OUTER", "NESTED"
-	nodes := []testNode{
-		{id: root, typeName: "job_network"},
-		{id: "A", typeName: "job", parentID: &root},
-		{id: "J1", typeName: "job", parentID: &root},
-		{id: "J2", typeName: "job", parentID: &root},
-		{id: "C", typeName: "job", parentID: &root},
-		{id: "D", typeName: "job", parentID: &root},
-		{id: outer, typeName: "job_network"},
-		{id: nested, typeName: "job_network", parentID: &outer},
-		{id: "DEEP", typeName: "job", parentID: &nested},
+		{id: "PATTERN", typeName: "file_pattern"},
+		{id: "STATUS", typeName: "job_status"},
+		{id: "EVENT", typeName: "external_event"},
 		{id: "END", typeName: "job"},
 	}
 	relations := []testRelation{
-		relation("01", "A", "J1", "precedes"),
-		relation("02", "J1", "J2", "precedes"),
-		relation("03", "J2", outer, "precedes"),
-		relation("04", "C", "D", "precedes"),
-		relation("05", "D", "C", "precedes"),
-		relation("06", "C", nested, "precedes"),
-		relation("07", "DEEP", "END", "precedes"),
+		relation("1", "START", "FILE", "produces"),
+		relation("2", "FILE", "PATTERN", "consumed_by"),
+		relation("3", "PATTERN", "STATUS", "observed_by"),
+		relation("4", "STATUS", "EVENT", "triggers"),
+		relation("5", "EVENT", "END", "triggers"),
 	}
+	evidence := `[{"source":"definition"}]`
+	relations[0].evidence = &evidence
 
-	result, err := Traverse(context.Background(), openTestDB(t, nodes, relations), root, Limits{})
+	result, err := Traverse(context.Background(), openTestDB(t, nodes, relations), "START")
 	if err != nil {
 		t.Fatal(err)
 	}
-
-	assertDownstreamDistance(t, result.Downstream, nested, 1, 1)
-	assertDownstreamDistance(t, result.Downstream, "DEEP", 1, 1)
-	assertDownstreamDistance(t, result.Downstream, "END", 2, 2)
-	for _, id := range []string{nested, "DEEP", "END"} {
-		downstream := findDownstream(t, result.Downstream, id)
-		if downstream.ConfirmedDependencyDistance == nil ||
-			*downstream.ConfirmedDependencyDistance != downstream.DependencyDistance {
-			t.Errorf("%s ConfirmedDependencyDistance = %v, want %d",
-				id, downstream.ConfirmedDependencyDistance, downstream.DependencyDistance)
+	for _, id := range []string{"FILE", "PATTERN", "STATUS", "EVENT", "END"} {
+		if !hasReached(result.Nodes, id) {
+			t.Errorf("node %s was not reached", id)
 		}
 	}
-	if got := scopeEntryNodeIDs(result.ScopeEntries, nested); len(got) != 0 {
-		t.Errorf("derived nested scope added redundant ScopeEntries %v", got)
-	}
-	if hasPath(result.Connections, []string{nested, "DEEP"}) {
-		t.Error("nested containment was mixed into dependency connections")
+	connection := findConnection(t, result.Connections, "START", "FILE")
+	if got := string(connection.Relations[0].Evidence); got != evidence {
+		t.Errorf("Evidence = %s, want %s", got, evidence)
 	}
 }
 
-func TestTraverseRecordsConfirmedPathDistanceSeparately(t *testing.T) {
-	candidate := relation("1", "START", "DESTINATION", "precedes")
-	candidate.certainty = "candidate"
-	nodes := []testNode{
-		{id: "START", typeName: "job"},
-		{id: "INTERMEDIATE", typeName: "job"},
-		{id: "DESTINATION", typeName: "job"},
-	}
-	result, err := Traverse(context.Background(), openTestDB(t, nodes, []testRelation{
-		candidate,
-		relation("2", "START", "INTERMEDIATE", "precedes"),
-		relation("3", "INTERMEDIATE", "DESTINATION", "precedes"),
-	}), "START", Limits{})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	destination := findDownstream(t, result.Downstream, "DESTINATION")
-	if destination.DependencyDistance != 1 {
-		t.Errorf("DependencyDistance = %d, want candidate path distance 1", destination.DependencyDistance)
-	}
-	if destination.ConfirmedDependencyDistance == nil || *destination.ConfirmedDependencyDistance != 2 {
-		t.Errorf("ConfirmedDependencyDistance = %v, want declared path distance 2", destination.ConfirmedDependencyDistance)
-	}
-}
-
-func TestTraverseLeavesConfirmedDependencyDistanceNilForCandidateOnlyPath(t *testing.T) {
-	candidate := relation("1", "START", "DESTINATION", "precedes")
-	candidate.certainty = "candidate"
-	result, err := Traverse(context.Background(), openTestDB(t, []testNode{
-		{id: "START", typeName: "job"},
-		{id: "DESTINATION", typeName: "job"},
-	}, []testRelation{candidate}), "START", Limits{})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	destination := findDownstream(t, result.Downstream, "DESTINATION")
-	if destination.ConfirmedDependencyDistance != nil {
-		t.Errorf("ConfirmedDependencyDistance = %d, want nil for candidate-only path",
-			*destination.ConfirmedDependencyDistance)
-	}
-}
-
-func TestTraverseTreatsScopeExpansionAsConfirmedWithoutIncreasingDistance(t *testing.T) {
-	network := "NETWORK"
-	result, err := Traverse(context.Background(), openTestDB(t, []testNode{
-		{id: "START", typeName: "job"},
-		{id: network, typeName: "job_network"},
-		{id: "CHILD", typeName: "job", parentID: &network},
-	}, []testRelation{
-		relation("1", "START", network, "precedes"),
-	}), "START", Limits{})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	child := findDownstream(t, result.Downstream, "CHILD")
-	if child.ConfirmedDependencyDistance == nil || *child.ConfirmedDependencyDistance != 1 {
-		t.Errorf("CHILD ConfirmedDependencyDistance = %v, want scope-preserving distance 1",
-			child.ConfirmedDependencyDistance)
-	}
-}
-
-func TestTraverseKeepsNodePathAndParentID(t *testing.T) {
-	root, rootPath, childPath, externalPath := "ROOT", "/ROOT", "/ROOT/CHILD", "/EXTERNAL"
-	nodes := []testNode{
-		{id: root, typeName: "job_network", path: &rootPath},
-		{id: "CHILD", typeName: "job", path: &childPath, parentID: &root},
-		{id: "EXTERNAL", typeName: "job", path: &externalPath},
-	}
-	result, err := Traverse(context.Background(), openTestDB(t, nodes, []testRelation{
-		relation("1", "CHILD", "EXTERNAL", "precedes"),
-	}), root, Limits{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if result.Target.Path == nil || *result.Target.Path != rootPath {
-		t.Errorf("Target.Path = %v, want %q", result.Target.Path, rootPath)
-	}
-	child := findVisit(t, result.Nodes, "CHILD").Node
-	if child.Path == nil || *child.Path != childPath || child.ParentID == nil || *child.ParentID != root {
-		t.Errorf("child node = %#v, want path %q and parent %q", child, childPath, root)
-	}
-	external := findConnection(t, result.Connections, "CHILD", "EXTERNAL").To
-	if external.Path == nil || *external.Path != externalPath || external.ParentID != nil {
-		t.Errorf("external connection node = %#v, want path %q and no parent", external, externalPath)
-	}
-}
-
-func TestTraverseDistinguishesSameNamedJobsByPathAndParentID(t *testing.T) {
-	networkA, networkB := "NETWORK-A", "NETWORK-B"
-	pathA, pathB := "/NETWORK-A/SHARED", "/NETWORK-B/SHARED"
-	nodes := []testNode{
-		{id: "START", typeName: "job"},
-		{id: networkA, typeName: "job_network"},
-		{id: networkB, typeName: "job_network"},
-		{id: "JOB-A", typeName: "job", name: "SHARED", path: &pathA, parentID: &networkA},
-		{id: "JOB-B", typeName: "job", name: "SHARED", path: &pathB, parentID: &networkB},
-	}
-	relations := []testRelation{
-		relation("1", "START", "JOB-A", "precedes"),
-		relation("2", "START", "JOB-B", "precedes"),
-	}
-	result, err := Traverse(context.Background(), openTestDB(t, nodes, relations), "START", Limits{})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	jobA := findVisit(t, result.Nodes, "JOB-A").Node
-	jobB := findVisit(t, result.Nodes, "JOB-B").Node
-	if jobA.Name != jobB.Name {
-		t.Fatalf("job names = (%q, %q), want the same name", jobA.Name, jobB.Name)
-	}
-	if jobA.Path == nil || *jobA.Path != pathA || jobA.ParentID == nil || *jobA.ParentID != networkA {
-		t.Errorf("JOB-A = %#v, want path %q and parent %q", jobA, pathA, networkA)
-	}
-	if jobB.Path == nil || *jobB.Path != pathB || jobB.ParentID == nil || *jobB.ParentID != networkB {
-		t.Errorf("JOB-B = %#v, want path %q and parent %q", jobB, pathB, networkB)
-	}
-}
-
-func TestTraverseReportsGraphDepthAndStateFrontiers(t *testing.T) {
-	nodes := []testNode{{id: "A", typeName: "job"}, {id: "B", typeName: "job"}, {id: "C", typeName: "job"}, {id: "D", typeName: "job"}}
-	relations := []testRelation{
-		relation("1", "A", "B", "precedes"), relation("2", "B", "C", "precedes"), relation("3", "C", "D", "precedes"),
-	}
-	db := openTestDB(t, nodes, relations)
-
-	graphDepthResult, err := Traverse(context.Background(), db, "A", Limits{MaxGraphDepth: 1})
-	if err != nil {
-		t.Fatal(err)
-	}
-	assertFrontier(t, graphDepthResult, "B", 1, 1, TruncationGraphDepthLimit)
-	if hasPath(graphDepthResult.Connections, []string{"B", "C"}) {
-		t.Error("graph-depth-limited result retained an untraversed connection")
-	}
-
-	stateResult, err := Traverse(context.Background(), db, "A", Limits{MaxVisitedStates: 2})
-	if err != nil {
-		t.Fatal(err)
-	}
-	assertFrontier(t, stateResult, "C", 2, 2, TruncationStateLimit)
-	if got := visitIDs(stateResult.Nodes); !slices.Equal(got, []string{"A", "B"}) {
-		t.Errorf("visited nodes = %v, want [A B]", got)
-	}
-	if !hasPath(stateResult.Connections, []string{"B", "C"}) {
-		t.Error("state-limited result did not retain the connection to frontier")
-	}
-	if hasPath(stateResult.Connections, []string{"C", "D"}) {
-		t.Error("state-limited result investigated beyond frontier")
-	}
-}
-
-func TestTraverseReturnsPartialResultAtConnectionLimit(t *testing.T) {
-	nodes := []testNode{{id: "START", typeName: "job"}}
-	relations := make([]testRelation, 0, 6)
-	for index := 0; index < 6; index++ {
-		id := fmt.Sprintf("JOB-%02d", index)
-		nodes = append(nodes, testNode{id: id, typeName: "job"})
-		relations = append(relations, relation(fmt.Sprintf("relation-%02d", index), "START", id, "precedes"))
-	}
-
-	var result Result
-	var baseline []byte
-	for iteration := 0; iteration < 2; iteration++ {
-		orderedNodes := append([]testNode(nil), nodes...)
-		orderedRelations := append([]testRelation(nil), relations...)
-		if iteration == 1 {
-			slices.Reverse(orderedNodes)
-			slices.Reverse(orderedRelations)
+func TestTraverseReturnsNoPartialResultOnCancellationOrDatabaseError(t *testing.T) {
+	t.Run("canceled context", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		result, err := Traverse(ctx, openTestDB(t, jobs("START"), nil), "START")
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("error = %v, want context.Canceled", err)
 		}
-		current, err := Traverse(
-			context.Background(), openTestDB(t, orderedNodes, orderedRelations), "START", Limits{MaxConnections: 3},
-		)
-		if err != nil {
-			t.Fatal(err)
+		if !reflect.DeepEqual(result, Result{}) {
+			t.Errorf("result = %#v, want zero result", result)
 		}
-		encoded, err := json.Marshal(current)
-		if err != nil {
-			t.Fatal(err)
+	})
+
+	t.Run("relation query error", func(t *testing.T) {
+		db := openIncompleteTestDB(t)
+		result, err := Traverse(context.Background(), db, "START")
+		if err == nil {
+			t.Fatal("error = nil, want relation query error")
 		}
-		if iteration == 0 {
-			result = current
-			baseline = encoded
-			continue
+		if !reflect.DeepEqual(result, Result{}) {
+			t.Errorf("result = %#v, want zero result", result)
 		}
-		if string(encoded) != string(baseline) {
-			t.Fatalf("connection-limit cutoff changed with insertion order\nfirst: %s\n got: %s", baseline, encoded)
-		}
-	}
-
-	if got, want := downstreamIDs(result.Downstream), []string{"JOB-00", "JOB-01", "JOB-02"}; !slices.Equal(got, want) {
-		t.Errorf("Downstream = %v, want deterministic partial result %v", got, want)
-	}
-	if got := countRelations(result.Connections); got != 3 {
-		t.Errorf("relation count = %d, want connection limit 3", got)
-	}
-	assertFrontier(t, result, "START", 0, 0, TruncationConnectionLimit)
-}
-
-func TestTraverseAppliesConnectionLimitToScopeExpansion(t *testing.T) {
-	root := "ROOT"
-	nodes := []testNode{{id: root, typeName: "job_network"}}
-	for index := 0; index < 4; index++ {
-		nodes = append(nodes, testNode{
-			id: fmt.Sprintf("JOB-%02d", index), typeName: "job", parentID: &root,
-		})
-	}
-
-	result, err := Traverse(
-		context.Background(), openTestDB(t, nodes, nil), root, Limits{MaxConnections: 2},
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	assertFrontier(t, result, root, 0, 0, TruncationConnectionLimit)
-	if len(result.ScopeEntries) != 0 {
-		t.Errorf("ScopeEntries = %#v, want none before complete scope membership and incoming checks", result.ScopeEntries)
-	}
-	if got, want := visitIDs(result.Nodes), []string{root}; !slices.Equal(got, want) {
-		t.Errorf("Nodes = %v, want only logical root after partial scope read %v", got, want)
-	}
-}
-
-func TestTraverseAppliesConnectionLimitToScopeIncomingRelations(t *testing.T) {
-	root := "ROOT"
-	nodes := []testNode{
-		{id: root, typeName: "job_network"},
-		{id: "A", typeName: "job", parentID: &root},
-		{id: "B", typeName: "job", parentID: &root},
-		{id: "C", typeName: "job", parentID: &root},
-	}
-	result, err := Traverse(context.Background(), openTestDB(t, nodes, []testRelation{
-		relation("1", "A", "B", "precedes"),
-		relation("2", "B", "C", "precedes"),
-	}), root, Limits{MaxConnections: 4})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	assertFrontier(t, result, root, 0, 0, TruncationConnectionLimit)
-	if len(result.ScopeEntries) != 0 {
-		t.Errorf("ScopeEntries = %#v, want none after partial incoming-relation check", result.ScopeEntries)
-	}
-}
-
-func TestTraverseAppliesConnectionLimitToProjectedScopeIncomingRelations(t *testing.T) {
-	root := "ROOT"
-	nodes := []testNode{
-		{id: root, typeName: "job_network"},
-		{id: "A", typeName: "job", parentID: &root},
-		{id: "B", typeName: "job", parentID: &root},
-		{id: "FILE", typeName: "file"},
-	}
-	result, err := Traverse(context.Background(), openTestDB(t, nodes, []testRelation{
-		relation("1", "A", "FILE", "produces"),
-		relation("2", "FILE", "B", "triggers"),
-	}), root, Limits{MaxConnections: 3})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	assertFrontier(t, result, root, 0, 0, TruncationConnectionLimit)
-	if len(result.ScopeEntries) != 0 {
-		t.Errorf("ScopeEntries = %#v, want none after partial projected incoming check", result.ScopeEntries)
-	}
-}
-
-func TestTraverseBatchesLargeFrontier(t *testing.T) {
-	nodes := []testNode{{id: "START", typeName: "job"}, {id: "END", typeName: "job"}}
-	relations := make([]testRelation, 0, queryBatchSize*2+2)
-	for index := 0; index <= queryBatchSize; index++ {
-		id := fmt.Sprintf("N-%03d", index)
-		nodes = append(nodes, testNode{id: id, typeName: "file"})
-		relations = append(relations,
-			relation(fmt.Sprintf("a-%03d", index), "START", id, "produces"),
-			relation(fmt.Sprintf("b-%03d", index), id, "END", "triggers"),
-		)
-	}
-	db := openTestDB(t, nodes, relations)
-
-	result, err := Traverse(context.Background(), db, "START", Limits{})
-	if err != nil {
-		t.Fatalf("Traverse() with %d-node frontier error = %v", queryBatchSize+1, err)
-	}
-	if got := downstreamIDs(result.Downstream); !slices.Equal(got, []string{"END"}) {
-		t.Errorf("Downstream = %v, want [END]", got)
-	}
+	})
 }
 
 func TestTraverseOrderDoesNotDependOnInsertionOrder(t *testing.T) {
-	nodes := []testNode{
-		{id: "START", typeName: "job"}, {id: "A", typeName: "job"},
-		{id: "B", typeName: "file"}, {id: "C", typeName: "job"},
-	}
-	relations := []testRelation{
-		relation("4", "B", "C", "triggers"), relation("2", "START", "B", "produces"),
-		relation("3", "A", "C", "precedes"), relation("1", "START", "A", "precedes"),
-	}
-	var baseline []byte
-	for iteration := 0; iteration < 4; iteration++ {
-		rotatedNodes := append(append([]testNode(nil), nodes[iteration:]...), nodes[:iteration]...)
-		rotatedRelations := append(append([]testRelation(nil), relations[iteration:]...), relations[:iteration]...)
-		db := openTestDB(t, rotatedNodes, rotatedRelations)
-		result, err := Traverse(context.Background(), db, "START", Limits{})
-		if err != nil {
-			t.Fatal(err)
-		}
-		encoded, err := json.Marshal(result)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if baseline == nil {
-			baseline = encoded
-			continue
-		}
-		if string(encoded) != string(baseline) {
-			t.Fatalf("iteration %d result order changed\nfirst: %s\n got: %s", iteration, baseline, encoded)
-		}
-	}
-}
-
-func TestTraverseJobNetworkScopeOrderDoesNotDependOnInsertionOrder(t *testing.T) {
 	root := "ROOT"
+	sub := "SUB"
 	nodes := []testNode{
 		{id: root, typeName: "job_network"},
-		{id: "ENTRY", typeName: "job", parentID: &root},
-		{id: "CYCLE-A", typeName: "job_network", parentID: &root},
-		{id: "CYCLE-B", typeName: "job_network", parentID: &root},
-		{id: "EXTERNAL", typeName: "job"},
+		{id: "B", typeName: "job", parentID: &root},
+		{id: sub, typeName: "job_network", parentID: &root},
+		{id: "A", typeName: "job", parentID: &sub},
+		{id: "C", typeName: "job"},
+		{id: "D", typeName: "job"},
 	}
 	relations := []testRelation{
-		relation("1", "CYCLE-A", "CYCLE-B", "precedes"),
-		relation("2", "CYCLE-B", "CYCLE-A", "precedes"),
-		relation("3", "CYCLE-B", "EXTERNAL", "precedes"),
+		relation("6", "D", "C", "triggers"),
+		relation("2", "A", "C", "precedes"),
+		relation("5", "C", "D", "precedes"),
+		relation("4", "B", "C", "triggers"),
+		relation("3", "A", "C", "triggers"),
+		relation("1", root, "D", "precedes"),
 	}
 
-	var baseline []byte
-	for iteration := 0; iteration < 2; iteration++ {
-		orderedNodes := append([]testNode(nil), nodes...)
-		orderedRelations := append([]testRelation(nil), relations...)
-		if iteration == 1 {
-			slices.Reverse(orderedNodes)
-			slices.Reverse(orderedRelations)
+	first, err := Traverse(context.Background(), openTestDB(t, nodes, relations), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	slices.Reverse(nodes)
+	slices.Reverse(relations)
+	second, err := Traverse(context.Background(), openTestDB(t, nodes, relations), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, values := range map[string][2]any{
+		"Nodes":       {first.Nodes, second.Nodes},
+		"Connections": {first.Connections, second.Connections},
+		"ScopeEdges":  {first.ScopeEdges, second.ScopeEdges},
+		"Cycles":      {first.Cycles, second.Cycles},
+	} {
+		if !reflect.DeepEqual(values[0], values[1]) {
+			t.Errorf("%s differs by insertion order:\nfirst  = %#v\nsecond = %#v", name, values[0], values[1])
 		}
-		result, err := Traverse(context.Background(), openTestDB(t, orderedNodes, orderedRelations), root, Limits{})
-		if err != nil {
-			t.Fatal(err)
-		}
-		encoded, err := json.Marshal(result)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if baseline == nil {
-			baseline = encoded
-			continue
-		}
-		if string(encoded) != string(baseline) {
-			t.Fatalf("scope result order changed\nfirst: %s\n got: %s", baseline, encoded)
-		}
+	}
+	if got := relationIDs(findConnection(t, first.Connections, "A", "C").Relations); !slices.Equal(got, []string{"2", "3"}) {
+		t.Errorf("relation order = %v, want [2 3]", got)
 	}
 }
 
 func TestTraverseRejectsMissingAndUnsupportedTargets(t *testing.T) {
-	db := openTestDB(t, []testNode{{id: "FILE", typeName: "file"}}, nil)
-	if _, err := Traverse(context.Background(), db, "MISSING", Limits{}); !errors.Is(err, ErrTargetNotFound) {
-		t.Errorf("missing target error = %v", err)
+	db := openTestDB(t, []testNode{{id: "UNIT", typeName: "management_unit"}}, nil)
+	if _, err := Traverse(context.Background(), db, "MISSING"); !errors.Is(err, ErrTargetNotFound) {
+		t.Errorf("missing target error = %v, want ErrTargetNotFound", err)
 	}
-	if _, err := Traverse(context.Background(), db, "FILE", Limits{}); !errors.Is(err, ErrInvalidTargetType) {
-		t.Errorf("file target error = %v", err)
-	}
-}
-
-func TestResolveLimitsUsesServiceDefaults(t *testing.T) {
-	resolved, err := resolveLimits(Limits{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	want := Limits{
-		MaxVisitedStates: DefaultMaxVisitedStates,
-		MaxGraphDepth:    DefaultMaxGraphDepth,
-		MaxConnections:   DefaultMaxConnections,
-	}
-	if resolved != want {
-		t.Errorf("resolveLimits(Limits{}) = %#v, want %#v", resolved, want)
-	}
-}
-
-func TestTraverseDoesNotTreatManagementHierarchyAsIntermediate(t *testing.T) {
-	nodes := []testNode{
-		{id: "START", typeName: "job"},
-		{id: "UNIT", typeName: "management_unit"},
-		{id: "JOB", typeName: "job"},
-	}
-	relations := []testRelation{
-		relation("1", "START", "UNIT", "precedes"),
-		relation("2", "UNIT", "JOB", "precedes"),
-	}
-	db := openTestDB(t, nodes, relations)
-
-	result, err := Traverse(context.Background(), db, "START", Limits{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if slices.Contains(downstreamIDs(result.Downstream), "JOB") {
-		t.Error("management_unit was used as an execution dependency intermediate")
-	}
-	if hasPath(result.Connections, []string{"UNIT", "JOB"}) {
-		t.Error("management_unit successors were queried")
-	}
-	if len(result.Unexplored) != 1 {
-		t.Fatalf("Unexplored = %#v, want one non-traversable arrival", result.Unexplored)
-	}
-	unexplored := result.Unexplored[0]
-	if unexplored.Node.ID != "UNIT" || unexplored.GraphDepth != 1 || unexplored.DependencyDistance != 0 ||
-		unexplored.Reason != UnexploredNodeType {
-		t.Errorf("Unexplored[0] = %#v, want UNIT at (1, 0) for %q", unexplored, UnexploredNodeType)
+	if _, err := Traverse(context.Background(), db, "UNIT"); !errors.Is(err, ErrInvalidTargetType) {
+		t.Errorf("unsupported target error = %v, want ErrInvalidTargetType", err)
 	}
 }
 
@@ -1349,7 +499,7 @@ CREATE TABLE node (
     node_id TEXT PRIMARY KEY,
     node_type TEXT NOT NULL,
     name TEXT NOT NULL,
-	path TEXT,
+    path TEXT,
     parent_id TEXT
 );
 CREATE TABLE relation (
@@ -1361,8 +511,12 @@ CREATE TABLE relation (
     certainty TEXT NOT NULL,
     evidence_json TEXT
 );
-CREATE INDEX idx_relation_from ON relation(from_id);
-CREATE INDEX idx_relation_to ON relation(to_id);`); err != nil {
+CREATE INDEX idx_node_parent ON node(parent_id);
+CREATE INDEX idx_relation_from ON relation(from_id);`); err != nil {
+		t.Fatal(err)
+	}
+	tx, err := db.Begin()
+	if err != nil {
 		t.Fatal(err)
 	}
 	for _, node := range nodes {
@@ -1370,52 +524,98 @@ CREATE INDEX idx_relation_to ON relation(to_id);`); err != nil {
 		if name == "" {
 			name = node.id
 		}
-		if _, err := db.Exec(`INSERT INTO node (node_id, node_type, name, path, parent_id) VALUES (?, ?, ?, ?, ?)`, node.id, node.typeName, name, node.path, node.parentID); err != nil {
+		if _, err := tx.Exec(
+			`INSERT INTO node (node_id, node_type, name, path, parent_id) VALUES (?, ?, ?, ?, ?)`,
+			node.id, node.typeName, name, node.path, node.parentID,
+		); err != nil {
+			_ = tx.Rollback()
 			t.Fatal(err)
 		}
 	}
 	for _, current := range relations {
-		if _, err := db.Exec(`INSERT INTO relation (
+		if _, err := tx.Exec(`INSERT INTO relation (
             relation_id, from_id, to_id, relation_kind, origin, certainty, evidence_json
         ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
 			current.id, current.fromID, current.toID, current.kind,
 			current.origin, current.certainty, current.evidence,
 		); err != nil {
+			_ = tx.Rollback()
 			t.Fatal(err)
 		}
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
 	}
 	return db
 }
 
+func openIncompleteTestDB(t *testing.T) *sql.DB {
+	t.Helper()
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	db.SetMaxOpenConns(1)
+	t.Cleanup(func() { _ = db.Close() })
+	if _, err := db.Exec(`
+CREATE TABLE node (
+    node_id TEXT PRIMARY KEY,
+    node_type TEXT NOT NULL,
+    name TEXT NOT NULL,
+    path TEXT,
+    parent_id TEXT
+);
+INSERT INTO node (node_id, node_type, name) VALUES ('START', 'job', 'START');`); err != nil {
+		t.Fatal(err)
+	}
+	return db
+}
+
+func jobs(ids ...string) []testNode {
+	nodes := make([]testNode, len(ids))
+	for index, id := range ids {
+		nodes[index] = testNode{id: id, typeName: "job"}
+	}
+	return nodes
+}
+
 func relation(id, fromID, toID, kind string) testRelation {
-	return testRelation{id: id, fromID: fromID, toID: toID, kind: kind, origin: "scheduler", certainty: "declared"}
+	return testRelation{
+		id: id, fromID: fromID, toID: toID, kind: kind,
+		origin: "scheduler", certainty: "declared",
+	}
+}
+
+func hasReached(nodes []Reached, id string) bool {
+	return slices.ContainsFunc(nodes, func(reached Reached) bool { return reached.Node.ID == id })
+}
+
+func findReached(t *testing.T, nodes []Reached, id string) Reached {
+	t.Helper()
+	for _, reached := range nodes {
+		if reached.Node.ID == id {
+			return reached
+		}
+	}
+	t.Fatalf("reached node %q was not found", id)
+	return Reached{}
+}
+
+func hasConnection(connections []Connection, fromID, toID string) bool {
+	return slices.ContainsFunc(connections, func(connection Connection) bool {
+		return connection.FromID == fromID && connection.ToID == toID
+	})
 }
 
 func findConnection(t *testing.T, connections []Connection, fromID, toID string) Connection {
 	t.Helper()
 	for _, connection := range connections {
-		if connection.FromID == fromID && connection.To.ID == toID {
+		if connection.FromID == fromID && connection.ToID == toID {
 			return connection
 		}
 	}
 	t.Fatalf("connection %s -> %s was not found", fromID, toID)
 	return Connection{}
-}
-
-func hasPath(connections []Connection, path []string) bool {
-	for index := 0; index+1 < len(path); index++ {
-		found := false
-		for _, connection := range connections {
-			if connection.FromID == path[index] && connection.To.ID == path[index+1] {
-				found = true
-				break
-			}
-		}
-		if !found {
-			return false
-		}
-	}
-	return true
 }
 
 func relationIDs(relations []Relation) []string {
@@ -1424,117 +624,4 @@ func relationIDs(relations []Relation) []string {
 		ids[index] = relation.ID
 	}
 	return ids
-}
-
-func cyclePaths(cycles []Cycle) [][]string {
-	paths := make([][]string, len(cycles))
-	for index, cycle := range cycles {
-		paths[index] = cycle.Path
-	}
-	return paths
-}
-
-func nodeIDs(nodes []Node) []string {
-	ids := make([]string, len(nodes))
-	for index, node := range nodes {
-		ids[index] = node.ID
-	}
-	return ids
-}
-
-func scopeEntryNodeIDs(entries []ScopeEntry, rootID string) []string {
-	ids := make([]string, 0)
-	for _, entry := range entries {
-		if entry.ScopeRootID == rootID {
-			ids = append(ids, entry.Node.ID)
-		}
-	}
-	return ids
-}
-
-func findScopeEntry(t *testing.T, entries []ScopeEntry, rootID, nodeID string) ScopeEntry {
-	t.Helper()
-	for _, entry := range entries {
-		if entry.ScopeRootID == rootID && entry.Node.ID == nodeID {
-			return entry
-		}
-	}
-	t.Fatalf("scope entry %s -> %s was not found", rootID, nodeID)
-	return ScopeEntry{}
-}
-
-func visitIDs(visits []Visit) []string {
-	ids := make([]string, len(visits))
-	for index, visit := range visits {
-		ids[index] = visit.Node.ID
-	}
-	return ids
-}
-
-func downstreamIDs(nodes []Downstream) []string {
-	ids := make([]string, len(nodes))
-	for index, node := range nodes {
-		ids[index] = node.Node.ID
-	}
-	return ids
-}
-
-func findDownstream(t *testing.T, nodes []Downstream, id string) Downstream {
-	t.Helper()
-	for _, node := range nodes {
-		if node.Node.ID == id {
-			return node
-		}
-	}
-	t.Fatalf("downstream %s was not found", id)
-	return Downstream{}
-}
-
-func findVisit(t *testing.T, visits []Visit, id string) Visit {
-	t.Helper()
-	for _, visit := range visits {
-		if visit.Node.ID == id {
-			return visit
-		}
-	}
-	t.Fatalf("visit %s was not found", id)
-	return Visit{}
-}
-
-func assertVisitDistance(t *testing.T, visits []Visit, id string, graphDepth, dependencyDistance int) {
-	t.Helper()
-	visit := findVisit(t, visits, id)
-	if visit.GraphDepth != graphDepth || visit.DependencyDistance != dependencyDistance {
-		t.Errorf("visit %s distances = (%d, %d), want (%d, %d)", id,
-			visit.GraphDepth, visit.DependencyDistance, graphDepth, dependencyDistance)
-	}
-}
-
-func assertDownstreamDistance(t *testing.T, nodes []Downstream, id string, graphDepth, dependencyDistance int) {
-	t.Helper()
-	for _, node := range nodes {
-		if node.Node.ID != id {
-			continue
-		}
-		if node.GraphDepth != graphDepth || node.DependencyDistance != dependencyDistance {
-			t.Errorf("downstream %s distances = (%d, %d), want (%d, %d)", id,
-				node.GraphDepth, node.DependencyDistance, graphDepth, dependencyDistance)
-		}
-		return
-	}
-	t.Errorf("downstream %s was not found", id)
-}
-
-func assertFrontier(t *testing.T, result Result, id string, graphDepth, dependencyDistance int, reason TruncationReason) {
-	t.Helper()
-	if !result.Truncated || result.TruncationReason != reason {
-		t.Errorf("truncation = (%t, %q), want (true, %q)", result.Truncated, result.TruncationReason, reason)
-	}
-	if !slices.ContainsFunc(result.Frontier, func(frontier Frontier) bool {
-		return frontier.Node.ID == id && frontier.GraphDepth == graphDepth &&
-			frontier.DependencyDistance == dependencyDistance && frontier.Reason == reason
-	}) {
-		t.Errorf("Frontier = %#v, want %s at graph depth %d and dependency distance %d for %s",
-			result.Frontier, id, graphDepth, dependencyDistance, reason)
-	}
 }
