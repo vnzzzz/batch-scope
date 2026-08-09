@@ -77,7 +77,9 @@ type Endpoint struct {
 	Reason EndpointReason
 }
 
-// Cycle は到達した依存部分グラフの循環成分を表す。
+// Cycle は到達可能な探索グラフの循環成分を表す。
+// 探索グラフの辺は依存relationとscope遷移の両方を含むため、
+// 配下のジョブから親のジョブネットへ戻る循環もここへ現れる。
 type Cycle struct {
 	NodeIDs []string
 }
