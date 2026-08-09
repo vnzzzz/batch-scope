@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"sync"
 
+	"batchscope/internal/normalize"
+
 	_ "modernc.org/sqlite"
 )
 
@@ -499,14 +501,14 @@ SELECT EXISTS(
 }
 
 func checkRepresentativeSearches(ctx context.Context, db *sql.DB) error {
-	var nodeID, nodeType, normalizedName string
-	var normalizedPath sql.NullString
+	var nodeID, nodeType, name string
+	var path sql.NullString
 	err := db.QueryRowContext(ctx, `
-SELECT node_id, node_type, name_normalized, path_normalized
+SELECT node_id, node_type, name, path
 FROM node
 WHERE node_type IN ('job', 'job_network')
 ORDER BY node_id
-LIMIT 1`).Scan(&nodeID, &nodeType, &normalizedName, &normalizedPath)
+LIMIT 1`).Scan(&nodeID, &nodeType, &name, &path)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil
 	}
@@ -521,38 +523,58 @@ LIMIT 1`).Scan(&nodeID, &nodeType, &normalizedName, &normalizedPath)
 	}{
 		{
 			name:  "ID",
-			query: `SELECT EXISTS(SELECT 1 FROM node WHERE node_id = ?)`,
+			query: `SELECT node_id FROM node WHERE node_id = ?`,
 			args:  []any{nodeID},
 		},
 		{
 			name:  "name",
-			query: `SELECT EXISTS(SELECT 1 FROM node WHERE node_type = ? AND name_normalized = ? AND node_id = ?)`,
-			args:  []any{nodeType, normalizedName, nodeID},
+			query: `SELECT node_id FROM node WHERE node_type = ? AND name_normalized = ?`,
+			args:  []any{nodeType, normalize.Name(name)},
 		},
 	}
-	if normalizedPath.Valid {
+	if path.Valid {
 		checks = append(checks, struct {
 			name  string
 			query string
 			args  []any
 		}{
 			name:  "path",
-			query: `SELECT EXISTS(SELECT 1 FROM node WHERE node_type = ? AND path_normalized = ? AND node_id = ?)`,
-			args:  []any{nodeType, normalizedPath.String, nodeID},
+			query: `SELECT node_id FROM node WHERE node_type = ? AND path_normalized = ?`,
+			args:  []any{nodeType, normalize.Path(path.String)},
 		})
 	}
 
 	for _, check := range checks {
-		var found bool
-		if err := db.QueryRowContext(ctx, check.query, check.args...).Scan(&found); err != nil {
+		found, err := searchIncludesNode(ctx, db, check.query, nodeID, check.args...)
+		if err != nil {
 			return fmt.Errorf("run representative %s search: %w", check.name, err)
 		}
-		// 同名または同じパスの別ノードがあっても、代表ノード自身が検索条件を満たせば正常である。
 		if !found {
 			return fmt.Errorf("representative %s search omitted node %q", check.name, nodeID)
 		}
 	}
 	return nil
+}
+
+func searchIncludesNode(ctx context.Context, db *sql.DB, query, representativeID string, args ...any) (bool, error) {
+	rows, err := db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return false, err
+	}
+	defer rows.Close()
+
+	found := false
+	for rows.Next() {
+		var nodeID string
+		if err := rows.Scan(&nodeID); err != nil {
+			return false, err
+		}
+		if nodeID == representativeID {
+			found = true
+			break
+		}
+	}
+	return found, rows.Err()
 }
 
 func removeStartupDatabases(directory string) error {

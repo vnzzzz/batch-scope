@@ -15,6 +15,7 @@ import (
 	"reflect"
 	"sort"
 	"strings"
+	"sync"
 	"testing"
 
 	"batchscope/internal/store"
@@ -24,7 +25,7 @@ func TestRunImportsDemoSnapshotWithIndexes(t *testing.T) {
 	archive := demoArchive(t)
 	workspace := t.TempDir()
 	storage := newImporterTestStore(t, filepath.Join(workspace, "data"))
-	if err := Run(context.Background(), workspace, bytes.NewReader(archive), storage); err != nil {
+	if _, err := Run(context.Background(), workspace, bytes.NewReader(archive), storage); err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}
 	if got := storage.State(); got != store.StateReady {
@@ -67,12 +68,12 @@ func TestRunFailureKeepsCurrentAndRemovesImportingDatabase(t *testing.T) {
 	workspace := t.TempDir()
 	dataDirectory := filepath.Join(workspace, "data")
 	storage := newImporterTestStore(t, dataDirectory)
-	if err := Run(context.Background(), workspace, bytes.NewReader(demoArchive(t)), storage); err != nil {
+	if _, err := Run(context.Background(), workspace, bytes.NewReader(demoArchive(t)), storage); err != nil {
 		t.Fatalf("initial Run() error = %v", err)
 	}
 
 	invalid := duplicateLimitArchive(t)
-	if err := Run(context.Background(), workspace, bytes.NewReader(invalid), storage); err == nil {
+	if _, err := Run(context.Background(), workspace, bytes.NewReader(invalid), storage); err == nil {
 		t.Fatal("Run() succeeded with duplicate limit IDs")
 	}
 	if got := storage.State(); got != store.StateReady {
@@ -101,11 +102,137 @@ func TestRunProducesSameTableContentsFromSameInput(t *testing.T) {
 	}
 }
 
+func TestRunReservesImportBeforeReadingArchive(t *testing.T) {
+	workspace := t.TempDir()
+	storage := newImporterTestStore(t, filepath.Join(workspace, "data"))
+	firstReader := &blockingReader{
+		reader:  bytes.NewReader(demoArchive(t)),
+		started: make(chan struct{}),
+		resume:  make(chan struct{}),
+	}
+	firstDone := make(chan error, 1)
+	go func() {
+		_, err := Run(context.Background(), workspace, firstReader, storage)
+		firstDone <- err
+	}()
+
+	<-firstReader.started
+	if got := storage.State(); got != store.StateImporting {
+		t.Fatalf("state during receive = %q, want %q", got, store.StateImporting)
+	}
+	secondReader := &countingReader{reader: bytes.NewReader(demoArchive(t))}
+	if _, err := Run(context.Background(), workspace, secondReader, storage); !errors.Is(err, store.ErrImportInProgress) {
+		t.Fatalf("concurrent Run() error = %v, want %v", err, store.ErrImportInProgress)
+	}
+	if secondReader.reads != 0 {
+		t.Fatalf("concurrent reader calls = %d, want 0", secondReader.reads)
+	}
+
+	close(firstReader.resume)
+	if err := <-firstDone; err != nil {
+		t.Fatalf("first Run() error = %v", err)
+	}
+}
+
+func TestRunAbortsReservationWhenReceiveFails(t *testing.T) {
+	workspace := t.TempDir()
+	dataDirectory := filepath.Join(workspace, "data")
+	storage := newImporterTestStore(t, dataDirectory)
+	receiveErr := errors.New("receive failed")
+
+	if _, err := Run(context.Background(), workspace, errorReader{err: receiveErr}, storage); !errors.Is(err, receiveErr) {
+		t.Fatalf("Run() error = %v, want %v", err, receiveErr)
+	}
+	if got := storage.State(); got != store.StateEmpty {
+		t.Fatalf("state = %q, want %q", got, store.StateEmpty)
+	}
+	if _, err := os.Stat(filepath.Join(dataDirectory, "importing.db")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("importing.db after receive failure: %v", err)
+	}
+}
+
+func TestRunReportsRetiredCleanupAsSuccessfulWarning(t *testing.T) {
+	workspace := t.TempDir()
+	storage := newImporterTestStore(t, filepath.Join(workspace, "data"))
+	if _, err := Run(context.Background(), workspace, bytes.NewReader(singleNodeArchive(t, "OLD")), storage); err != nil {
+		t.Fatalf("initial Run() error = %v", err)
+	}
+
+	cleanupErr := errors.New("cleanup failed")
+	originalComplete := completeImport
+	completeImport = func(ctx context.Context, operation *store.Import) error {
+		if err := originalComplete(ctx, operation); err != nil {
+			return err
+		}
+		return errors.Join(store.ErrRetiredCleanup, cleanupErr)
+	}
+	t.Cleanup(func() { completeImport = originalComplete })
+
+	result, err := Run(context.Background(), workspace, bytes.NewReader(singleNodeArchive(t, "NEW")), storage)
+	if err != nil {
+		t.Fatalf("Run() error = %v, want nil", err)
+	}
+	if !errors.Is(result.CleanupWarning, store.ErrRetiredCleanup) || !errors.Is(result.CleanupWarning, cleanupErr) {
+		t.Fatalf("CleanupWarning = %v", result.CleanupWarning)
+	}
+	if got := storage.State(); got != store.StateReady {
+		t.Fatalf("state = %q, want %q", got, store.StateReady)
+	}
+	db, release, err := storage.Acquire()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+	var newCount, oldCount int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM node WHERE node_id = 'NEW'`).Scan(&newCount); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow(`SELECT COUNT(*) FROM node WHERE node_id = 'OLD'`).Scan(&oldCount); err != nil {
+		t.Fatal(err)
+	}
+	if newCount != 1 || oldCount != 0 {
+		t.Fatalf("searchable nodes NEW=%d OLD=%d, want NEW=1 OLD=0", newCount, oldCount)
+	}
+}
+
+type blockingReader struct {
+	reader  io.Reader
+	started chan struct{}
+	resume  chan struct{}
+	once    sync.Once
+}
+
+func (r *blockingReader) Read(contents []byte) (int, error) {
+	r.once.Do(func() {
+		close(r.started)
+		<-r.resume
+	})
+	return r.reader.Read(contents)
+}
+
+type countingReader struct {
+	reader io.Reader
+	reads  int
+}
+
+func (r *countingReader) Read(contents []byte) (int, error) {
+	r.reads++
+	return r.reader.Read(contents)
+}
+
+type errorReader struct {
+	err error
+}
+
+func (r errorReader) Read([]byte) (int, error) {
+	return 0, r.err
+}
+
 func importAndDump(t *testing.T, archive []byte) map[string][][]any {
 	t.Helper()
 	workspace := t.TempDir()
 	storage := newImporterTestStore(t, filepath.Join(workspace, "data"))
-	if err := Run(context.Background(), workspace, bytes.NewReader(archive), storage); err != nil {
+	if _, err := Run(context.Background(), workspace, bytes.NewReader(archive), storage); err != nil {
 		t.Fatal(err)
 	}
 	db, release, err := storage.Acquire()
@@ -187,6 +314,15 @@ func duplicateLimitArchive(t *testing.T) []byte {
 		"manifest.json":    string(manifestJSON),
 		"nodes.ndjson":     strings.Join(nodes, "\n") + "\n",
 		"relations.ndjson": "",
+	})
+}
+
+func singleNodeArchive(t *testing.T, nodeID string) []byte {
+	t.Helper()
+	nodes := fmt.Sprintf("{\"type\":\"job\",\"id\":%q,\"name\":%q,\"limitFacts\":[]}\n", nodeID, nodeID)
+	manifest := fmt.Sprintf(`{"schemaVersion":"0.5","snapshotId":%q,"generatedAt":"2026-08-08T00:00:00Z","nodeCount":1,"relationCount":0,"producer":{"name":"test","version":"1"}}`, nodeID)
+	return makeArchive(t, map[string]string{
+		"manifest.json": manifest, "nodes.ndjson": nodes, "relations.ndjson": "",
 	})
 }
 

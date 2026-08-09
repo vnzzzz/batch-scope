@@ -7,16 +7,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"strings"
 	"time"
 
-	"golang.org/x/text/cases"
-	"golang.org/x/text/unicode/norm"
+	"batchscope/internal/normalize"
 )
 
 const secondsPerBusinessDay int64 = 24 * 60 * 60
-
-var unicodeCaseFolder = cases.Fold()
 
 // Load は検査済みの展開結果を再読込し、一つのトランザクションで検索用SQLiteへ登録する。
 // validatedは同じextractedに対するValidateの結果でなければならない。
@@ -95,13 +91,13 @@ func loadNodes(ctx context.Context, path string, nodes, limits *sql.Stmt) (int, 
 
 		var normalizedPath any
 		if current.Path != nil {
-			normalizedPath = normalizePath(*current.Path)
+			normalizedPath = normalize.Path(*current.Path)
 		}
 		if _, err := nodes.ExecContext(ctx,
 			current.ID,
 			current.Type,
 			current.Name,
-			normalizeName(current.Name),
+			normalize.Name(current.Name),
 			current.Path,
 			normalizedPath,
 			current.ParentID,
@@ -129,10 +125,14 @@ func insertLimit(ctx context.Context, statement *sql.Stmt, nodeID string, fact l
 		if err != nil {
 			return err
 		}
-		businessDayOffset = fact.BusinessDayOffset
+		offset, ok := jsonIntegerAsInt64(fact.BusinessDayOffset)
+		if !ok {
+			return fmt.Errorf("business day offset %q is not an int64", fact.BusinessDayOffset)
+		}
+		businessDayOffset = offset
 		localTimeSeconds = seconds
 		timeZone = fact.TimeZone
-		finishSortSeconds = fact.BusinessDayOffset*secondsPerBusinessDay + seconds
+		finishSortSeconds = offset*secondsPerBusinessDay + seconds
 	case "max_elapsed":
 		seconds, ok := durationSeconds(fact.Duration)
 		if !ok {
@@ -187,16 +187,6 @@ func loadRelations(ctx context.Context, path string, statement *sql.Stmt) (int, 
 		return nil
 	})
 	return count, err
-}
-
-func normalizeName(value string) string {
-	// 名前は表記幅、前後空白、大文字小文字を同一視する。
-	return unicodeCaseFolder.String(strings.TrimSpace(norm.NFKC.String(value)))
-}
-
-func normalizePath(value string) string {
-	// パスは表記幅と前後空白だけを同一視し、大文字小文字を区別する。
-	return strings.TrimSpace(norm.NFKC.String(value))
 }
 
 func parseLocalTimeSeconds(value string) (int64, error) {

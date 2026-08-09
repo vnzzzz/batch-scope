@@ -54,6 +54,8 @@ const (
 	ErrorRelationCountMismatch ErrorKind = "relation_count_mismatch"
 	// ErrorDuplicateNode は、同じIDを持つノードの重複を表す。
 	ErrorDuplicateNode ErrorKind = "duplicate_node"
+	// ErrorDuplicateLimit は、一つのスナップショット内で同じIDを持つリミットの重複を表す。
+	ErrorDuplicateLimit ErrorKind = "duplicate_limit"
 	// ErrorMissingParent は、存在しない親の参照を表す。
 	ErrorMissingParent ErrorKind = "missing_parent"
 	// ErrorMissingNode は、依存関係から存在しないノードへの参照を表す。

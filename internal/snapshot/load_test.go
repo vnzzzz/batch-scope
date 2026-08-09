@@ -3,6 +3,9 @@ package snapshot
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
+	"fmt"
+	"strings"
 	"testing"
 
 	"batchscope/internal/store"
@@ -76,19 +79,20 @@ func TestLoadNormalizesAndConvertsSnapshotValues(t *testing.T) {
 
 func TestLoadRollsBackAllTablesOnFailure(t *testing.T) {
 	network := testNode("job_network", "NET", nil, nil)
-	duplicateLimit := map[string]any{
-		"id": "DUPLICATE", "kind": "raw", "sourceText": "raw", "origin": "manual", "certainty": "declared",
-	}
+	firstLimit := map[string]any{"id": "FIRST", "kind": "raw", "sourceText": "raw", "origin": "manual", "certainty": "declared"}
+	secondLimit := map[string]any{"id": "SECOND", "kind": "raw", "sourceText": "raw", "origin": "manual", "certainty": "declared"}
 	nodes := []string{
 		network,
-		testNode("job", "JOB-A", stringPointer("NET"), []any{duplicateLimit}),
-		testNode("job", "JOB-B", stringPointer("NET"), []any{duplicateLimit}),
+		testNode("job", "JOB-A", stringPointer("NET"), []any{firstLimit}),
+		testNode("job", "JOB-B", stringPointer("NET"), []any{secondLimit}),
 	}
 	extracted := writeExtractedSnapshot(t, nodes, nil)
 	validated, err := Validate(context.Background(), extracted)
 	if err != nil {
 		t.Fatalf("Validate() error = %v", err)
 	}
+	// LoadはValidateと同じファイルを受け取る前提だが、再読込中の制約違反でも全行をrollbackする。
+	writeTestFile(t, extracted.Nodes, strings.ReplaceAll(strings.Join(nodes, "\n")+"\n", `"SECOND"`, `"FIRST"`))
 
 	storage, err := store.New(t.TempDir())
 	if err != nil {
@@ -113,6 +117,42 @@ func TestLoadRollsBackAllTablesOnFailure(t *testing.T) {
 	}
 	if err := operation.Abort(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestLoadAcceptsEquivalentIntegerRepresentations(t *testing.T) {
+	for _, representation := range []string{"1", "1.0", "1e0"} {
+		t.Run(representation, func(t *testing.T) {
+			fact := fmt.Sprintf(`{"id":"LIMIT","kind":"finish_by","businessDayOffset":%s,"localTime":"00:00:00","timeZone":"UTC","origin":"scheduler","certainty":"declared"}`, representation)
+			extracted := writeExtractedSnapshot(t, []string{
+				testNode("job", "JOB", nil, []any{json.RawMessage(fact)}),
+			}, nil)
+			validated, err := Validate(context.Background(), extracted)
+			if err != nil {
+				t.Fatalf("Validate() error = %v", err)
+			}
+
+			storage, err := store.New(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = storage.Close() })
+			operation, err := storage.BeginImport(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = operation.Abort() })
+			if err := Load(context.Background(), operation.DB(), extracted, validated); err != nil {
+				t.Fatalf("Load() error = %v", err)
+			}
+			var offset int64
+			if err := operation.DB().QueryRow(`SELECT business_day_offset FROM limit_fact WHERE limit_id = 'LIMIT'`).Scan(&offset); err != nil {
+				t.Fatal(err)
+			}
+			if offset != 1 {
+				t.Fatalf("business_day_offset = %d, want 1", offset)
+			}
+		})
 	}
 }
 

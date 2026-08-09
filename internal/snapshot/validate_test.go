@@ -425,6 +425,49 @@ func TestValidateRejectsNodeAndParentViolations(t *testing.T) {
 	}
 }
 
+func TestValidateRejectsDuplicateLimitIDs(t *testing.T) {
+	limit := func(id string) map[string]any {
+		return map[string]any{
+			"id": id, "kind": "raw", "sourceText": "raw", "origin": "manual", "certainty": "declared",
+		}
+	}
+	tests := []struct {
+		name    string
+		line    int
+		pointer string
+		nodes   []string
+	}{
+		{
+			name: "same node", line: 1, pointer: "/limitFacts/1/id",
+			nodes: []string{testNode("job", "A", nil, []any{limit("DUPLICATE"), limit("DUPLICATE")})},
+		},
+		{
+			name: "different nodes", line: 2, pointer: "/limitFacts/0/id",
+			nodes: []string{
+				testNode("job", "A", nil, []any{limit("DUPLICATE")}),
+				testNode("job", "B", nil, []any{limit("DUPLICATE")}),
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := Validate(context.Background(), writeExtractedSnapshot(t, tt.nodes, nil))
+			assertValidationError(t, err, ErrorDuplicateLimit, nodesName, tt.line, tt.pointer)
+		})
+	}
+}
+
+func TestValidateRejectsInvalidBusinessDayOffsetNumbers(t *testing.T) {
+	for _, representation := range []string{"1.5", "32", "1e100", "9223372036854775808"} {
+		t.Run(representation, func(t *testing.T) {
+			fact := fmt.Sprintf(`{"id":"LIMIT","kind":"finish_by","businessDayOffset":%s,"localTime":"00:00:00","timeZone":"UTC","origin":"scheduler","certainty":"declared"}`, representation)
+			node := fmt.Sprintf(`{"type":"job","id":"JOB","name":"Job","limitFacts":[%s]}`, fact)
+			_, err := Validate(context.Background(), writeExtractedSnapshot(t, []string{node}, nil))
+			assertValidationError(t, err, ErrorSchemaViolation, nodesName, 1, "/limitFacts/0/businessDayOffset")
+		})
+	}
+}
+
 func TestValidateReturnsEarlierParentReferenceBeforeLaterDuplicate(t *testing.T) {
 	nodes := []string{
 		testNode("job", "FIRST", stringPointer("MISSING"), nil),
