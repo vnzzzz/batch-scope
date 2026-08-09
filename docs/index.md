@@ -3,7 +3,7 @@
 - 状態：設計レビュー中
 - 対象範囲：MVP
 
-BatchScopeは、ジョブIDまたはジョブネットIDを受け取り、後続へ設定されたリミットと、そのリミットまでの依存関係を返します。
+BatchScopeは、ジョブIDまたはジョブネットIDを受け取り、スナップショット内の依存関係を静的に解析して、対象から到達可能な範囲にあるリミット設定済みジョブとその依存経路を全件抽出して返します。
 
 ## 設計
 
@@ -12,7 +12,7 @@ BatchScopeは、ジョブIDまたはジョブネットIDを受け取り、後続
 | [全体構成](design/architecture.md) | 構成要素、責務、親子関係と依存関係 |
 | [取込データの形式](design/canonical-snapshot.md) | スナップショットのファイル構成と項目 |
 | [SQLiteの構成](design/storage.md) | テーブル、索引、DB切替 |
-| [後続リミットの検索](design/dependency-analysis.md) | リミットの選定、経路、循環の扱い |
+| [後続リミットの検索](design/dependency-analysis.md) | リミットの抽出範囲、経路、循環の扱い |
 | [API仕様](design/api.md) | エンドポイント、入出力、エラー |
 | [エージェントスキル](design/agent-skill.md) | Skillの責務と管理方法 |
 | [設計判断](design/decisions.md) | MVPの方針、採用した方式、見送った方式 |
