@@ -45,15 +45,26 @@ type manifest struct {
 }
 
 type nodeInput struct {
-	Type       string      `json:"type"`
-	ID         string      `json:"id"`
-	ParentID   *string     `json:"parentId"`
-	LimitFacts []limitFact `json:"limitFacts"`
+	Type       string          `json:"type"`
+	ID         string          `json:"id"`
+	Name       string          `json:"name"`
+	Path       *string         `json:"path"`
+	ParentID   *string         `json:"parentId"`
+	LimitFacts []limitFact     `json:"limitFacts"`
+	Locator    json.RawMessage `json:"locator"`
+	Attributes json.RawMessage `json:"attributes"`
 }
 
 type limitFact struct {
-	Kind     string `json:"kind"`
-	Duration string `json:"duration"`
+	ID                string      `json:"id"`
+	Kind              string      `json:"kind"`
+	BusinessDayOffset json.Number `json:"businessDayOffset"`
+	LocalTime         string      `json:"localTime"`
+	TimeZone          string      `json:"timeZone"`
+	Duration          string      `json:"duration"`
+	SourceText        *string     `json:"sourceText"`
+	Origin            string      `json:"origin"`
+	Certainty         string      `json:"certainty"`
 }
 
 type relation struct {
@@ -96,11 +107,12 @@ type ValidationResult struct {
 // 検査フェーズは次の順序に固定し、同じ入力には同じエラーを返す。
 //  1. manifest.json: サイズ、UTF-8、JSON、Schema、件数の整数性
 //  2. nodes.ndjsonの各行: JSON、意味、Schema
-//  3. ノード横断: 件数、行番号順の親参照とID重複または複数の親、親子関係の循環
+//  3. ノード横断: 件数、行番号順の親参照とノードIDまたはリミットIDの重複または複数の親、親子関係の循環
 //  4. relations.ndjsonの各行: JSON、Schema、参照の存在、重複
 //  5. 依存関係の件数
 //
 // 行内で完結する検査と、全ノードを読み終えて初めて判定できる検査は別のフェーズで実行する。
+// ノードIDとリミットIDの重複は行の読み込み中に記録するが、より前の行にある親の問題を優先するため報告はノード横断で行う。
 // ノード横断では各ノードの親の存在と種別を調べ、ID重複または複数の親と行番号を比較する。
 // 検査種別より行番号を優先し、循環内でも最小行を返すことで、取込元が先に直すべき箇所を示す。
 func Validate(ctx context.Context, extracted Extracted) (ValidationResult, error) {
@@ -226,23 +238,32 @@ func readManifest(ctx context.Context, path string, schema *jsonschema.Schema) (
 }
 
 func jsonIntegerAsInt(number json.Number) (int, bool) {
+	value, ok := jsonIntegerAsInt64(number)
+	if !ok {
+		return 0, false
+	}
+	converted := int(value)
+	return converted, int64(converted) == value
+}
+
+func jsonIntegerAsInt64(number json.Number) (int64, bool) {
+	// Ratで小数点と指数表記を正確に解釈し、JSON上の表記が異なる整数を同じ値として扱う。
 	value, ok := new(big.Rat).SetString(number.String())
 	if !ok || !value.IsInt() || !value.Num().IsInt64() {
 		return 0, false
 	}
-	asInt64 := value.Num().Int64()
-	converted := int(asInt64)
-	return converted, int64(converted) == asInt64
+	return value.Num().Int64(), true
 }
 
 func readNodes(ctx context.Context, path string, schema *jsonschema.Schema) ([]string, map[string]nodeRecord, int, *Error, error) {
 	orderedIDs := make([]string, 0)
 	byID := make(map[string]nodeRecord)
+	limitIDs := make(map[string]struct{})
 	count := 0
 	var duplicateErr *Error
 	err := readNDJSON(ctx, path, nodesName, func(line int, contents []byte) error {
 		count++
-		id, record, err := validateNodeLine(schema, line, contents)
+		id, record, facts, err := validateNodeLine(schema, line, contents)
 		if err != nil {
 			return err
 		}
@@ -258,6 +279,18 @@ func readNodes(ctx context.Context, path string, schema *jsonschema.Schema) ([]s
 			}
 			return nil
 		}
+		for index, fact := range facts {
+			if _, exists := limitIDs[fact.ID]; exists {
+				if duplicateErr == nil {
+					duplicateErr = &Error{
+						Kind: ErrorDuplicateLimit, File: nodesName, Line: line,
+						Pointer: jsonPointer([]string{"limitFacts", strconv.Itoa(index), "id"}),
+					}
+				}
+				continue
+			}
+			limitIDs[fact.ID] = struct{}{}
+		}
 		byID[id] = record
 		orderedIDs = append(orderedIDs, id)
 		return nil
@@ -265,39 +298,47 @@ func readNodes(ctx context.Context, path string, schema *jsonschema.Schema) ([]s
 	return orderedIDs, byID, count, duplicateErr, err
 }
 
-func validateNodeLine(schema *jsonschema.Schema, line int, contents []byte) (string, nodeRecord, error) {
+func validateNodeLine(schema *jsonschema.Schema, line int, contents []byte) (string, nodeRecord, []limitFact, error) {
 	value, err := decodeJSONLine(nodesName, line, contents)
 	if err != nil {
-		return "", nodeRecord{}, err
+		return "", nodeRecord{}, nil, err
 	}
 	var current nodeInput
 	if err := remarshal(value, &current); err != nil {
 		// 構造が想定と異なる行はSchemaが理由を説明できるため、そちらの結果を優先する。
 		if schemaErr := schema.Validate(value); schemaErr != nil {
-			return "", nodeRecord{}, schemaError(nodesName, line, schemaErr)
+			return "", nodeRecord{}, nil, schemaError(nodesName, line, schemaErr)
 		}
-		return "", nodeRecord{}, &Error{Kind: ErrorInvalidJSON, File: nodesName, Line: line, Err: err}
+		return "", nodeRecord{}, nil, &Error{Kind: ErrorInvalidJSON, File: nodesName, Line: line, Err: err}
 	}
 
 	// リミットの所有者と親の有無はSchemaのif-thenでも表現しているが、
 	// 取込元が原因を特定できるよう、汎用のschema_violationより具体的な理由コードを先に返す。
 	// 種別自体が未知の場合は判定できないため、Schemaの結果に委ねる。
 	if isNodeType(current.Type) && current.Type != "job" && len(current.LimitFacts) > 0 {
-		return "", nodeRecord{}, &Error{Kind: ErrorInvalidLimitOwner, File: nodesName, Line: line, Pointer: "/limitFacts"}
+		return "", nodeRecord{}, nil, &Error{Kind: ErrorInvalidLimitOwner, File: nodesName, Line: line, Pointer: "/limitFacts"}
 	}
 	if isParentlessType(current.Type) && current.ParentID != nil {
-		return "", nodeRecord{}, &Error{Kind: ErrorInvalidParentType, File: nodesName, Line: line, Pointer: "/parentId"}
+		return "", nodeRecord{}, nil, &Error{Kind: ErrorInvalidParentType, File: nodesName, Line: line, Pointer: "/parentId"}
 	}
 	for index, fact := range current.LimitFacts {
+		if fact.Kind == "finish_by" && fact.BusinessDayOffset != "" {
+			if _, ok := jsonIntegerAsInt64(fact.BusinessDayOffset); !ok {
+				return "", nodeRecord{}, nil, &Error{
+					Kind: ErrorSchemaViolation, File: nodesName, Line: line,
+					Pointer: jsonPointer([]string{"limitFacts", strconv.Itoa(index), "businessDayOffset"}),
+				}
+			}
+		}
 		if fact.Kind == "max_elapsed" {
 			if _, ok := durationSeconds(fact.Duration); ok {
 				continue
 			}
-			return "", nodeRecord{}, &Error{Kind: ErrorInvalidDuration, File: nodesName, Line: line, Pointer: fmt.Sprintf("/limitFacts/%d/duration", index)}
+			return "", nodeRecord{}, nil, &Error{Kind: ErrorInvalidDuration, File: nodesName, Line: line, Pointer: fmt.Sprintf("/limitFacts/%d/duration", index)}
 		}
 	}
 	if err := schema.Validate(value); err != nil {
-		return "", nodeRecord{}, schemaError(nodesName, line, err)
+		return "", nodeRecord{}, nil, schemaError(nodesName, line, err)
 	}
 
 	record := nodeRecord{Type: nodeKindOf(current.Type), Line: line}
@@ -306,7 +347,7 @@ func validateNodeLine(schema *jsonschema.Schema, line int, contents []byte) (str
 		record.ParentID = *current.ParentID
 		record.HasParent = true
 	}
-	return current.ID, record, nil
+	return current.ID, record, current.LimitFacts, nil
 }
 
 func readRelations(ctx context.Context, path string, schema *jsonschema.Schema, nodes map[string]nodeRecord) (int, error) {
