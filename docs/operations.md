@@ -92,13 +92,15 @@ Cloud Runへ32 MiBを超えるアーカイブを直接送る場合は、通信�
 | `BATCHSCOPE_DATA_DIR` | `/tmp/batchscope` | SQLiteと一時ファイルの保存先 |
 
 不正な`PORT`を指定した場合は起動に失敗します。
-処理量と入力サイズの上限は、MVPではコード内の定数として管理します。
+入力サイズと表示上の上限は、MVPではコード内の定数として管理します。
 環境ごとに変更する必要が生じた項目だけを、後から設定項目へ追加します。
 
 ## サービス側の上限
 
 初期値は次の規模を想定します。
 実装時は一か所の定数へ集約し、API利用者からは変更できないようにします。
+受入済みスナップショットの検索は、経路の深さや探索量で打ち切りません。
+対応可能規模は検索時の打切りではなく取込時の受入条件とし、Issue #14の測定後にIssue #32で確定します。
 
 | 項目 | 初期上限 |
 |---|---:|
@@ -106,9 +108,7 @@ Cloud Runへ32 MiBを超えるアーカイブを直接送る場合は、通信�
 | 展開後合計 | 4 GiB |
 | `manifest.json` | 1 MiB |
 | `nodes.ndjson`と`relations.ndjson`の一行 | 16 MiB |
-| 一回の検索で調べるノード | 2,000,000件 |
 | 経路ツリーのノード | 20,000件 |
-| リミットの各グループ | 1,000件 |
 
 ## ログ
 
@@ -119,8 +119,8 @@ Cloud Runへ32 MiBを超えるアーカイブを直接送る場合は、通信�
 | 要求の識別 | `request_id`、`operation`、`duration_ms` |
 | プロセスとデータ | `boot_id`、`snapshot_id`、`import_id` |
 | 検索対象 | `target_id` |
-| 処理量 | `visited_nodes`、`returned_tree_nodes`、`returned_limits` |
-| 完了状態 | `cycles_detected`、`analysis_complete`、`error_type` |
+| 処理量 | `reached_nodes`、`returned_tree_nodes`、`returned_limits` |
+| 完了状態 | `cycles_detected`、`error_type` |
 
 ジョブ名、完全パス、判定根拠の抜粋、入力資料の内容は、既定ではログへ出力しません。
 
@@ -131,12 +131,12 @@ Cloud Runへ32 MiBを超えるアーカイブを直接送る場合は、通信�
 | 取込 | `snapshot_import_duration_seconds`、`snapshot_import_failures_total` |
 | 使用中データ | `snapshot_active_nodes`、`snapshot_active_relations` |
 | 対象検索 | `target_lookup_duration_seconds` |
-| 後続分析 | `limit_analysis_duration_seconds`、`limit_analysis_visited_nodes` |
-| 打切りと循環 | `limit_analysis_truncated_total`、`limit_analysis_cycles_total` |
+| 後続分析の処理量 | `limit_analysis_duration_seconds`、`limit_analysis_reached_nodes` |
+| 循環 | `limit_analysis_cycles_total` |
 
 ## 性能目標
 
-次の値は、データがキャッシュへ読み込まれた状態で、ローカルSQLiteを使い、処理上限に達しない場合の初期目標です。
+次の値は、データがキャッシュへ読み込まれた状態で、ローカルSQLiteを使う場合の初期目標です。
 
 | 処理 | p95目標 |
 |---|---:|

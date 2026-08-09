@@ -13,9 +13,23 @@ jq -r '
     "\(.id)  \(.name)";
 
   def limit_label:
-    "  \(.rank). \(.node.id)  \(.node.name)  \(.fact.sourceText // .fact.duration // .fact.kind)" +
-    (if .dependencyDistance != null then "  距離=\(.dependencyDistance)" else "" end) +
+    "    \(.limitOwner.id)  \(.limitOwner.name)  \(.fact.sourceText // .fact.duration // .fact.kind)" +
+    (if .scopeRoot != null then "  スコープルート=\(.scopeRoot.id)" else "" end) +
     "  確実性=\(.fact.certainty)";
+
+  def limit_section($title; $limits):
+    $title,
+    "  終了時刻リミット",
+    (if ($limits.finishByGroups | length) == 0 then "    なし"
+     else ($limits.finishByGroups[] |
+       "    タイムゾーン: \(.timeZone)  件数=\(.total)",
+       (if (.items | length) == 0 then "      なし" else (.items[] | limit_label) end)) end),
+    "  経過時間リミット",
+    (if ($limits.maxElapsed.items | length) == 0 then "    なし"
+     else ($limits.maxElapsed.items[] | limit_label) end),
+    "  元設定のリミット",
+    (if ($limits.raw.items | length) == 0 then "    なし"
+     else ($limits.raw.items[] | limit_label) end);
 
   def relation_label:
     "\(.kind) / \(.origin) / \(.certainty)";
@@ -35,28 +49,20 @@ jq -r '
 
   "対象: \(.target.id)  \(.target.name)",
   "スナップショット: \(.snapshotId)",
-  "順位付け規則: \(.policyVersion)",
   "",
-  "対象範囲のリミット",
-  (if (.limits.scope | length) == 0 then "  なし" else (.limits.scope[] | limit_label) end),
+  limit_section("対象のリミット"; .limits.target),
   "",
-  "後続の終了時刻リミット",
-  (if (.limits.finishByGroups | length) == 0 then "  なし"
-   else (.limits.finishByGroups[] |
-     "  タイムゾーン: \(.timeZone)  候補=\(.total)" ,
-     (if (.items | length) == 0 then "    なし" else (.items[] | limit_label) end)) end),
+  limit_section("配下のリミット"; .limits.contained),
   "",
-  "後続の経過時間リミット",
-  (if (.limits.maxElapsed.items | length) == 0 then "  なし" else (.limits.maxElapsed.items[] | limit_label) end),
+  limit_section("後続のリミット"; .limits.downstream),
   "",
   "経路",
   (.tree | tree_lines("  ")),
   "",
   "循環",
   (if (.cycles | length) == 0 then "  なし"
-   else (.cycles[] | "  \(.cycleId): " + ([.path[].id] | join(" -> ")) +
+   else (.cycles[] | "  \(.cycleId): " + ([.nodes[].id] | join(", ")) +
+     (if .containsImplicitRelation then "  [暗黙的な依存関係を含む]" else "" end) +
      (if .containsUncertainRelation then "  [未確認の依存関係を含む]" else "" end)) end),
-  "",
-  "処理結果: " + (if .analysisComplete then "指定範囲を最後まで確認" else "未確認範囲あり" end) +
-    (if .truncated then "、結果を省略" else "" end)
+  ""
 ' "$input"
