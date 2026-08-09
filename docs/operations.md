@@ -120,7 +120,7 @@ Cloud Runへ32 MiBを超えるアーカイブを直接送る場合は、通信�
 | プロセスとデータ | `boot_id`、`snapshot_id`、`import_id` |
 | 検索対象 | `target_id` |
 | 処理量 | `reached_nodes`、`returned_tree_nodes`、`returned_limits` |
-| 完了状態 | `cycles_detected`、`analysis_complete`、`error_type` |
+| 完了状態 | `cycles_detected`、`error_type` |
 
 ジョブ名、完全パス、判定根拠の抜粋、入力資料の内容は、既定ではログへ出力しません。
 

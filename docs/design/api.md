@@ -78,29 +78,54 @@ GET /v1/downstream-limit-analysis?targetId=JOB-A&includeEvidence=false
 | `targetId` | はい | なし | ジョブIDまたはジョブネットID |
 | `includeEvidence` | いいえ | `false` | 根拠情報をレスポンスへ含めるか |
 
-探索の深さ、調べるノード数、経路ツリーの件数、返却するリミット数はサービス側で制限します。
-利用者は内部の処理量を指定しません。
-上限に達した場合は、`analysisComplete`、`truncated`、`frontier`で未確認範囲を示します。
+受入済みスナップショットでは、該当するリミットを全件返します。
+検索を完了できない場合は、不完全な結果を部分成功として返しません。
 
-リミットの選び方、並べ方、循環の扱いは[後続リミットの検索](dependency-analysis.md)で定めます。
+リミットの抽出範囲、閲覧順、循環の扱いは[後続リミットの検索](dependency-analysis.md)で定めます。
 
 ### レスポンスの構成
 
 | 項目 | 内容 |
 |---|---|
 | `bootId`、`snapshotId` | サービス起動と使用中データの識別子 |
-| `policyVersion` | リミットの選び方と並べ方の版 |
 | `target` | 検索対象 |
-| `limits.scope` | 対象ジョブ自身のリミット、またはジョブネット配下から求めた代表リミット |
-| `limits.finishByGroups` | タイムゾーンごとの`finish_by` |
-| `limits.maxElapsed` | `max_elapsed` |
-| `limits.raw` | 比較できない元設定 |
+| `limits.target`、`limits.contained`、`limits.downstream` | 対象、配下、後続の区分ごとに分けたリミット |
+| 各区分の`finishByGroups` | `timeZone`ごとに分けた`finish_by`であり、各要素は`timeZone`、`total`、`items`を持つ |
+| 各区分の`maxElapsed` | `total`と`items`を持つ`max_elapsed` |
+| 各区分の`raw` | `total`と`items`を持つ、比較できない元設定 |
 | `tree` | 返却したリミットなどまでの経路と、その経路を構成する依存関係 |
 | `uncoveredRoutes` | リミットが見つからなかった経路 |
 | `cycles` | 検出した循環 |
-| `analysisComplete`、`truncated`、`frontier` | 処理範囲と打切り地点 |
 
-各後続リミットには、設定先のジョブ、選定理由、順位、対象からの距離、並べ替えに使った値を含めます。
+リミットは、次の構成で返します。
+
+```json
+{
+  "limits": {
+    "target": {
+      "finishByGroups": [],
+      "maxElapsed": {"total": 0, "items": []},
+      "raw": {"total": 0, "items": []}
+    },
+    "contained": {
+      "finishByGroups": [],
+      "maxElapsed": {"total": 0, "items": []},
+      "raw": {"total": 0, "items": []}
+    },
+    "downstream": {
+      "finishByGroups": [],
+      "maxElapsed": {"total": 0, "items": []},
+      "raw": {"total": 0, "items": []}
+    }
+  }
+}
+```
+
+各グループの`total`は`items`の件数と一致します。
+件数を制限しないため、各グループは`truncated`を持ちません。
+
+各リミットには、実際の設定先ジョブを示す`limitOwner`、リミット定義を示す`fact`、経路参照を示す`treeNodeId`と`alternatePathCount`を含めます。
+後続ジョブネット配下のリミットには、到達した後続ジョブネットを`scopeRoot`として含め、`limitOwner`と区別します。
 経路は`tree`にまとめ、リミット側の`treeNodeId`から設定先のツリーノードを参照します。
 同じ経路のノード列をリミットごとに重複して返しません。
 
@@ -109,25 +134,33 @@ APIでは、`includeEvidence=false`でも`kind`、`origin`、`certainty`を返�
 
 ```json
 {
-  "node": {
+  "limitOwner": {
     "id": "JOB-C",
     "type": "job",
     "name": "会計連携ファイル作成"
   },
-  "scope": "downstream",
-  "selectionReason": "ranked_finish_by",
-  "rank": 1,
-  "dependencyDistance": 7,
-  "ranking": {
-    "businessDayOffset": 1,
-    "localTime": "06:00:00",
-    "timeZone": "Asia/Tokyo"
+  "scopeRoot": {
+    "id": "NET-CLOSE",
+    "type": "job_network",
+    "name": "会計締め処理"
   },
-  "fact": {},
+  "fact": {
+    "id": "LIMIT-JOB-C-FINISH",
+    "kind": "finish_by",
+    "businessDayOffset": 1,
+    "localTime": "05:30:00",
+    "timeZone": "Asia/Tokyo",
+    "sourceText": "翌日05:30までに終了",
+    "origin": "scheduler",
+    "certainty": "declared"
+  },
   "treeNodeId": "tree-42",
   "alternatePathCount": 0
 }
 ```
+
+`cycles`の各要素は、`cycleId`と強連結成分のノードをIDの昇順で並べた`nodes`を持ちます。
+`containsImplicitRelation`と`containsUncertainRelation`は、強連結成分内の依存関係の性質を示します。
 
 経路ツリーの子ノードは、次のように依存関係を持ちます。
 
