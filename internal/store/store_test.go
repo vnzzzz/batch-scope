@@ -271,6 +271,52 @@ func TestFailedUpdateDoesNotReplaceCurrentDatabase(t *testing.T) {
 	}
 }
 
+func TestCompleteRejectsParentCycleAndKeepsCurrentDatabase(t *testing.T) {
+	directory := t.TempDir()
+	storage := newTestStore(t, directory)
+	activateValue(t, storage, "current")
+	operation := beginTestImport(t, storage)
+
+	tx, err := operation.DB().Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Exec("PRAGMA defer_foreign_keys = ON"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Exec(`INSERT INTO node
+        (node_id, node_type, name, name_normalized, parent_id)
+        VALUES ('A', 'management_unit', 'A', 'a', 'B'),
+               ('B', 'management_unit', 'B', 'b', 'A')`); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := operation.Complete(context.Background()); err == nil {
+		t.Fatal("Complete() succeeded with a parent hierarchy cycle")
+	}
+	assertFailedUpdateKeepsCurrent(t, storage, directory, "current")
+}
+
+func TestCompleteRepresentativeNameSearchAllowsDuplicateNames(t *testing.T) {
+	storage := newTestStore(t, t.TempDir())
+	operation := beginTestImport(t, storage)
+	if _, err := operation.DB().Exec(`INSERT INTO node
+        (node_id, node_type, name, name_normalized, path, path_normalized)
+        VALUES ('A', 'job', 'Same', 'same', '/z', '/z'),
+               ('B', 'job', 'Same', 'same', '/a', '/a')`); err != nil {
+		t.Fatal(err)
+	}
+	if err := operation.Complete(context.Background()); err != nil {
+		t.Fatalf("Complete() error = %v", err)
+	}
+	if got := storage.State(); got != StateReady {
+		t.Fatalf("state = %q, want %q", got, StateReady)
+	}
+}
+
 func TestCompleteKeepsCurrentDatabaseWhenActivationRenameFails(t *testing.T) {
 	directory := t.TempDir()
 	storage := newTestStore(t, directory)

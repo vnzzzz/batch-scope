@@ -445,6 +445,10 @@ func checkDatabase(ctx context.Context, db *sql.DB) error {
 		_ = rows.Close()
 		return errors.New("foreign key check failed")
 	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return err
+	}
 	if err := rows.Close(); err != nil {
 		return err
 	}
@@ -455,6 +459,98 @@ func checkDatabase(ctx context.Context, db *sql.DB) error {
 	}
 	if result != "ok" {
 		return fmt.Errorf("integrity check returned %q", result)
+	}
+	if err := checkParentHierarchy(ctx, db); err != nil {
+		return err
+	}
+	if err := checkRepresentativeSearches(ctx, db); err != nil {
+		return err
+	}
+	return nil
+}
+
+func checkParentHierarchy(ctx context.Context, db *sql.DB) error {
+	// foreign_key_check後は、親なしのノードから到達できないノードがあれば親子関係に循環がある。
+	// UNIONで到達済みノードを除外するため、循環を含む入力でも再帰CTEは停止する。
+	const query = `
+WITH RECURSIVE reachable(node_id) AS (
+	SELECT node_id
+	FROM node
+	WHERE parent_id IS NULL
+	UNION
+	SELECT child.node_id
+	FROM node AS child
+	JOIN reachable ON child.parent_id = reachable.node_id
+)
+SELECT EXISTS(
+	SELECT 1
+	FROM node
+	LEFT JOIN reachable USING (node_id)
+	WHERE reachable.node_id IS NULL
+)`
+	var cyclic bool
+	if err := db.QueryRowContext(ctx, query).Scan(&cyclic); err != nil {
+		return fmt.Errorf("check parent hierarchy: %w", err)
+	}
+	if cyclic {
+		return errors.New("parent hierarchy contains a cycle")
+	}
+	return nil
+}
+
+func checkRepresentativeSearches(ctx context.Context, db *sql.DB) error {
+	var nodeID, nodeType, normalizedName string
+	var normalizedPath sql.NullString
+	err := db.QueryRowContext(ctx, `
+SELECT node_id, node_type, name_normalized, path_normalized
+FROM node
+WHERE node_type IN ('job', 'job_network')
+ORDER BY node_id
+LIMIT 1`).Scan(&nodeID, &nodeType, &normalizedName, &normalizedPath)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("select representative node: %w", err)
+	}
+
+	checks := []struct {
+		name  string
+		query string
+		args  []any
+	}{
+		{
+			name:  "ID",
+			query: `SELECT EXISTS(SELECT 1 FROM node WHERE node_id = ?)`,
+			args:  []any{nodeID},
+		},
+		{
+			name:  "name",
+			query: `SELECT EXISTS(SELECT 1 FROM node WHERE node_type = ? AND name_normalized = ? AND node_id = ?)`,
+			args:  []any{nodeType, normalizedName, nodeID},
+		},
+	}
+	if normalizedPath.Valid {
+		checks = append(checks, struct {
+			name  string
+			query string
+			args  []any
+		}{
+			name:  "path",
+			query: `SELECT EXISTS(SELECT 1 FROM node WHERE node_type = ? AND path_normalized = ? AND node_id = ?)`,
+			args:  []any{nodeType, normalizedPath.String, nodeID},
+		})
+	}
+
+	for _, check := range checks {
+		var found bool
+		if err := db.QueryRowContext(ctx, check.query, check.args...).Scan(&found); err != nil {
+			return fmt.Errorf("run representative %s search: %w", check.name, err)
+		}
+		// 同名または同じパスの別ノードがあっても、代表ノード自身が検索条件を満たせば正常である。
+		if !found {
+			return fmt.Errorf("representative %s search omitted node %q", check.name, nodeID)
+		}
 	}
 	return nil
 }

@@ -45,15 +45,26 @@ type manifest struct {
 }
 
 type nodeInput struct {
-	Type       string      `json:"type"`
-	ID         string      `json:"id"`
-	ParentID   *string     `json:"parentId"`
-	LimitFacts []limitFact `json:"limitFacts"`
+	Type       string          `json:"type"`
+	ID         string          `json:"id"`
+	Name       string          `json:"name"`
+	Path       *string         `json:"path"`
+	ParentID   *string         `json:"parentId"`
+	LimitFacts []limitFact     `json:"limitFacts"`
+	Locator    json.RawMessage `json:"locator"`
+	Attributes json.RawMessage `json:"attributes"`
 }
 
 type limitFact struct {
-	Kind     string `json:"kind"`
-	Duration string `json:"duration"`
+	ID                string  `json:"id"`
+	Kind              string  `json:"kind"`
+	BusinessDayOffset int64   `json:"businessDayOffset"`
+	LocalTime         string  `json:"localTime"`
+	TimeZone          string  `json:"timeZone"`
+	Duration          string  `json:"duration"`
+	SourceText        *string `json:"sourceText"`
+	Origin            string  `json:"origin"`
+	Certainty         string  `json:"certainty"`
 }
 
 type relation struct {
