@@ -607,9 +607,10 @@ func scaleProfile(name string, nodeCount, relationCount int) Dataset {
 	b.node("job_network", "NET-DOWNSTREAM", "UNIT", "")
 	b.node("job_network", "NET-DOWNSTREAM-NESTED", "NET-DOWNSTREAM", "")
 
+	resourceKinds := []string{"file", "file_pattern", "job_status", "external_event"}
 	resourceCount := nodeCount / 10
 	compressionCount := max(64, nodeCount/100)
-	const fixedNodeCount = 1 + 5 + 3
+	fixedNodeCount := 1 + 5 + 3 + len(resourceKinds) + 1
 	regularCount := nodeCount - fixedNodeCount - resourceCount - compressionCount
 	if regularCount < 32 {
 		panic(fmt.Sprintf("scale profile %q is too small for layered generation", name))
@@ -627,6 +628,11 @@ func scaleProfile(name string, nodeCount, relationCount int) Dataset {
 		elapsedLimit("LIMIT-DOWNSTREAM-ELAPSED", 7_200),
 		rawLimit("LIMIT-DOWNSTREAM-RAW"),
 	)
+	for _, resourceKind := range resourceKinds {
+		consumerID := resourceConsumerID(resourceKind)
+		b.node("job", consumerID, "NET-BULK", "", rawLimit("LIMIT-"+consumerID))
+	}
+	b.node("job", "RESOURCE-SUCCESSOR", "NET-BULK", "")
 
 	compressionIDs := make([]string, compressionCount)
 	for index := range compressionIDs {
@@ -652,15 +658,14 @@ func scaleProfile(name string, nodeCount, relationCount int) Dataset {
 	}
 
 	resourceIDs := make([]string, resourceCount)
-	resourceKinds := []string{"file", "file_pattern", "job_status", "external_event"}
 	for index := 0; index < resourceCount; index++ {
 		id := fmt.Sprintf("RESOURCE-%07d", index)
 		resourceIDs[index] = id
 		b.node(resourceKinds[index%len(resourceKinds)], id, "", "")
 	}
 
-	// 圧縮区間には追加辺を接続せず、規模に比例して伸びる直列区間の全ホップが
-	// HiddenConnectionsへ保存されるという不変条件を生成規則だけで確定できるようにする。
+	// この直列区間には追加辺を接続せず、規模に比例して伸びる全ホップを
+	// HiddenConnectionsの期待値として生成規則から確定できるようにする。
 	b.relation("JOB-TARGET", compressionIDs[0], "precedes")
 	for index := 0; index+1 < len(compressionIDs); index++ {
 		b.relation(compressionIDs[index], compressionIDs[index+1], "precedes")
@@ -687,9 +692,13 @@ func scaleProfile(name string, nodeCount, relationCount int) Dataset {
 
 	b.relation(regularIDs[regularCount/3], "NET-DOWNSTREAM", "precedes")
 	for index, id := range resourceIDs {
-		b.relation(regularIDs[len(regularIDs)-1], id, resourceRelationKind(resourceKinds[index%len(resourceKinds)]))
+		resourceKind := resourceKinds[index%len(resourceKinds)]
+		b.relation(regularIDs[len(regularIDs)-1], id, "produces")
+		b.relation(id, resourceConsumerID(resourceKind), resourceRelationKind(resourceKind))
 	}
-	b.relation("JOB-UNCOVERED", resourceIDs[0], "precedes")
+	for _, resourceKind := range resourceKinds {
+		b.relation(resourceConsumerID(resourceKind), "RESOURCE-SUCCESSOR", "precedes")
+	}
 
 	// ノード数の平方根を層幅とする前向き辺は、直列の最長経路を残したまま、各層へ多数の分岐と合流を加える。
 	// 代表経路の深さも平方根に比例して伸びるため、Smallの-race検査で経路コピー量を抑えつつ深さを定数にしない。
@@ -728,33 +737,56 @@ func scaleProfile(name string, nodeCount, relationCount int) Dataset {
 		networkMembership[id] = "downstream"
 		jobMembership[id] = "downstream"
 	}
+	for _, resourceKind := range resourceKinds {
+		consumerID := resourceConsumerID(resourceKind)
+		networkMembership[consumerID] = "downstream"
+		jobMembership[consumerID] = "downstream"
+	}
+	networkMembership["RESOURCE-SUCCESSOR"] = "downstream"
+	jobMembership["RESOURCE-SUCCESSOR"] = "downstream"
 	hidden := make([]Edge, 0, len(compressionIDs)+1)
 	hidden = append(hidden, Edge{FromID: "JOB-TARGET", ToID: compressionIDs[0]})
 	for index := 0; index+1 < len(compressionIDs); index++ {
 		hidden = append(hidden, Edge{FromID: compressionIDs[index], ToID: compressionIDs[index+1]})
 	}
 	hidden = append(hidden, Edge{FromID: compressionIDs[len(compressionIDs)-1], ToID: regularIDs[0]})
+	compressedResourceCount := 0
+	for kindIndex, resourceKind := range resourceKinds {
+		// 外部イベントとの接続点は表示に残るため、それ以外の単一入出力の資源だけが圧縮される。
+		if resourceKind == "external_event" {
+			continue
+		}
+		// 圧縮後の表示先ジョブ、資源IDの順で経路ツリーに現れる順序も生成規則から組み立てる。
+		for index := kindIndex; index < len(resourceIDs); index += len(resourceKinds) {
+			resourceID := resourceIDs[index]
+			compressedResourceCount++
+			hidden = append(hidden,
+				Edge{FromID: regularIDs[len(regularIDs)-1], ToID: resourceID},
+				Edge{FromID: resourceID, ToID: resourceConsumerID(resourceKind)},
+			)
+		}
+	}
 
 	dataset := Dataset{Name: name, Nodes: b.nodes, Relations: b.relations}
 	dataset.Expectations = []Expectation{
 		buildExpectation(dataset.Nodes, dataset.Relations, expectationSpec{
 			targetID: "NET-TARGET", membership: networkMembership, sccs: sccs,
-			treeNodes: scaleTreeNodeCount(relationCount, 5, compressionCount), hidden: hidden,
-			uncovered: []UncoveredExpectation{{NodeID: resourceIDs[0], Reason: "terminal_without_limit"}},
+			treeNodes: scaleTreeNodeCount(relationCount, 5, compressionCount+compressedResourceCount), hidden: hidden,
+			uncovered: []UncoveredExpectation{{NodeID: "JOB-UNCOVERED", Reason: "terminal_without_limit"}},
 		}),
 		buildExpectation(dataset.Nodes, dataset.Relations, expectationSpec{
 			targetID: "JOB-TARGET", membership: jobMembership, sccs: sccs,
-			treeNodes: scaleTreeNodeCount(relationCount-1, 2, compressionCount), hidden: hidden,
+			treeNodes: scaleTreeNodeCount(relationCount, 2, compressionCount+compressedResourceCount), hidden: hidden,
 			uncovered: []UncoveredExpectation{},
 		}),
 	}
 	return dataset
 }
 
-func scaleTreeNodeCount(relationEdges, scopeEdges, compressionCount int) int {
+func scaleTreeNodeCount(relationEdges, scopeEdges, compressedNodeCount int) int {
 	// 代表経路の木はrootと到達可能な各接続の出現を一つずつ持つ。
-	// 追加辺を隔離した直列区間だけが圧縮されるため、その中間ジョブ数だけを構成時に差し引ける。
-	return 1 + relationEdges + scopeEdges - compressionCount
+	// 圧縮条件を満たす直列ジョブと資源の数を、生成した形状から差し引く。
+	return 1 + relationEdges + scopeEdges - compressedNodeCount
 }
 
 func integerSquareRoot(value int) int {
@@ -767,13 +799,19 @@ func integerSquareRoot(value int) int {
 
 func resourceRelationKind(nodeType string) string {
 	switch nodeType {
-	case "file", "file_pattern":
-		return "produces"
+	case "file", "external_event":
+		return "triggers"
+	case "file_pattern":
+		return "consumed_by"
 	case "job_status":
 		return "observed_by"
 	default:
-		return "triggers"
+		panic(fmt.Sprintf("unsupported resource node type %q", nodeType))
 	}
+}
+
+func resourceConsumerID(nodeType string) string {
+	return "RESOURCE-CONSUMER-" + strings.ToUpper(nodeType)
 }
 
 func chainDataset(name string, edges int) Dataset {
@@ -932,8 +970,8 @@ func parallelRelationsDataset() Dataset {
 	b.node("job", b.targetID, "", "target")
 	b.node("job", "PARALLEL-END", "", "downstream", rawLimit("LIMIT-PARALLEL"))
 	b.relationWith(b.targetID, "PARALLEL-END", "precedes", "scheduler", "declared")
-	b.relationWith(b.targetID, "PARALLEL-END", "triggers", "deterministic_analysis", "confirmed")
-	b.relationWith(b.targetID, "PARALLEL-END", "observed_by", "ai_analysis", "inferred")
+	b.relationWith(b.targetID, "PARALLEL-END", "precedes", "deterministic_analysis", "confirmed")
+	b.relationWith(b.targetID, "PARALLEL-END", "precedes", "ai_analysis", "inferred")
 	b.treeNodes = 2
 	return b.finish()
 }

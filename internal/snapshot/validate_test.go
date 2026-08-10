@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
+	"runtime/debug"
 	"strings"
 	"testing"
 
@@ -707,6 +709,11 @@ func BenchmarkValidate(b *testing.B) {
 				b.Fatal(err)
 			}
 			extracted := Extracted{Directory: files.Directory, Manifest: files.Manifest, Nodes: files.Nodes, Relations: files.Relations}
+			expectedNodes := len(dataset.Nodes)
+			expectedRelations := len(dataset.Relations)
+			dataset = graphgen.Dataset{}
+			runtime.GC()
+			debug.FreeOSMemory()
 			b.ReportAllocs()
 			b.StartTimer()
 
@@ -715,8 +722,8 @@ func BenchmarkValidate(b *testing.B) {
 				if err != nil {
 					b.Fatalf("Validate() error = %v", err)
 				}
-				if result.NodeCount != len(dataset.Nodes) || result.RelationCount != len(dataset.Relations) {
-					b.Fatalf("Validate() result = %#v, want %d nodes and %d relations", result, len(dataset.Nodes), len(dataset.Relations))
+				if result.NodeCount != expectedNodes || result.RelationCount != expectedRelations {
+					b.Fatalf("Validate() result = %#v, want %d nodes and %d relations", result, expectedNodes, expectedRelations)
 				}
 			}
 		})

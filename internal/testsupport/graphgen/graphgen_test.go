@@ -54,12 +54,15 @@ func TestSmallHasDeepLayeredShapeAndTwoTargets(t *testing.T) {
 	}
 
 	compressionCount := SmallNodeCount / 100
-	regularCount := SmallNodeCount - (1 + 5 + 3) - SmallNodeCount/10 - compressionCount
+	regularCount := SmallNodeCount - (1 + 5 + 3 + 4 + 1) - SmallNodeCount/10 - compressionCount
 	relations := make(map[string]struct{}, len(dataset.Relations))
+	relationKinds := make(map[string]string, len(dataset.Relations))
 	outgoing := make(map[string]int)
 	incoming := make(map[string]int)
 	for _, relation := range dataset.Relations {
-		relations[relation.FromID+"\x00"+relation.ToID] = struct{}{}
+		key := relation.FromID + "\x00" + relation.ToID
+		relations[key] = struct{}{}
+		relationKinds[key] = relation.Kind
 		outgoing[relation.FromID]++
 		incoming[relation.ToID]++
 	}
@@ -72,6 +75,12 @@ func TestSmallHasDeepLayeredShapeAndTwoTargets(t *testing.T) {
 			t.Errorf("missing constructed path connection %s -> %s", fromID, toID)
 		}
 	}
+	assertRelation := func(fromID, toID, kind string) {
+		t.Helper()
+		if got := relationKinds[fromID+"\x00"+toID]; got != kind {
+			t.Errorf("relation %s -> %s kind = %q, want %q", fromID, toID, got, kind)
+		}
+	}
 	assertConnection("JOB-TARGET", "COMPRESS-0000000")
 	for index := 0; index+1 < compressionCount; index++ {
 		assertConnection(fmt.Sprintf("COMPRESS-%07d", index), fmt.Sprintf("COMPRESS-%07d", index+1))
@@ -80,7 +89,36 @@ func TestSmallHasDeepLayeredShapeAndTwoTargets(t *testing.T) {
 	for index := 0; index+1 < regularCount; index++ {
 		assertConnection(fmt.Sprintf("JOB-%07d", index), fmt.Sprintf("JOB-%07d", index+1))
 	}
-	assertConnection(fmt.Sprintf("JOB-%07d", regularCount-1), "RESOURCE-0000000")
+	resourceKinds := []string{"file", "file_pattern", "job_status", "external_event"}
+	compressedResourceCount := 0
+	for index := 0; index < SmallNodeCount/10; index++ {
+		if resourceKinds[index%len(resourceKinds)] != "external_event" {
+			compressedResourceCount++
+		}
+	}
+	expectedHiddenConnections := compressionCount + 1 + compressedResourceCount*2
+	regularFinishLimits, regularElapsedLimits, regularRawLimits := 0, 0, 0
+	for index := 0; index < regularCount; index += 211 {
+		switch (index / 211) % 3 {
+		case 0:
+			regularFinishLimits++
+		case 1:
+			regularElapsedLimits++
+		case 2:
+			regularRawLimits++
+		}
+	}
+	downstreamFinishLimits := regularFinishLimits + 1
+	downstreamElapsedLimits := regularElapsedLimits + 1
+	downstreamRawLimits := regularRawLimits + 1 + len(resourceKinds)
+	producerID := fmt.Sprintf("JOB-%07d", regularCount-1)
+	for index, resourceKind := range resourceKinds {
+		resourceID := fmt.Sprintf("RESOURCE-%07d", index)
+		consumerID := resourceConsumerID(resourceKind)
+		assertRelation(producerID, resourceID, "produces")
+		assertRelation(resourceID, consumerID, resourceRelationKind(resourceKind))
+		assertRelation(consumerID, "RESOURCE-SUCCESSOR", "precedes")
+	}
 	branching, merging := 0, 0
 	for _, count := range outgoing {
 		if count > 1 {
@@ -97,8 +135,12 @@ func TestSmallHasDeepLayeredShapeAndTwoTargets(t *testing.T) {
 	}
 
 	resourceTypes := make(map[string]int)
+	nodeTypes := make(map[string]string)
+	limitsByNode := make(map[string][]Limit)
 	parents := make(map[string]string)
 	for _, node := range dataset.Nodes {
+		nodeTypes[node.ID] = node.Type
+		limitsByNode[node.ID] = node.LimitFacts
 		if strings.HasPrefix(node.ID, "RESOURCE-") {
 			resourceTypes[node.Type]++
 		}
@@ -109,6 +151,23 @@ func TestSmallHasDeepLayeredShapeAndTwoTargets(t *testing.T) {
 	for _, nodeType := range []string{"file", "file_pattern", "job_status", "external_event"} {
 		if resourceTypes[nodeType] == 0 {
 			t.Errorf("resource type %q is missing", nodeType)
+		}
+		consumerID := resourceConsumerID(nodeType)
+		if len(limitsByNode[consumerID]) != 1 || limitsByNode[consumerID][0].ID != "LIMIT-"+consumerID {
+			t.Errorf("resource-only limit for %q = %#v", nodeType, limitsByNode[consumerID])
+		}
+		resourceInputs := 0
+		for _, relation := range dataset.Relations {
+			if relation.ToID != consumerID {
+				continue
+			}
+			resourceInputs++
+			if nodeTypes[relation.FromID] != nodeType || relation.Kind != resourceRelationKind(nodeType) {
+				t.Errorf("consumer %q has invalid input %#v from type %q", consumerID, relation, nodeTypes[relation.FromID])
+			}
+		}
+		if resourceInputs == 0 {
+			t.Errorf("consumer %q has no resource input", consumerID)
 		}
 	}
 	if parents["NET-TARGET-NESTED"] != "NET-TARGET" || parents["NET-DOWNSTREAM-NESTED"] != "NET-DOWNSTREAM" {
@@ -123,12 +182,20 @@ func TestSmallHasDeepLayeredShapeAndTwoTargets(t *testing.T) {
 		membershipLimits LimitsExpectation
 	}{
 		{
-			targetID: "NET-TARGET", reachedNodes: 9_998, treeNodes: 24_906, uncoveredRoutes: 1,
-			membershipLimits: limitCounts(0, 0, 0, 1, 1, 1, 16, 15, 15),
+			targetID: "NET-TARGET", reachedNodes: SmallNodeCount - 2,
+			treeNodes: scaleTreeNodeCount(SmallRelationCount, 5, compressionCount+compressedResourceCount), uncoveredRoutes: 1,
+			membershipLimits: limitCounts(
+				0, 0, 0, 1, 1, 1,
+				downstreamFinishLimits, downstreamElapsedLimits, downstreamRawLimits,
+			),
 		},
 		{
-			targetID: "JOB-TARGET", reachedNodes: 9_995, treeNodes: 24_902, uncoveredRoutes: 0,
-			membershipLimits: limitCounts(1, 1, 1, 0, 0, 0, 16, 15, 15),
+			targetID: "JOB-TARGET", reachedNodes: SmallNodeCount - 5,
+			treeNodes: scaleTreeNodeCount(SmallRelationCount, 2, compressionCount+compressedResourceCount), uncoveredRoutes: 0,
+			membershipLimits: limitCounts(
+				1, 1, 1, 0, 0, 0,
+				downstreamFinishLimits, downstreamElapsedLimits, downstreamRawLimits,
+			),
 		},
 	}
 	for index, want := range wants {
@@ -136,8 +203,8 @@ func TestSmallHasDeepLayeredShapeAndTwoTargets(t *testing.T) {
 		if got.TargetID != want.targetID || len(got.ReachedNodes) != want.reachedNodes {
 			t.Errorf("expectation[%d] target/reached = %s/%d, want %s/%d", index, got.TargetID, len(got.ReachedNodes), want.targetID, want.reachedNodes)
 		}
-		if got.TreeNodeCount != want.treeNodes || len(got.HiddenConnections) != compressionCount+1 {
-			t.Errorf("expectation[%d] tree/hidden = %d/%d, want %d/%d", index, got.TreeNodeCount, len(got.HiddenConnections), want.treeNodes, compressionCount+1)
+		if got.TreeNodeCount != want.treeNodes || len(got.HiddenConnections) != expectedHiddenConnections {
+			t.Errorf("expectation[%d] tree/hidden = %d/%d, want %d/%d", index, got.TreeNodeCount, len(got.HiddenConnections), want.treeNodes, expectedHiddenConnections)
 		}
 		if len(got.SCCs) != 3 || len(got.UncoveredRoutes) != want.uncoveredRoutes {
 			t.Errorf("expectation[%d] SCC/uncovered = %d/%d, want 3/%d", index, len(got.SCCs), len(got.UncoveredRoutes), want.uncoveredRoutes)

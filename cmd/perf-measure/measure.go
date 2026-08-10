@@ -36,11 +36,12 @@ type fixture struct {
 }
 
 type datasetReport struct {
-	Name        string              `json:"name"`
-	Input       inputDescription    `json:"input"`
-	Import      *importReport       `json:"import,omitempty"`
-	Searches    []searchReport      `json:"searches,omitempty"`
-	Concurrency []concurrencyReport `json:"concurrency,omitempty"`
+	Name                 string                      `json:"name"`
+	Input                inputDescription            `json:"input"`
+	Import               *importReport               `json:"import,omitempty"`
+	Searches             []searchReport              `json:"searches,omitempty"`
+	Concurrency          []concurrencyReport         `json:"concurrency,omitempty"`
+	ConnectionComparison *connectionComparisonReport `json:"connection_comparison,omitempty"`
 }
 
 type inputDescription struct {
@@ -159,6 +160,21 @@ type concurrencyRound struct {
 	PeakRSSDeltaBytes   int64        `json:"peak_rss_delta_bytes"`
 }
 
+type connectionComparisonReport struct {
+	TargetID                     string                     `json:"target_id"`
+	CacheState                   string                     `json:"cache_state"`
+	DatabaseGenerationPathPolicy string                     `json:"database_generation_path_policy"`
+	ConnectionInitialization     string                     `json:"connection_initialization"`
+	ExecutionOrder               string                     `json:"execution_order"`
+	Results                      []connectionStrategyReport `json:"results"`
+}
+
+type connectionStrategyReport struct {
+	ConnectionStrategy           string            `json:"connection_strategy"`
+	ConfiguredMaxOpenConnections int               `json:"configured_max_open_connections"`
+	Measurement                  concurrencyReport `json:"measurement"`
+}
+
 type dbStats struct {
 	MaxOpenConnections int   `json:"max_open_connections"`
 	OpenConnections    int   `json:"open_connections"`
@@ -219,7 +235,7 @@ func measureDataset(configured config, fixture *fixture) (datasetReport, error) 
 			ArchiveBytes: fixture.ArchiveBytes, ArchiveSHA256: fixture.ArchiveSHA256,
 		},
 	}
-	if configured.Mode != "concurrent" {
+	if configured.Mode != "concurrent" && configured.Mode != "connection-comparison" {
 		imports, active, err := measureImports(fixture, configured.Runs)
 		if err != nil {
 			return datasetReport{}, err
@@ -245,6 +261,15 @@ func measureDataset(configured config, fixture *fixture) (datasetReport, error) 
 		return datasetReport{}, err
 	}
 	result.Import = &importReport{Runs: []importRun{setup.measurement}, Summary: summarizeImports([]importRun{setup.measurement})}
+	if configured.Mode == "connection-comparison" {
+		comparison, measureErr := measureConnectionComparison(&setup.active, fixture.TargetIDs[0], configured.Concurrencies, configured.Runs)
+		closeErr := setup.active.close()
+		if measureErr != nil || closeErr != nil {
+			return datasetReport{}, errors.Join(measureErr, closeErr)
+		}
+		result.ConnectionComparison = comparison
+		return result, nil
+	}
 	concurrency, measureErr := measureConcurrency(setup.active.storage, fixture.TargetIDs[0], configured.Concurrencies, configured.Runs)
 	closeErr := setup.active.close()
 	if measureErr != nil || closeErr != nil {

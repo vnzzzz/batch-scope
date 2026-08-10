@@ -5,11 +5,12 @@ IMAGE ?= batchscope
 TAG ?= local
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 COMMIT ?= $(shell git rev-parse --short=12 HEAD 2>/dev/null || echo unknown)
-.PHONY: help bootstrap fmt fmt-check scripts-check vet test run openapi openapi-check verify demo-view perf-small perf-medium perf-scale perf-pathological perf-concurrent perf-growth release-artifacts image image-run check-docker
+.PHONY: help bootstrap fmt fmt-check scripts-check vet test run openapi openapi-check verify demo-view perf-small perf-medium perf-scale perf-pathological perf-concurrent perf-connection-comparison perf-growth release-artifacts image image-run check-docker
 
 PERF_RUNS ?= 5
 PERF_PATHOLOGICAL_RUNS ?= 3
 PERF_CONCURRENT_RUNS ?= 5
+PERF_CONNECTION_COMPARISON_RUNS ?= 5
 PERF_GROWTH_RUNS ?= 2
 PERF_GROWTH_SIZES ?= 10000:25000 20000:50000 40000:100000 80000:200000
 PERF_GROWTH_OUTPUT ?= /tmp/batchscope-perf-growth
@@ -72,6 +73,9 @@ perf-pathological: ## [Dev Container] 軽量な病理グラフの取込と検索
 
 perf-concurrent: ## [Dev Container] Smallデータで同一SQLiteへの同時検索性能をJSONで測定する
 	@go run ./cmd/perf-measure -mode concurrent -profile small -runs $(PERF_CONCURRENT_RUNS) -concurrencies 1,2,4,8
+
+perf-connection-comparison: ## [Dev Container] Smallデータで単一接続と複数読み取り接続を比較する
+	@go run ./cmd/perf-measure -mode connection-comparison -profile small -runs $(PERF_CONNECTION_COMPARISON_RUNS) -concurrencies 1,2,4,8
 
 perf-growth: ## [Dev Container] 中間規模の取込と検索性能を規模別のJSONで測定する
 	@mkdir -p "$(PERF_GROWTH_OUTPUT)"

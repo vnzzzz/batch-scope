@@ -110,7 +110,8 @@
 | Scale | 1,000,000ノード、3,000,000 relation | `NET-TARGET`、`JOB-TARGET` | Mediumより大きい専用環境で上限値の判断材料を測定する |
 | Pathological | 個別の軽量ケース | ケースごとの一対象 | Dev ContainerとCIで規模以外の形状を検査する |
 
-Small、Medium、Scaleは、管理単位と入れ子のジョブネット、ジョブ、四種類の中間ノード、分岐、合流、循環、リミット、圧縮対象の直列経路を同じ生成規則で含みます。
+Small、Medium、Scaleは、管理単位と入れ子のジョブネット、ジョブ、分岐、合流、循環、リミット、圧縮対象の直列経路を同じ生成規則で含みます。
+`file`、`file_pattern`、`job_status`、`external_event`は、ジョブが`produces`した後に別のジョブへ到達する中間ノードとして使い、中間ノードの先にあるリミット設定済みジョブとその後続までを探索する経路を持ちます。
 ジョブネットとジョブを起点とする二つの解析対象により、`target`、`contained`、`downstream`を検査します。
 
 Pathologicalは、`long-chain`、`high-fan-out`、`high-fan-in`、`large-and-multiple-scc`、`cycle-with-exit`、`deep-nested-networks`、`reached-network-with-outbound`、`many-limits`、`parallel-relations`、`long-compression`、`covered-and-uncovered-merge`、`uncovered-cycle-and-endpoint`、`large-pathtree-scc`を個別に生成します。
@@ -133,6 +134,7 @@ Pathologicalは、`long-chain`、`high-fan-out`、`high-fan-in`、`large-and-mul
 | `PERF_RUNS=2 make perf-scale` | Scaleの取込と静的解析。必要メモリは未測定 |
 | `PERF_PATHOLOGICAL_RUNS=3 make perf-pathological` | 全Pathologicalケースの取込と解析 |
 | `PERF_CONCURRENT_RUNS=2 make perf-concurrent` | Smallの`NET-TARGET`を並行度1、2、4、8で解析 |
+| `PERF_CONNECTION_COMPARISON_RUNS=5 make perf-connection-comparison` | Smallの`NET-TARGET`について単一接続と複数読み取り接続を並行度1、2、4、8で比較 |
 | `PERF_GROWTH_RUNS=2 make perf-growth` | 10k、20k、40k、80kノードを別プロセスで測定し、規模別のJSONを`/tmp/batchscope-perf-growth`へ保存 |
 
 任意規模は`custom`プロファイルへノード数とrelation数を指定します。
@@ -163,6 +165,12 @@ HeapとLinuxのRSSは5 ms間隔と段階の境界で取得するため、サン�
 
 並行負荷測定は、各ラウンドの開始前にSQLite接続のページキャッシュを解放し、すべてのworkerを同時に開始します。
 出力は検索ごとのレイテンシ、ラウンド全体のスループット、`database/sql`の接続待ち回数と待ち時間、HeapとRSSを含みます。
+
+接続方式の比較測定は、一回の取込で作成したSQLiteを世代固有のファイルパスへ複製し、製品の`store`を閉じてから測定専用の接続を開きます。
+単一接続と複数読み取り接続は同じSQLiteファイルを使い、最大接続数だけを1または並行度と同じ値へ変更します。
+どちらも読み取り専用かつ不変ファイルとして開き、DSNにより`foreign_keys`と`query_only`をすべての接続へ適用します。
+各ラウンドの前に接続プールの全接続を同時に確保して`PRAGMA shrink_memory`を実行し、方式を先に測る順序はラウンドと並行度ごとに交互にします。
+OSのページキャッシュは既存の並行負荷測定と同様に保持します。
 
 世代切替中の検索は次の検査で確認します。
 旧SQLiteで`Traverse`を終えた検索を一時停止し、新SQLiteへ切り替えて新世代を検索した後、旧世代の`Scan`と`Build`を再開します。

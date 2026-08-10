@@ -314,9 +314,15 @@ func assertPathTree(t *testing.T, result pipelineResult, want graphgen.Expectati
 	gotHidden := hiddenConnections(ordered)
 	if !slices.Equal(gotHidden, want.HiddenConnections) {
 		t.Errorf("hidden connections differ: got %d, want %d", len(gotHidden), len(want.HiddenConnections))
+		for index := 0; index < min(len(gotHidden), len(want.HiddenConnections)); index++ {
+			if gotHidden[index] != want.HiddenConnections[index] {
+				t.Errorf("first hidden connection difference at %d: got %#v, want %#v", index, gotHidden[index], want.HiddenConnections[index])
+				break
+			}
+		}
 	}
-	if len(gotHidden) > 1_000 {
-		assertHiddenNodeIDLimitIndependent(t, ordered, len(gotHidden))
+	if largestHiddenConnectionCount(ordered) > 1_000 {
+		assertHiddenNodeIDLimitIndependent(t, ordered)
 	}
 
 	gotUncovered := make([]graphgen.UncoveredExpectation, len(result.PathTree.UncoveredRoutes))
@@ -399,11 +405,19 @@ func hiddenConnections(nodes []*pathtree.TreeNode) []graphgen.Edge {
 	return result
 }
 
-func assertHiddenNodeIDLimitIndependent(t *testing.T, nodes []*pathtree.TreeNode, wantConnections int) {
+func largestHiddenConnectionCount(nodes []*pathtree.TreeNode) int {
+	largest := 0
+	for _, node := range nodes {
+		largest = max(largest, len(node.HiddenConnections))
+	}
+	return largest
+}
+
+func assertHiddenNodeIDLimitIndependent(t *testing.T, nodes []*pathtree.TreeNode) {
 	t.Helper()
 	found := false
 	for _, node := range nodes {
-		if len(node.HiddenConnections) != wantConnections {
+		if len(node.HiddenConnections) <= 1_000 {
 			continue
 		}
 		found = true
@@ -412,7 +426,7 @@ func assertHiddenNodeIDLimitIndependent(t *testing.T, nodes []*pathtree.TreeNode
 		}
 	}
 	if !found {
-		t.Errorf("no compressed node retained all %d hidden connections", wantConnections)
+		t.Error("no compressed node retained more than 1,000 hidden connections")
 	}
 }
 

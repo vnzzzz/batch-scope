@@ -88,7 +88,7 @@ func run() error {
 	}
 
 	var reportedConcurrencies []int
-	if configured.Mode == "concurrent" {
+	if configured.Mode == "concurrent" || configured.Mode == "connection-comparison" {
 		reportedConcurrencies = configured.Concurrencies
 	}
 	result := report{
@@ -139,7 +139,7 @@ func run() error {
 
 func parseConfig(arguments []string) (config, error) {
 	flags := flag.NewFlagSet("perf-measure", flag.ContinueOnError)
-	mode := flags.String("mode", "pipeline", "measurement mode: pipeline, import, or concurrent")
+	mode := flags.String("mode", "pipeline", "measurement mode: pipeline, import, concurrent, or connection-comparison")
 	profile := flags.String("profile", "small", "dataset profile: small, medium, scale, pathological, or custom")
 	pathological := flags.String("pathological-cases", "all", "comma-separated pathological cases, or all")
 	nodes := flags.Int("nodes", 0, "custom profile node count")
@@ -152,7 +152,7 @@ func parseConfig(arguments []string) (config, error) {
 	if flags.NArg() != 0 {
 		return config{}, fmt.Errorf("unexpected positional arguments: %s", strings.Join(flags.Args(), " "))
 	}
-	if *mode != "pipeline" && *mode != "import" && *mode != "concurrent" {
+	if *mode != "pipeline" && *mode != "import" && *mode != "concurrent" && *mode != "connection-comparison" {
 		return config{}, fmt.Errorf("unsupported mode %q", *mode)
 	}
 	if *runs < 2 {

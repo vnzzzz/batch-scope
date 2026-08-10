@@ -31,6 +31,9 @@ func TestParseConfigRequiresRepeatedRunsAndExactConcurrencies(t *testing.T) {
 	if configured, err := parseConfig([]string{"-mode", "import", "-runs", "2"}); err != nil || configured.Mode != "import" {
 		t.Fatalf("parseConfig(import) = %#v, %v", configured, err)
 	}
+	if configured, err := parseConfig([]string{"-mode", "connection-comparison", "-runs", "2"}); err != nil || configured.Mode != "connection-comparison" {
+		t.Fatalf("parseConfig(connection-comparison) = %#v, %v", configured, err)
+	}
 }
 
 func TestParseConfigValidatesCustomSize(t *testing.T) {
