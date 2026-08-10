@@ -32,4 +32,5 @@ BatchScopeは、障害発生時に巨大なジョブ定義を手作業でたど�
 | [コントリビューションガイド](../CONTRIBUTING.md) | ブランチ運用とPull Requestの作成手順 |
 | [ビルドと公開](development/build-and-release.md) | バイナリ、コンテナ、CI、GitHub Releases |
 | [テスト](development/testing.md) | テスト範囲と評価データ |
+| [性能測定結果](development/performance-measurement.md) | Issue #14の測定環境、条件、結果 |
 | [技術文書の書き方](development/writing-style.md) | 日本語表記、図表、重複を避ける規則 |
