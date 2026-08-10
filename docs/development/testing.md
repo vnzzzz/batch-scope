@@ -69,18 +69,20 @@
 
 ## 経路ツリー
 
-- 各リミットまでの採用経路
-- 同じ長さの経路に対する辞書順の選択
+- [後続リミットの検索](../design/dependency-analysis.md#経路ツリー)で定めた代表経路の選択
 - `alternatePathCount`
-- 後続リミットの`treeNodeId`が設定先のツリーノードを参照すること
+- 各リミットの`treeNodeId`が設定先のツリーノードを参照すること
 - ルート以外のツリーノードに`viaRelations`が含まれること
 - `includeEvidence=false`でも`kind`、`origin`、`certainty`が返ること
 - `includeEvidence=true`の場合だけ`evidence`が返ること
 - 別経路との合流を循環として扱わないこと
 - 循環に入らない枝を調べ続けること
-- 長い直列経路の省略
-- `hiddenNodeIds`を1,000件まで返すこと
-- 1,000件を超えた場合に`hiddenNodeIdsTruncated=true`となること
+- 循環の`nodes`と一周分の表示経路が入力順に依存せず、各接続がrelationまたはscope遷移を保つこと
+- `uncoveredRoutes`が終端、循環、探索対象外の種別を区別し、その`treeNodeId`が判定に使ったリミット未通過経路の境界を参照すること
+- 長い直列経路を省略しても、`hiddenConnections`が親から表示ノードまでの全接続を順番どおりに保持すること
+- `hiddenNodeIds`が1,000件を上限とし、超過時に`hiddenNodeIdsTruncated=true`となること
+- `hiddenConnections`が`hiddenNodeIds`の表示上限とは独立し、1,000接続を超えても切り詰められないこと
+- 圧縮した接続を`hiddenConnections`と`viaRelations`またはscope遷移の両方で重ねて表さないこと
 
 ## 取込の安全性
 
@@ -98,30 +100,100 @@
 
 ## 性能測定用データ
 
-性能用データは、実装段階に合わせて増やします。
-MVPのCIで公開上限と同じデータを毎回処理しません。
+性能用データは`internal/testsupport/graphgen`が決まった規則で生成します。
+同じプロファイルからは、同じノード、relation、期待値、アーカイブを生成します。
 
-| セット | 目安 | 実行環境 | 用途 |
+| プロファイル | 規模またはケース | 解析対象 | 実行環境と用途 |
 |---|---:|---|---|
-| Demo | 100ノード未満 | Dev Container、CI | 機能と表示の確認 |
-| Small | 10kノード、25k依存関係 | CI | 基本的な性能劣化の検出 |
-| Medium | 100kノード、300k依存関係 | 開発者のホストまたは専用CI | 実データに近い測定 |
-| Scale | 1mノード以上 | 専用の測定環境 | 上限値を決める前の確認 |
-| Pathological | 必要な規模 | 専用の測定環境 | 高分岐、合流、深い循環 |
+| Small | 10,000ノード、25,000 relation | `NET-TARGET`、`JOB-TARGET` | Dev ContainerとCIで取込から経路ツリーまでを検査する |
+| Medium | 100,000ノード、300,000 relation | `NET-TARGET`、`JOB-TARGET` | 8 GiB以上の利用可能メモリを目安とする専用環境で測定する |
+| Scale | 1,000,000ノード、3,000,000 relation | `NET-TARGET`、`JOB-TARGET` | Mediumより大きい専用環境で上限値の判断材料を測定する |
+| Pathological | 個別の軽量ケース | ケースごとの一対象 | Dev ContainerとCIで規模以外の形状を検査する |
+
+Small、Medium、Scaleは、管理単位と入れ子のジョブネット、ジョブ、分岐、合流、循環、リミット、圧縮対象の直列経路を同じ生成規則で含みます。
+`file`、`file_pattern`、`job_status`、`external_event`は、ジョブが`produces`した後に別のジョブへ到達する中間ノードとして使い、中間ノードの先にあるリミット設定済みジョブとその後続までを探索する経路を持ちます。
+ジョブネットとジョブを起点とする二つの解析対象により、`target`、`contained`、`downstream`を検査します。
+
+Pathologicalは、`long-chain`、`high-fan-out`、`high-fan-in`、`large-and-multiple-scc`、`cycle-with-exit`、`deep-nested-networks`、`reached-network-with-outbound`、`many-limits`、`parallel-relations`、`long-compression`、`covered-and-uncovered-merge`、`uncovered-cycle-and-endpoint`、`large-pathtree-scc`を個別に生成します。
 
 公開上限の1,000万ノードと5,000万依存関係は、受入条件ではなく入力拒否の上限です。
-この規模を正式な対応規模とする場合は、専用の性能試験を追加します。
+対応規模は[性能測定結果](performance-measurement.md)を材料としてIssue #32で決めます。
 
-完全一致検索は、SQLiteのキャッシュが空の状態と読み込み済みの状態で計測します。
-後続リミットの取得は、調べるノード数、循環数、レスポンスサイズを変えて計測します。
+## 性能測定
 
-取込は、所要時間、最大メモリ、一時ディスク使用量を計測します。
-JSONレスポンスの生成時間も分けて計測します。
+`cmd/perf-measure`は取込と静的解析を同じプロセスで実行し、JSONを標準出力へ出します。
+出力は設定、実行環境、測定方法、入力件数とアーカイブのSHA-256、各実行の値、`min`、`median`、`p95`、`max`の要約を含みます。
+`p95`はnearest-rank方式で求めます。
+
+実行環境：Dev Containerまたは専用の測定環境
+
+| コマンド | 測定内容 |
+|---|---|
+| `PERF_RUNS=3 make perf-small` | Smallの取込、二対象のcoldとwarmの静的解析 |
+| `PERF_RUNS=2 make perf-medium` | Mediumの取込と静的解析。利用可能メモリは8 GiB以上が目安 |
+| `PERF_RUNS=2 make perf-scale` | Scaleの取込と静的解析。必要メモリは未測定 |
+| `PERF_PATHOLOGICAL_RUNS=3 make perf-pathological` | 全Pathologicalケースの取込と解析 |
+| `PERF_CONCURRENT_RUNS=2 make perf-concurrent` | Smallの`NET-TARGET`を並行度1、2、4、8で解析 |
+| `PERF_CONNECTION_COMPARISON_RUNS=5 make perf-connection-comparison` | Smallの`NET-TARGET`について単一接続と複数読み取り接続を並行度1、2、4、8で比較 |
+| `PERF_GROWTH_RUNS=2 make perf-growth` | 10k、20k、40k、80kノードを別プロセスで測定し、規模別のJSONを`/tmp/batchscope-perf-growth`へ保存 |
+
+任意規模は`custom`プロファイルへノード数とrelation数を指定します。
+relation数はノード数の2.5倍から3倍までとし、Small、Medium、Scaleと同じ増加傾向を保ちます。
+
+```bash
+go run ./cmd/perf-measure \
+  -profile custom \
+  -nodes 40000 \
+  -relations 100000 \
+  -runs 2
+```
+
+取込だけを測定する場合は`-mode import`を指定します。
+反復数は`-runs`で指定し、分布を作るため2以上を必要とします。
+
+```bash
+go run ./cmd/perf-measure -mode import -profile medium -runs 2
+```
+
+`cold`は各実行前に`PRAGMA shrink_memory`でSQLite接続のページキャッシュを解放した状態です。
+`warm`は直前の`cold`と同じSQLite接続を使い、接続のページキャッシュを解放せずに続けた状態です。
+どちらもOSのページキャッシュを保持するため、ストレージからの完全な初回読込は測っていません。
+
+検索の`total_ns`は`Traverse`の開始から`Build`の終了までです。
+結果の決まった順序でのJSON化とSHA-256計算は`serialize_digest_ns`へ分けます。
+HeapとLinuxのRSSは5 ms間隔と段階の境界で取得するため、サンプル間の短いピークを捉えない可能性があります。
+
+並行負荷測定は、各ラウンドの開始前にSQLite接続のページキャッシュを解放し、すべてのworkerを同時に開始します。
+出力は検索ごとのレイテンシ、ラウンド全体のスループット、`database/sql`の接続待ち回数と待ち時間、HeapとRSSを含みます。
+
+接続方式の比較測定は、一回の取込で作成したSQLiteを世代固有のファイルパスへ複製し、製品の`store`を閉じてから測定専用の接続を開きます。
+単一接続と複数読み取り接続は同じSQLiteファイルを使い、最大接続数だけを1または並行度と同じ値へ変更します。
+どちらも読み取り専用かつ不変ファイルとして開き、DSNにより`foreign_keys`と`query_only`をすべての接続へ適用します。
+各ラウンドの前に接続プールの全接続を同時に確保して`PRAGMA shrink_memory`を実行し、方式を先に測る順序はラウンドと並行度ごとに交互にします。
+OSのページキャッシュは既存の並行負荷測定と同様に保持します。
+
+世代切替中の検索は次の検査で確認します。
+旧SQLiteで`Traverse`を終えた検索を一時停止し、新SQLiteへ切り替えて新世代を検索した後、旧世代の`Scan`と`Build`を再開します。
+旧検索が旧世代だけ、新検索が新世代だけを返し、ノード、リミット、経路ツリーに世代が混在しないことを検査します。
+
+```bash
+go test -run TestSearchKeepsOneSnapshotGenerationAcrossConcurrentSwitch -count=1 -v ./internal/importer
+```
+
+## CIと専用測定環境
+
+通常CIの`make verify`は、Smallと全Pathologicalケースの取込、解析、入力順の検査、世代切替検査を実行します。
+`make verify`は性能値を合否判定に使わず、`perf-*`ターゲットも呼び出しません。
+
+Mediumの完全な静的解析は、8 GiB以上の利用可能メモリを目安とする専用環境で実行します。
+Scaleの完全な測定に必要なメモリは未測定であり、Mediumを完走できる環境で段階的に確認します。
+測定済み環境と結果は[性能測定結果](performance-measurement.md)を参照してください。
 
 ## 受入条件
 
-- 合意した測定環境で、完全一致検索のp95が200 ms以下である。
-- 代表的な検索条件で、後続リミット取得のp95が1秒以下である。
+- 合意した測定環境で、完全一致検索のp95が200 ms以下であることをIssue #10で確認する。
+- 代表的な検索条件で、後続リミット取得のp95が1秒以下であることをIssue #13で確認する。
+- 測定結果から正式な対応規模をIssue #32で決める。
 - 循環を含む入力で、処理が終わらなくなったりプロセスが停止したりしない。
 - 各リミットの閲覧順を、レスポンス内の項目から説明できる。
 - 取込失敗によって、現在使用中のSQLiteが破損または置換されない。

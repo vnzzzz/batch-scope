@@ -1,7 +1,6 @@
 package snapshot
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/hex"
@@ -10,8 +9,12 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
+	"runtime/debug"
 	"strings"
 	"testing"
+
+	"batchscope/internal/testsupport/graphgen"
 )
 
 func TestValidateAcceptsParentHierarchies(t *testing.T) {
@@ -691,17 +694,26 @@ func TestValidatePreservesContextCancellation(t *testing.T) {
 
 func BenchmarkValidate(b *testing.B) {
 	benchmarks := []struct {
-		name          string
-		nodeCount     int
-		relationCount int
+		name     string
+		generate func() graphgen.Dataset
 	}{
-		{name: "Small", nodeCount: 10_000, relationCount: 25_000},
-		{name: "Medium", nodeCount: 100_000, relationCount: 300_000},
+		{name: "Small", generate: graphgen.Small},
+		{name: "Medium", generate: graphgen.Medium},
 	}
 	for _, benchmark := range benchmarks {
 		b.Run(benchmark.name, func(b *testing.B) {
 			b.StopTimer()
-			extracted := writeBenchmarkSnapshot(b, benchmark.name, benchmark.nodeCount, benchmark.relationCount)
+			dataset := benchmark.generate()
+			files, err := dataset.WriteFiles(b.TempDir(), false)
+			if err != nil {
+				b.Fatal(err)
+			}
+			extracted := Extracted{Directory: files.Directory, Manifest: files.Manifest, Nodes: files.Nodes, Relations: files.Relations}
+			expectedNodes := len(dataset.Nodes)
+			expectedRelations := len(dataset.Relations)
+			dataset = graphgen.Dataset{}
+			runtime.GC()
+			debug.FreeOSMemory()
 			b.ReportAllocs()
 			b.StartTimer()
 
@@ -710,88 +722,11 @@ func BenchmarkValidate(b *testing.B) {
 				if err != nil {
 					b.Fatalf("Validate() error = %v", err)
 				}
-				if result.NodeCount != benchmark.nodeCount || result.RelationCount != benchmark.relationCount {
-					b.Fatalf("Validate() result = %#v, want %d nodes and %d relations", result, benchmark.nodeCount, benchmark.relationCount)
+				if result.NodeCount != expectedNodes || result.RelationCount != expectedRelations {
+					b.Fatalf("Validate() result = %#v, want %d nodes and %d relations", result, expectedNodes, expectedRelations)
 				}
 			}
 		})
-	}
-}
-
-func writeBenchmarkSnapshot(b *testing.B, name string, nodeCount, relationCount int) Extracted {
-	b.Helper()
-	directory := b.TempDir()
-	extracted := Extracted{
-		Directory: directory,
-		Manifest:  filepath.Join(directory, manifestName),
-		Nodes:     filepath.Join(directory, nodesName),
-		Relations: filepath.Join(directory, relationsName),
-	}
-	writeBenchmarkFile(b, extracted.Manifest, func(writer *bufio.Writer) error {
-		_, err := fmt.Fprintf(writer, `{"schemaVersion":"0.5","snapshotId":"benchmark-%s","generatedAt":"2026-08-08T00:00:00Z","nodeCount":%d,"relationCount":%d,"producer":{"name":"benchmark","version":"1"}}`, strings.ToLower(name), nodeCount, relationCount)
-		return err
-	})
-	writeBenchmarkFile(b, extracted.Nodes, func(writer *bufio.Writer) error {
-		if _, err := fmt.Fprintln(writer, `{"type":"management_unit","id":"ROOT","name":"Root","parentId":null,"limitFacts":[]}`); err != nil {
-			return err
-		}
-		networkCount := nodeCount / 100
-		jobCount := nodeCount * 7 / 10
-		fileCount := nodeCount * 2 / 10
-		eventCount := nodeCount - 1 - networkCount - jobCount - fileCount
-		for index := 0; index < networkCount; index++ {
-			if _, err := fmt.Fprintf(writer, "{\"type\":\"job_network\",\"id\":\"NET-%06d\",\"name\":\"Network %06d\",\"parentId\":\"ROOT\",\"limitFacts\":[]}\n", index, index); err != nil {
-				return err
-			}
-		}
-		for index := 0; index < jobCount; index++ {
-			if _, err := fmt.Fprintf(writer, "{\"type\":\"job\",\"id\":\"JOB-%06d\",\"name\":\"Job %06d\",\"parentId\":\"NET-%06d\",\"limitFacts\":[]}\n", index, index, index%networkCount); err != nil {
-				return err
-			}
-		}
-		for index := 0; index < fileCount; index++ {
-			if _, err := fmt.Fprintf(writer, "{\"type\":\"file\",\"id\":\"FILE-%06d\",\"name\":\"File %06d\",\"parentId\":null,\"limitFacts\":[]}\n", index, index); err != nil {
-				return err
-			}
-		}
-		for index := 0; index < eventCount; index++ {
-			if _, err := fmt.Fprintf(writer, "{\"type\":\"external_event\",\"id\":\"EVENT-%06d\",\"name\":\"Event %06d\",\"parentId\":null,\"limitFacts\":[]}\n", index, index); err != nil {
-				return err
-			}
-		}
-		return nil
-	})
-	writeBenchmarkFile(b, extracted.Relations, func(writer *bufio.Writer) error {
-		jobCount := nodeCount * 7 / 10
-		for index := 0; index < relationCount; index++ {
-			fromIndex := index % jobCount
-			toIndex := (fromIndex + index/jobCount + 1) % jobCount
-			if _, err := fmt.Fprintf(writer, "{\"fromId\":\"JOB-%06d\",\"toId\":\"JOB-%06d\",\"kind\":\"precedes\",\"origin\":\"scheduler\",\"certainty\":\"declared\"}\n", fromIndex, toIndex); err != nil {
-				return err
-			}
-		}
-		return nil
-	})
-	return extracted
-}
-
-func writeBenchmarkFile(b *testing.B, path string, write func(*bufio.Writer) error) {
-	b.Helper()
-	file, err := os.Create(path)
-	if err != nil {
-		b.Fatalf("create %q: %v", path, err)
-	}
-	writer := bufio.NewWriter(file)
-	if err := write(writer); err != nil {
-		_ = file.Close()
-		b.Fatalf("write %q: %v", path, err)
-	}
-	if err := writer.Flush(); err != nil {
-		_ = file.Close()
-		b.Fatalf("flush %q: %v", path, err)
-	}
-	if err := file.Close(); err != nil {
-		b.Fatalf("close %q: %v", path, err)
 	}
 }
 

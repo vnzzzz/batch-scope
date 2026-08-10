@@ -17,8 +17,10 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"batchscope/internal/limitscan"
+	"batchscope/internal/pathtree"
 	"batchscope/internal/store"
 	"batchscope/internal/traversal"
 )
@@ -114,6 +116,126 @@ func TestRunDemoSnapshotSupportsDownstreamLimitScan(t *testing.T) {
 	}
 	if finishItems[1].ScopeRoot != nil || got.Downstream.MaxElapsed.Items[0].ScopeRoot != nil {
 		t.Errorf("JOB-B ScopeRoots = finish %#v, elapsed %#v, want nil", finishItems[1].ScopeRoot, got.Downstream.MaxElapsed.Items[0].ScopeRoot)
+	}
+}
+
+func TestSearchKeepsOneSnapshotGenerationAcrossConcurrentSwitch(t *testing.T) {
+	startedAt := time.Now()
+	ctx := context.Background()
+	workspace := t.TempDir()
+	storage := newImporterTestStore(t, filepath.Join(workspace, "data"))
+	if _, err := Run(ctx, workspace, bytes.NewReader(generationArchive(t, "OLD")), storage); err != nil {
+		t.Fatalf("initial Run() error = %v", err)
+	}
+
+	oldDB, releaseOld, err := storage.Acquire()
+	if err != nil {
+		t.Fatal(err)
+	}
+	traversed := make(chan struct{})
+	resumeOld := make(chan struct{})
+	resumedOld := false
+	defer func() {
+		if !resumedOld {
+			close(resumeOld)
+		}
+	}()
+	oldResult := make(chan generationSearch, 1)
+	oldError := make(chan error, 1)
+	go func() {
+		defer releaseOld()
+		reached, err := traversal.Traverse(ctx, oldDB, "TARGET")
+		if err != nil {
+			oldError <- err
+			return
+		}
+		close(traversed)
+		<-resumeOld
+		limits, err := limitscan.Scan(ctx, oldDB, reached)
+		if err != nil {
+			oldError <- err
+			return
+		}
+		tree, err := pathtree.Build(ctx, reached, limits)
+		if err != nil {
+			oldError <- err
+			return
+		}
+		oldResult <- generationSearch{traversal: reached, limits: limits, tree: tree}
+	}()
+
+	select {
+	case <-traversed:
+	case err := <-oldError:
+		t.Fatalf("old generation Traverse: %v", err)
+	}
+	if _, err := Run(ctx, workspace, bytes.NewReader(generationArchive(t, "NEW")), storage); err != nil {
+		t.Fatalf("replacement Run() error = %v", err)
+	}
+	newDB, releaseNew, err := storage.Acquire()
+	if err != nil {
+		t.Fatal(err)
+	}
+	newSearch, err := searchGeneration(ctx, newDB)
+	releaseNew()
+	if err != nil {
+		t.Fatal(err)
+	}
+	close(resumeOld)
+	resumedOld = true
+
+	select {
+	case err := <-oldError:
+		t.Fatalf("old generation search: %v", err)
+	case oldSearch := <-oldResult:
+		assertSearchGeneration(t, oldSearch, "OLD", "NEW")
+	}
+	assertSearchGeneration(t, newSearch, "NEW", "OLD")
+	t.Logf("concurrent snapshot generation switch runtime: %s", time.Since(startedAt))
+}
+
+type generationSearch struct {
+	traversal traversal.Result
+	limits    limitscan.Result
+	tree      pathtree.Result
+}
+
+func searchGeneration(ctx context.Context, db *sql.DB) (generationSearch, error) {
+	reached, err := traversal.Traverse(ctx, db, "TARGET")
+	if err != nil {
+		return generationSearch{}, err
+	}
+	limits, err := limitscan.Scan(ctx, db, reached)
+	if err != nil {
+		return generationSearch{}, err
+	}
+	tree, err := pathtree.Build(ctx, reached, limits)
+	if err != nil {
+		return generationSearch{}, err
+	}
+	return generationSearch{traversal: reached, limits: limits, tree: tree}, nil
+}
+
+func assertSearchGeneration(t *testing.T, result generationSearch, want, unwanted string) {
+	t.Helper()
+	reached := make(map[string]struct{}, len(result.traversal.Nodes))
+	for _, node := range result.traversal.Nodes {
+		reached[node.Node.ID] = struct{}{}
+	}
+	if _, ok := reached[want]; !ok {
+		t.Errorf("reached nodes omit generation %q: %v", want, reached)
+	}
+	if _, mixed := reached[unwanted]; mixed {
+		t.Errorf("reached nodes mix generation %q: %v", unwanted, reached)
+	}
+	if got := limitFactIDs(result.limits.Downstream.Raw.Items); !reflect.DeepEqual(got, []string{"LIMIT-" + want}) {
+		t.Errorf("downstream raw limits = %v, want generation %q only", got, want)
+	}
+	if _, ok := result.tree.LimitReferences[want]; !ok {
+		t.Errorf("path tree omits limit owner %q", want)
+	}
+	if _, mixed := result.tree.LimitReferences[unwanted]; mixed {
+		t.Errorf("path tree mixes limit owner %q", unwanted)
 	}
 }
 
@@ -376,6 +498,20 @@ func singleNodeArchive(t *testing.T, nodeID string) []byte {
 	manifest := fmt.Sprintf(`{"schemaVersion":"0.5","snapshotId":%q,"generatedAt":"2026-08-08T00:00:00Z","nodeCount":1,"relationCount":0,"producer":{"name":"test","version":"1"}}`, nodeID)
 	return makeArchive(t, map[string]string{
 		"manifest.json": manifest, "nodes.ndjson": nodes, "relations.ndjson": "",
+	})
+}
+
+func generationArchive(t *testing.T, generation string) []byte {
+	t.Helper()
+	nodes := strings.Join([]string{
+		`{"type":"job","id":"TARGET","name":"TARGET","limitFacts":[]}`,
+		fmt.Sprintf(`{"type":"job","id":%q,"name":%q,"limitFacts":[{"id":%q,"kind":"raw","sourceText":%q,"origin":"scheduler","certainty":"declared"}]}`,
+			generation, generation, "LIMIT-"+generation, generation),
+	}, "\n") + "\n"
+	relations := fmt.Sprintf(`{"fromId":"TARGET","toId":%q,"kind":"precedes","origin":"scheduler","certainty":"declared"}`+"\n", generation)
+	manifest := fmt.Sprintf(`{"schemaVersion":"0.5","snapshotId":%q,"generatedAt":"2026-08-10T00:00:00Z","nodeCount":2,"relationCount":1,"producer":{"name":"test","version":"1"}}`, generation)
+	return makeArchive(t, map[string]string{
+		"manifest.json": manifest, "nodes.ndjson": nodes, "relations.ndjson": relations,
 	})
 }
 
