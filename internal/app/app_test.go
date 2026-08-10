@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"batchscope/internal/store"
+
 	"github.com/danielgtaylor/huma/v2"
 )
 
@@ -49,7 +51,10 @@ func TestReadyAndStatusFollowStoreLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertServiceState(t, a, "importing", http.StatusServiceUnavailable)
-	if err := initialImport.Complete(context.Background()); err != nil {
+	if err := initialImport.Complete(context.Background(), store.Generation{
+		SnapshotID: "test", GeneratedAt: time.Date(2026, 8, 10, 0, 0, 0, 0, time.UTC),
+		SchemaVersion: "0.5", Fingerprint: "test",
+	}); err != nil {
 		t.Fatal(err)
 	}
 	assertServiceState(t, a, "ready", http.StatusOK)

@@ -83,7 +83,7 @@ func visitGeneratedPipelines(t *testing.T, dataset graphgen.Dataset, reverse boo
 	if _, err := Run(ctx, workspace, bytes.NewReader(archive), storage); err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}
-	db, release, err := storage.Acquire()
+	db, _, release, err := storage.Acquire()
 	if err != nil {
 		t.Fatal(err)
 	}

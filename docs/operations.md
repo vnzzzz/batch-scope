@@ -28,20 +28,30 @@ sequenceDiagram
     participant L as ローダー
     participant A as API
     participant I as 取込ワーカー
-    participant O as current.db
     participant N as importing.db
+    participant G as 新しいgeneration-N.db
+    participant O as 旧世代のgeneration-M.db
 
     L->>A: POST スナップショット
     A-->>L: 202、取込状況のURI
     I->>N: ノードと依存関係を登録
     I->>N: インデックスを作成して検査
     alt 成功
-      I->>A: 検索先を新しいDBへ切替
-      A->>O: 参照終了後にClose
+      I->>N: Close
+      I->>G: 世代別パスへrename
+      I->>G: 読み取り専用でOpen
+      I->>A: 検索先と世代メタデータを切替
+      opt 旧世代あり
+        A->>O: 最後の参照終了後にCloseして削除
+      end
     else 失敗
       I->>N: importing.dbを削除
     end
 ```
+
+検索用SQLiteには、`generation-`、20桁の連番、`.db`から成る世代別ファイル名を割り当てます。
+`current.db`のような固定パスは再利用しません。
+このため、切替前のSQLiteが新しい接続を開いても、次の世代のファイルを読むことはありません。
 
 データディレクトリの既定値は`/tmp/batchscope`です。
 `BATCHSCOPE_DATA_DIR`で変更できます。
@@ -97,10 +107,8 @@ Cloud Runへ32 MiBを超えるアーカイブを直接送る場合は、通信�
 
 ## サービス側の上限
 
-初期値は次の規模を想定します。
-実装時は一か所の定数へ集約し、API利用者からは変更できないようにします。
-受入済みスナップショットの検索は、経路の深さや探索量で打ち切りません。
-対応可能規模は検索時の打切りではなく取込時の受入条件とし、Issue #14の測定後にIssue #32で確定します。
+入力ファイルには、次の上限を適用します。
+上限はコード内の定数で管理し、API利用者からは変更できません。
 
 | 項目 | 初期上限 |
 |---|---:|
@@ -108,11 +116,44 @@ Cloud Runへ32 MiBを超えるアーカイブを直接送る場合は、通信�
 | 展開後合計 | 4 GiB |
 | `manifest.json` | 1 MiB |
 | `nodes.ndjson`と`relations.ndjson`の一行 | 16 MiB |
-| 経路ツリーのノード | 20,000件 |
+
+## 初期対応規模
+
+検索を完了できるスナップショットの初期対応規模は次のとおりです。
+
+| 項目 | 受入上限 |
+|---|---:|
+| ノード | 10,000件 |
+| relation | 25,000件 |
+| リミット設定 | 5,000件 |
+| ジョブネット階層深さ | 64階層 |
+| 想定同時検索数 | 4件 |
+
+ノード数とrelation数は、`manifest.json`を検査した時点で上限を超えていれば、NDJSONを走査する前に拒否します。
+リミット設定の総数とジョブネット階層深さは、`nodes.ndjson`の検査工程で計測して拒否します。
+上限超過時の取込検査の理由コードは`capacity_exceeded`です。
+
+これらは取込時に検査する受入条件です。
+受入済みスナップショットの検索を、経路の深さ、探索量、返却件数で打ち切るための値ではありません。
+対応規模と想定同時検索数の測定根拠は[性能測定結果](development/performance-measurement.md)を参照してください。
+
+## 初期の資源見積り
+
+初期対応規模は、Apple arm64の10コア、`GOMAXPROCS=10`、Go 1.26.5、`modernc.org/sqlite v1.56.0`の環境で測定しました。
+このCPU構成を基準環境とし、同時検索数4件を想定します。
+コア数が少ない環境で同じレイテンシを保証するものではありません。
+
+10,000ノード、25,000 relationの測定では、静的解析の最大Heapは115.64 MiB、最大RSSは142.46 MiBでした。
+HTTPの要求処理、レスポンスのJSON化、同時検索による重複分を含む最低メモリ量ではないため、実行環境にはこの値を超える余裕を確保します。
+
+同じ規模の取込では、一時ディスク使用量の最大は9.39 MiB、完成したSQLiteは7.54 MiBでした。
+ただし、一時ディスクには最大500 MiBの受信ファイル、最大4 GiBの展開ファイル、作成中のSQLite、使用中と退役済みの世代別SQLiteが同時に存在する可能性があります。
+容量は測定値だけではなく、これらの入力上限と保持する世代の分を加えて確保します。
 
 ## ログ
 
-構造化ログには、次の項目を用途別に記録します。
+MVPの観測情報は、Goの`log/slog`による構造化ログを正本とします。
+共通フィールドは`internal/observability`で定義し、値が設定された項目だけを出力します。
 
 | 用途 | 項目 |
 |---|---|
@@ -122,17 +163,27 @@ Cloud Runへ32 MiBを超えるアーカイブを直接送る場合は、通信�
 | 処理量 | `reached_nodes`、`returned_tree_nodes`、`returned_limits` |
 | 完了状態 | `cycles_detected`、`error_type` |
 
-ジョブ名、完全パス、判定根拠の抜粋、入力資料の内容は、既定ではログへ出力しません。
+`duration_ms`は正の処理時間がある場合だけ出力します。
+件数フィールドは0の場合に省略するため、ログ集計では省略を0として扱います。
+
+ジョブ名、完全パス、検索の`query`、`evidence`、入力資料の内容は、既定ログへ出力しません。
 
 ## メトリクス
 
-| 分類 | メトリクス |
+MVPは専用のメトリクスexporterと`/metrics`エンドポイントを実装していません。
+次の名前は自動公開するメトリクスではなく、構造化ログを集計する場合の指標名です。
+
+| 指標名 | 構造化ログからの導出方法 |
 |---|---|
-| 取込 | `snapshot_import_duration_seconds`、`snapshot_import_failures_total` |
-| 使用中データ | `snapshot_active_nodes`、`snapshot_active_relations` |
-| 対象検索 | `target_lookup_duration_seconds` |
-| 後続分析の処理量 | `limit_analysis_duration_seconds`、`limit_analysis_reached_nodes` |
-| 循環 | `limit_analysis_cycles_total` |
+| `snapshot_import_duration_seconds` | 取込を表す`operation`の`duration_ms`を1,000で割る |
+| `snapshot_import_failures_total` | 取込を表す`operation`で`error_type`がある完了ログを数える |
+| `target_lookup_duration_seconds` | 完全一致検索を表す`operation`の`duration_ms`を1,000で割る |
+| `limit_analysis_duration_seconds` | 後続分析を表す`operation`の`duration_ms`を1,000で割る |
+| `limit_analysis_reached_nodes` | 後続分析を表す`operation`の`reached_nodes`を集計する |
+| `limit_analysis_cycles_total` | 後続分析を表す`operation`の`cycles_detected`を集計する |
+
+各APIの実装では、`operation`の値を処理ごとに固定してからログ集計へ使用します。
+専用メトリクスの公開が必要になった場合は、別Issueでexporterまたはエンドポイントを設計します。
 
 ## 性能目標
 
@@ -145,4 +196,8 @@ Cloud Runへ32 MiBを超えるアーカイブを直接送る場合は、通信�
 | 状態確認 | 100 ms |
 
 500 MiBは入力サイズの上限であり、取込時間の保証値ではありません。
-必要なCPU、メモリ、一時ディスクは、実データを使った計測結果から決めます。
+
+内部の`Traverse`、`Scan`、`Build`を合わせた並行度4のp95は839.499 msでした。
+後続リミット取得の1秒目標に対する余力は約160 msであり、HTTP層のDTO組立てとJSON化はこの測定に含みません。
+公開HTTPの最終p95は、完全一致検索をIssue #10、後続リミット取得をIssue #13で実装した後に確認します。
+完全一致検索は索引を使う単一行検索であり、後続解析より軽い処理としてp95 200 msの目標を維持します。

@@ -61,13 +61,16 @@ func preserveComparisonGeneration(active *activeDataset) (string, error) {
 	if err := os.Mkdir(directory, 0o750); err != nil {
 		return "", fmt.Errorf("create comparison generation directory: %w", err)
 	}
-	sourcePath := filepath.Join(active.workspace, "data", "current.db")
+	sourcePath, err := activeGenerationFile(filepath.Join(active.workspace, "data"))
+	if err != nil {
+		return "", fmt.Errorf("find product generation: %w", err)
+	}
 	generationPath := filepath.Join(directory, "snapshot-generation-1.db")
 	if err := copySQLiteFile(sourcePath, generationPath); err != nil {
 		return "", fmt.Errorf("preserve comparison generation: %w", err)
 	}
-	// 製品storeが再利用するcurrent.dbから切り離した後だけ、比較用ハンドルを開く。
-	// 世代固有パスは測定終了まで置換せず、古い接続が別世代へ再接続する余地をなくす。
+	// 製品storeが所有する世代ファイルから複製した後だけ、比較用ハンドルを開く。
+	// 比較用パスも測定終了まで置換せず、古い接続が別世代へ再接続する余地をなくす。
 	closeErr := active.storage.Close()
 	if closeErr != nil {
 		return "", fmt.Errorf("close imported product store: %w", closeErr)

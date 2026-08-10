@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"batchscope/internal/app"
+	"batchscope/internal/observability"
 )
 
 var (
@@ -84,7 +85,9 @@ func serve(args []string) error {
 
 	errCh := make(chan error, 1)
 	go func() {
-		slog.Info("BatchScope listening", "address", server.Addr, "data_dir", *dataDir)
+		attrs := observability.Attrs(observability.Fields{Operation: "serve", BootID: application.BootID()})
+		attrs = append(attrs, slog.String("address", server.Addr), slog.String("data_dir", *dataDir))
+		slog.LogAttrs(ctx, slog.LevelInfo, "BatchScope listening", attrs...)
 		if err := server.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
 			errCh <- err
 		}
@@ -94,7 +97,10 @@ func serve(args []string) error {
 	case <-ctx.Done():
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		return server.Shutdown(shutdownCtx)
+		err := server.Shutdown(shutdownCtx)
+		attrs := observability.Attrs(observability.Fields{Operation: "shutdown", BootID: application.BootID()})
+		slog.LogAttrs(context.Background(), slog.LevelInfo, "BatchScope stopped", attrs...)
+		return err
 	case err := <-errCh:
 		return err
 	}

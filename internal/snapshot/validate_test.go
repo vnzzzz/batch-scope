@@ -14,6 +14,7 @@ import (
 	"strings"
 	"testing"
 
+	"batchscope/internal/limits"
 	"batchscope/internal/testsupport/graphgen"
 )
 
@@ -177,6 +178,59 @@ func TestValidateAppliesManifestInputBoundaries(t *testing.T) {
 		}
 		_, err := Validate(context.Background(), extracted)
 		assertValidationError(t, err, ErrorInvalidUTF8, manifestName, 0, "")
+	})
+}
+
+func TestValidateRejectsManifestCapacityBeforeReadingNDJSON(t *testing.T) {
+	for _, tt := range []struct {
+		name      string
+		nodes     int
+		relations int
+		pointer   string
+	}{
+		{name: "nodes", nodes: limits.MaxSnapshotNodes + 1, pointer: "/nodeCount"},
+		{name: "relations", relations: limits.MaxSnapshotRelations + 1, pointer: "/relationCount"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			extracted := writeExtractedSnapshot(t, nil, nil)
+			writeManifest(t, extracted.Manifest, tt.nodes, tt.relations)
+			writeTestFile(t, extracted.Nodes, "not-json")
+			_, err := Validate(context.Background(), extracted)
+			assertValidationError(t, err, ErrorCapacityExceeded, manifestName, 0, tt.pointer)
+		})
+	}
+}
+
+func TestValidateRejectsLimitAndJobNetworkDepthCapacity(t *testing.T) {
+	t.Run("limits", func(t *testing.T) {
+		nodes := make([]string, 0, 6)
+		remaining := limits.MaxSnapshotLimits + 1
+		for nodeIndex := 0; remaining > 0; nodeIndex++ {
+			count := min(remaining, 1000)
+			facts := make([]any, count)
+			for factIndex := range facts {
+				facts[factIndex] = map[string]any{
+					"id": fmt.Sprintf("LIMIT-%d-%d", nodeIndex, factIndex), "kind": "raw", "sourceText": "raw",
+					"origin": "manual", "certainty": "declared",
+				}
+			}
+			nodes = append(nodes, testNode("job", fmt.Sprintf("JOB-%d", nodeIndex), nil, facts))
+			remaining -= count
+		}
+		_, err := Validate(context.Background(), writeExtractedSnapshot(t, nodes, nil))
+		assertValidationError(t, err, ErrorCapacityExceeded, nodesName, 6, "/limitFacts/0")
+	})
+
+	t.Run("job network depth", func(t *testing.T) {
+		nodes := make([]string, limits.MaxJobNetworkDepth+1)
+		var parent *string
+		for index := range nodes {
+			id := fmt.Sprintf("NET-%02d", index)
+			nodes[index] = testNode("job_network", id, parent, nil)
+			parent = stringPointer(id)
+		}
+		_, err := Validate(context.Background(), writeExtractedSnapshot(t, nodes, nil))
+		assertValidationError(t, err, ErrorCapacityExceeded, nodesName, 0, "/parentId")
 	})
 }
 

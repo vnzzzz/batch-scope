@@ -107,6 +107,11 @@ func (a *App) Handler() http.Handler {
 	return a.handler
 }
 
+// BootIDは、プロセス寿命をまたぐログと応答を対応付ける識別子を返す。
+func (a *App) BootID() string {
+	return a.bootID
+}
+
 // Close は、Appが所有するSQLiteストアを閉じる。
 func (a *App) Close() error {
 	return a.store.Close()

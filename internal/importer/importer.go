@@ -13,8 +13,8 @@ import (
 )
 
 // completeImportは、切替成功後の警告を取込の境界で再現するテスト専用注入点である。
-var completeImport = func(ctx context.Context, operation *store.Import) error {
-	return operation.Complete(ctx)
+var completeImport = func(ctx context.Context, operation *store.Import, generation store.Generation) error {
+	return operation.Complete(ctx, generation)
 }
 
 // Result は、検索先の切替に成功した取込の付随結果を表す。
@@ -83,7 +83,17 @@ func Run(ctx context.Context, temporaryDirectory string, source io.Reader, stora
 	// Complete開始後の索引作成、検査、切替、失敗時の破棄はStoreが一括して所有する。
 	// ここでAbortの責務を外し、Complete失敗時に同じSQLiteを二重に閉じない。
 	abortRequired = false
-	if err := completeImport(ctx, operation); err != nil {
+	generation := store.Generation{
+		SnapshotID:         validated.SnapshotID,
+		GeneratedAt:        validated.GeneratedAt,
+		SchemaVersion:      validated.SchemaVersion,
+		NodeCount:          validated.NodeCount,
+		RelationCount:      validated.RelationCount,
+		LimitCount:         validated.LimitCount,
+		MaxJobNetworkDepth: validated.MaxJobNetworkDepth,
+		Fingerprint:        validated.Fingerprint,
+	}
+	if err := completeImport(ctx, operation, generation); err != nil {
 		if errors.Is(err, store.ErrRetiredCleanup) {
 			return Result{CleanupWarning: err}, nil
 		}

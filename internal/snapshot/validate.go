@@ -16,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 	"unicode/utf8"
 
 	"batchscope/internal/limits"
@@ -40,6 +41,9 @@ type snapshotSchemas struct {
 }
 
 type manifest struct {
+	SchemaVersion string      `json:"schemaVersion"`
+	SnapshotID    string      `json:"snapshotId"`
+	GeneratedAt   time.Time   `json:"generatedAt"`
 	NodeCount     json.Number `json:"nodeCount"`
 	RelationCount json.Number `json:"relationCount"`
 }
@@ -99,8 +103,14 @@ type nodeRecord struct {
 // ValidationResult は、検査後のSQLite作成で再利用する値を保持する。
 // SQLite登録はNDJSONを再読込し、relation_idもその時点で再生成するため、検査中の行データやIDは保持しない。
 type ValidationResult struct {
-	NodeCount     int
-	RelationCount int
+	SchemaVersion      string
+	SnapshotID         string
+	GeneratedAt        time.Time
+	NodeCount          int
+	RelationCount      int
+	LimitCount         int
+	MaxJobNetworkDepth int
+	Fingerprint        string
 }
 
 // Validate は、展開済みスナップショットの形式と参照整合性を検査する。
@@ -130,7 +140,7 @@ func Validate(ctx context.Context, extracted Extracted) (ValidationResult, error
 		return ValidationResult{}, err
 	}
 
-	orderedNodeIDs, nodeByID, nodeCount, duplicateErr, err := readNodes(ctx, extracted.Nodes, schemas.node)
+	orderedNodeIDs, nodeByID, nodeCount, limitCount, duplicateErr, limitCapacityErr, err := readNodes(ctx, extracted.Nodes, schemas.node)
 	if err != nil {
 		return ValidationResult{}, err
 	}
@@ -140,8 +150,15 @@ func Validate(ctx context.Context, extracted Extracted) (ValidationResult, error
 	if err := validateNodeReferences(orderedNodeIDs, nodeByID, duplicateErr); err != nil {
 		return ValidationResult{}, err
 	}
-	if err := validateParentCycles(ctx, orderedNodeIDs, nodeByID); err != nil {
+	jobNetworkDepth, err := validateParentHierarchy(ctx, orderedNodeIDs, nodeByID)
+	if err != nil {
 		return ValidationResult{}, err
+	}
+	if limitCapacityErr != nil {
+		return ValidationResult{}, limitCapacityErr
+	}
+	if jobNetworkDepth > limits.MaxJobNetworkDepth {
+		return ValidationResult{}, &Error{Kind: ErrorCapacityExceeded, File: nodesName, Pointer: "/parentId"}
 	}
 
 	relationCount, err := readRelations(ctx, extracted.Relations, schemas.relation, nodeByID)
@@ -152,10 +169,26 @@ func Validate(ctx context.Context, extracted Extracted) (ValidationResult, error
 		return ValidationResult{}, &Error{Kind: ErrorRelationCountMismatch, File: manifestName, Pointer: "/relationCount"}
 	}
 
-	return ValidationResult{NodeCount: nodeCount, RelationCount: relationCount}, nil
+	fingerprint, err := Fingerprint(ctx, extracted)
+	if err != nil {
+		return ValidationResult{}, err
+	}
+	return ValidationResult{
+		SchemaVersion:      metadata.schemaVersion,
+		SnapshotID:         metadata.snapshotID,
+		GeneratedAt:        metadata.generatedAt,
+		NodeCount:          nodeCount,
+		RelationCount:      relationCount,
+		LimitCount:         limitCount,
+		MaxJobNetworkDepth: jobNetworkDepth,
+		Fingerprint:        fingerprint,
+	}, nil
 }
 
 type validatedManifest struct {
+	schemaVersion string
+	snapshotID    string
+	generatedAt   time.Time
 	nodeCount     int
 	relationCount int
 }
@@ -234,7 +267,20 @@ func readManifest(ctx context.Context, path string, schema *jsonschema.Schema) (
 	if !ok {
 		return validatedManifest{}, &Error{Kind: ErrorSchemaViolation, File: manifestName, Pointer: "/relationCount"}
 	}
-	return validatedManifest{nodeCount: nodeCount, relationCount: relationCount}, nil
+	// manifestで確定する件数はNDJSONを走査する前に拒否し、受け入れない規模へ検証資源を費やさない。
+	if nodeCount > limits.MaxSnapshotNodes {
+		return validatedManifest{}, &Error{Kind: ErrorCapacityExceeded, File: manifestName, Pointer: "/nodeCount"}
+	}
+	if relationCount > limits.MaxSnapshotRelations {
+		return validatedManifest{}, &Error{Kind: ErrorCapacityExceeded, File: manifestName, Pointer: "/relationCount"}
+	}
+	return validatedManifest{
+		schemaVersion: decoded.SchemaVersion,
+		snapshotID:    decoded.SnapshotID,
+		generatedAt:   decoded.GeneratedAt,
+		nodeCount:     nodeCount,
+		relationCount: relationCount,
+	}, nil
 }
 
 func jsonIntegerAsInt(number json.Number) (int, bool) {
@@ -255,12 +301,14 @@ func jsonIntegerAsInt64(number json.Number) (int64, bool) {
 	return value.Num().Int64(), true
 }
 
-func readNodes(ctx context.Context, path string, schema *jsonschema.Schema) ([]string, map[string]nodeRecord, int, *Error, error) {
+func readNodes(ctx context.Context, path string, schema *jsonschema.Schema) ([]string, map[string]nodeRecord, int, int, *Error, *Error, error) {
 	orderedIDs := make([]string, 0)
 	byID := make(map[string]nodeRecord)
 	limitIDs := make(map[string]struct{})
 	count := 0
+	limitCount := 0
 	var duplicateErr *Error
+	var capacityErr *Error
 	err := readNDJSON(ctx, path, nodesName, func(line int, contents []byte) error {
 		count++
 		id, record, facts, err := validateNodeLine(schema, line, contents)
@@ -280,6 +328,13 @@ func readNodes(ctx context.Context, path string, schema *jsonschema.Schema) ([]s
 			return nil
 		}
 		for index, fact := range facts {
+			limitCount++
+			if limitCount > limits.MaxSnapshotLimits && capacityErr == nil {
+				capacityErr = &Error{
+					Kind: ErrorCapacityExceeded, File: nodesName, Line: line,
+					Pointer: jsonPointer([]string{"limitFacts", strconv.Itoa(index)}),
+				}
+			}
 			if _, exists := limitIDs[fact.ID]; exists {
 				if duplicateErr == nil {
 					duplicateErr = &Error{
@@ -295,7 +350,7 @@ func readNodes(ctx context.Context, path string, schema *jsonschema.Schema) ([]s
 		orderedIDs = append(orderedIDs, id)
 		return nil
 	})
-	return orderedIDs, byID, count, duplicateErr, err
+	return orderedIDs, byID, count, limitCount, duplicateErr, capacityErr, err
 }
 
 func validateNodeLine(schema *jsonschema.Schema, line int, contents []byte) (string, nodeRecord, []limitFact, error) {
@@ -598,11 +653,13 @@ func validateNodeReferences(orderedIDs []string, nodes map[string]nodeRecord, du
 	return nil
 }
 
-func validateParentCycles(ctx context.Context, orderedIDs []string, nodes map[string]nodeRecord) error {
+func validateParentHierarchy(ctx context.Context, orderedIDs []string, nodes map[string]nodeRecord) (int, error) {
 	state := make(map[string]uint8, len(nodes))
+	depthByID := make(map[string]int, len(nodes))
+	maxJobNetworkDepth := 0
 	for _, startID := range orderedIDs {
 		if err := ctx.Err(); err != nil {
-			return &Error{Kind: ErrorIO, File: nodesName, Err: err}
+			return 0, &Error{Kind: ErrorIO, File: nodesName, Err: err}
 		}
 		if state[startID] == 2 {
 			continue
@@ -611,7 +668,7 @@ func validateParentCycles(ctx context.Context, orderedIDs []string, nodes map[st
 		currentID := startID
 		for {
 			if err := ctx.Err(); err != nil {
-				return &Error{Kind: ErrorIO, File: nodesName, Err: err}
+				return 0, &Error{Kind: ErrorIO, File: nodesName, Err: err}
 			}
 			current := nodes[currentID]
 			if state[currentID] == 1 {
@@ -620,7 +677,7 @@ func validateParentCycles(ctx context.Context, orderedIDs []string, nodes map[st
 				for _, id := range path[firstCycleIndex+1:] {
 					cycleLine = min(cycleLine, nodes[id].Line)
 				}
-				return &Error{Kind: ErrorParentCycle, File: nodesName, Line: cycleLine, Pointer: "/parentId"}
+				return 0, &Error{Kind: ErrorParentCycle, File: nodesName, Line: cycleLine, Pointer: "/parentId"}
 			}
 			if state[currentID] == 2 {
 				break
@@ -632,11 +689,23 @@ func validateParentCycles(ctx context.Context, orderedIDs []string, nodes map[st
 			}
 			currentID = current.ParentID
 		}
-		for _, id := range path {
+		// 親から子の順に確定済みの深さを再利用し、循環検査と同じ親参照走査で最大階層も求める。
+		for index := len(path) - 1; index >= 0; index-- {
+			id := path[index]
+			current := nodes[id]
+			depth := 0
+			if current.HasParent {
+				depth = depthByID[current.ParentID]
+			}
+			if current.Type == nodeKindJobNetwork {
+				depth++
+				maxJobNetworkDepth = max(maxJobNetworkDepth, depth)
+			}
+			depthByID[id] = depth
 			state[id] = 2
 		}
 	}
-	return nil
+	return maxJobNetworkDepth, nil
 }
 
 func allowedParent(child, parent nodeKind) bool {
