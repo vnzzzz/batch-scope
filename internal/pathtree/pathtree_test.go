@@ -60,12 +60,18 @@ func TestBuildAddsAPathReferenceForEveryLimitOwner(t *testing.T) {
 	if !contained.ViaScope || len(contained.ViaRelations) != 0 {
 		t.Errorf("contained connection = scope %v, relations %#v, want a distinct scope transition", contained.ViaScope, contained.ViaRelations)
 	}
+	if len(contained.HiddenConnections) != 0 {
+		t.Errorf("contained HiddenConnections = %#v, want an uncompressed connection", contained.HiddenConnections)
+	}
 	downstream := findCanonicalTreeNode(t, &got.Tree, got.LimitReferences["DOWNSTREAM"].TreeNodeID)
 	if gotIDs := relationIDs(downstream.ViaRelations); !slices.Equal(gotIDs, []string{"R-1", "R-2"}) {
 		t.Errorf("ViaRelations IDs = %v, want aggregated [R-1 R-2]", gotIDs)
 	}
 	if string(downstream.ViaRelations[0].Evidence) != `[{"source":"definition"}]` {
 		t.Errorf("Evidence = %s, want retained data", downstream.ViaRelations[0].Evidence)
+	}
+	if len(downstream.HiddenConnections) != 0 {
+		t.Errorf("downstream HiddenConnections = %#v, want an uncompressed connection", downstream.HiddenConnections)
 	}
 }
 
@@ -143,6 +149,38 @@ func TestBuildPrefersEntirelyConfirmedRepresentativePath(t *testing.T) {
 	}
 	if !slices.Equal(limitNode.HiddenNodeIDs, []string{"A"}) {
 		t.Errorf("HiddenNodeIDs = %v, want confirmed intermediate A", limitNode.HiddenNodeIDs)
+	}
+}
+
+func TestBuildPreservesEveryConnectionInCompressedSerialPath(t *testing.T) {
+	result := traversal.Result{
+		Target: node("START", "job"),
+		Nodes: []traversal.Reached{
+			reached("START", "job"), reached("A", "job"), reached("B", "job"), reached("LIMIT", "job"),
+		},
+		Connections: []traversal.Connection{
+			connection("START", "A", relation("R1", "precedes", "declared")),
+			connection("A", "B", relation("R2", "precedes", "declared")),
+			connection("B", "LIMIT", relation("R3", "precedes", "declared")),
+		},
+	}
+	limits := limitscan.Result{Downstream: limitscan.Limits{Raw: limitGroup(limit("L", "LIMIT"))}}
+
+	got, err := Build(context.Background(), result, limits)
+	if err != nil {
+		t.Fatal(err)
+	}
+	limitNode := findCanonicalTreeNode(t, &got.Tree, got.LimitReferences["LIMIT"].TreeNodeID)
+	want := []HiddenConnection{
+		{FromID: "START", ToID: "A", ViaRelations: []traversal.Relation{relation("R1", "precedes", "declared")}},
+		{FromID: "A", ToID: "B", ViaRelations: []traversal.Relation{relation("R2", "precedes", "declared")}},
+		{FromID: "B", ToID: "LIMIT", ViaRelations: []traversal.Relation{relation("R3", "precedes", "declared")}},
+	}
+	if !reflect.DeepEqual(limitNode.HiddenConnections, want) {
+		t.Errorf("HiddenConnections = %#v, want %#v", limitNode.HiddenConnections, want)
+	}
+	if limitNode.ViaRelations != nil || limitNode.ViaScope {
+		t.Errorf("compressed direct connection = scope %v, relations %#v, want zero values", limitNode.ViaScope, limitNode.ViaRelations)
 	}
 }
 
@@ -272,6 +310,36 @@ func TestBuildDistinguishesMergeFromCycleAndBuildsOneCycleRoute(t *testing.T) {
 	}
 }
 
+func TestBuildBreaksCycleRouteTiesByRelationIDsWithoutScopeValue(t *testing.T) {
+	result := traversal.Result{
+		Target: node("A-NETWORK", "job_network"),
+		Nodes: []traversal.Reached{
+			reached("A-NETWORK", "job_network"), reached("B-CHILD", "job"),
+		},
+		Connections: []traversal.Connection{
+			connection("A-NETWORK", "B-CHILD", relation("R-FORWARD", "precedes", "declared")),
+			connection("B-CHILD", "A-NETWORK", relation("R-BACK", "precedes", "declared")),
+		},
+		ScopeEdges: []traversal.ScopeEdge{{ParentID: "A-NETWORK", ChildID: "B-CHILD"}},
+		Cycles:     []traversal.Cycle{{NodeIDs: []string{"B-CHILD", "A-NETWORK"}}},
+	}
+
+	got, err := Build(context.Background(), result, limitscan.Result{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Cycles) != 1 {
+		t.Fatalf("Cycles = %#v, want one SCC", got.Cycles)
+	}
+	want := []CycleStep{
+		{FromID: "A-NETWORK", ToID: "B-CHILD", ViaScope: true},
+		{FromID: "B-CHILD", ToID: "A-NETWORK", ViaRelations: []traversal.Relation{relation("R-BACK", "precedes", "declared")}},
+	}
+	if !reflect.DeepEqual(got.Cycles[0].Route, want) {
+		t.Errorf("cycle route = %#v, want %#v", got.Cycles[0].Route, want)
+	}
+}
+
 func TestBuildCompressesLongSerialPathWithoutLosingLimitReference(t *testing.T) {
 	const hiddenJobs = 1_001
 	nodes := make([]traversal.Reached, 0, hiddenJobs+2)
@@ -312,8 +380,217 @@ func TestBuildCompressesLongSerialPathWithoutLosingLimitReference(t *testing.T) 
 	if !limitNode.HiddenNodeIDsTruncated {
 		t.Error("HiddenNodeIDsTruncated = false, want true")
 	}
+	if len(limitNode.HiddenConnections) != hiddenJobs+1 {
+		t.Fatalf("len(HiddenConnections) = %d, want %d", len(limitNode.HiddenConnections), hiddenJobs+1)
+	}
+	for index, hidden := range limitNode.HiddenConnections {
+		wantFromID := "START"
+		if index > 0 {
+			wantFromID = fmt.Sprintf("HIDDEN-%04d", index-1)
+		}
+		wantToID := "LIMIT"
+		wantRelationID := "R-LIMIT"
+		if index < hiddenJobs {
+			wantToID = fmt.Sprintf("HIDDEN-%04d", index)
+			wantRelationID = fmt.Sprintf("R-%04d", index)
+		}
+		if hidden.FromID != wantFromID || hidden.ToID != wantToID || hidden.ViaScope ||
+			!slices.Equal(relationIDs(hidden.ViaRelations), []string{wantRelationID}) {
+			t.Errorf("HiddenConnections[%d] = %#v, want %s -> %s via %s", index, hidden, wantFromID, wantToID, wantRelationID)
+		}
+	}
+	if limitNode.ViaRelations != nil || limitNode.ViaScope {
+		t.Errorf("compressed direct connection = scope %v, relations %#v, want zero values", limitNode.ViaScope, limitNode.ViaRelations)
+	}
 	if got.Tree.TreeNodeID == reference.TreeNodeID {
 		t.Error("compression incorrectly removed the limit owner into the root")
+	}
+}
+
+func TestBuildReturnsNoUncoveredRoutesWhenTargetHasLimit(t *testing.T) {
+	result := traversal.Result{
+		Target: node("START", "job"),
+		Nodes:  []traversal.Reached{reached("START", "job"), reached("END", "job")},
+		Connections: []traversal.Connection{
+			connection("START", "END", relation("R-END", "precedes", "declared")),
+		},
+	}
+	limits := limitscan.Result{Target: limitscan.Limits{Raw: limitGroup(limit("L-START", "START"))}}
+
+	got, err := Build(context.Background(), result, limits)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.UncoveredRoutes) != 0 {
+		t.Errorf("UncoveredRoutes = %#v, want none after the target limit", got.UncoveredRoutes)
+	}
+}
+
+func TestBuildDoesNotReportTerminalReachedOnlyAfterLimit(t *testing.T) {
+	result := traversal.Result{
+		Target: node("START", "job"),
+		Nodes: []traversal.Reached{
+			reached("START", "job"), reached("LIMIT", "job"), reached("END", "job"),
+		},
+		Connections: []traversal.Connection{
+			connection("START", "LIMIT", relation("R-LIMIT", "precedes", "declared")),
+			connection("LIMIT", "END", relation("R-END", "precedes", "declared")),
+		},
+	}
+	limits := limitscan.Result{Downstream: limitscan.Limits{Raw: limitGroup(limit("L-LIMIT", "LIMIT"))}}
+
+	got, err := Build(context.Background(), result, limits)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.UncoveredRoutes) != 0 {
+		t.Errorf("UncoveredRoutes = %#v, want none after LIMIT", got.UncoveredRoutes)
+	}
+}
+
+func TestBuildUsesLimitFreeTerminalPathForUncoveredReference(t *testing.T) {
+	result := traversal.Result{
+		Target: node("START", "job"),
+		Nodes: []traversal.Reached{
+			reached("START", "job"), reached("LIMIT", "job"), reached("END", "job"),
+		},
+		Connections: []traversal.Connection{
+			connection("START", "LIMIT", relation("R-LIMIT", "precedes", "declared")),
+			connection("LIMIT", "END", relation("R-END-CONFIRMED", "precedes", "declared")),
+			connection("START", "END", relation("R-END-INFERRED", "precedes", "inferred")),
+		},
+	}
+	limits := limitscan.Result{Downstream: limitscan.Limits{Raw: limitGroup(limit("L-LIMIT", "LIMIT"))}}
+
+	got, err := Build(context.Background(), result, limits)
+	if err != nil {
+		t.Fatal(err)
+	}
+	route := onlyUncoveredRoute(t, got.UncoveredRoutes, "END", UncoveredTerminal)
+	assertTreePathExcludesNode(t, &got.Tree, route.TreeNodeID, "LIMIT")
+}
+
+func TestBuildReportsCycleOnlyWhenReachableWithoutLimit(t *testing.T) {
+	base := traversal.Result{
+		Target: node("START", "job"),
+		Nodes: []traversal.Reached{
+			reached("START", "job"), reached("LIMIT", "job"), reached("A", "job"), reached("B", "job"),
+		},
+		Connections: []traversal.Connection{
+			connection("START", "LIMIT", relation("R-LIMIT", "precedes", "declared")),
+			connection("LIMIT", "A", relation("R-A-CONFIRMED", "precedes", "declared")),
+			connection("A", "B", relation("R-AB", "precedes", "declared")),
+			connection("B", "A", relation("R-BA", "precedes", "declared")),
+		},
+		Cycles: []traversal.Cycle{{NodeIDs: []string{"B", "A"}}},
+	}
+	limits := limitscan.Result{Downstream: limitscan.Limits{Raw: limitGroup(limit("L-LIMIT", "LIMIT"))}}
+
+	t.Run("after limit only", func(t *testing.T) {
+		got, err := Build(context.Background(), base, limits)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(got.UncoveredRoutes) != 0 {
+			t.Errorf("UncoveredRoutes = %#v, want no limit-free cycle route", got.UncoveredRoutes)
+		}
+	})
+
+	t.Run("alternate limit-free route", func(t *testing.T) {
+		result := base
+		result.Connections = append(slices.Clone(base.Connections),
+			connection("START", "A", relation("R-A-INFERRED", "precedes", "inferred")))
+		got, err := Build(context.Background(), result, limits)
+		if err != nil {
+			t.Fatal(err)
+		}
+		route := onlyUncoveredRoute(t, got.UncoveredRoutes, "A", UncoveredCycle)
+		assertTreePathExcludesNode(t, &got.Tree, route.TreeNodeID, "LIMIT")
+	})
+}
+
+func TestBuildReportsNonTraversableEndpointOnlyWhenReachableWithoutLimit(t *testing.T) {
+	base := traversal.Result{
+		Target: node("START", "job"),
+		Nodes:  []traversal.Reached{reached("START", "job"), reached("LIMIT", "job")},
+		Connections: []traversal.Connection{
+			connection("START", "LIMIT", relation("R-LIMIT", "precedes", "declared")),
+			connection("LIMIT", "UNIT", relation("R-UNIT-CONFIRMED", "precedes", "declared")),
+		},
+		Endpoints: []traversal.Endpoint{{
+			Node: node("UNIT", "management_unit"), Reason: traversal.EndpointNonTraversableNodeType,
+		}},
+	}
+	limits := limitscan.Result{Downstream: limitscan.Limits{Raw: limitGroup(limit("L-LIMIT", "LIMIT"))}}
+
+	t.Run("after limit only", func(t *testing.T) {
+		got, err := Build(context.Background(), base, limits)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(got.UncoveredRoutes) != 0 {
+			t.Errorf("UncoveredRoutes = %#v, want no limit-free endpoint route", got.UncoveredRoutes)
+		}
+	})
+
+	t.Run("alternate limit-free route", func(t *testing.T) {
+		result := base
+		result.Connections = append(slices.Clone(base.Connections),
+			connection("START", "UNIT", relation("R-UNIT-INFERRED", "precedes", "inferred")))
+		got, err := Build(context.Background(), result, limits)
+		if err != nil {
+			t.Fatal(err)
+		}
+		route := onlyUncoveredRoute(t, got.UncoveredRoutes, "UNIT", UncoveredNonTraversableType)
+		assertTreePathExcludesNode(t, &got.Tree, route.TreeNodeID, "LIMIT")
+	})
+}
+
+func TestBuildUncoveredRouteReferencesAreDeterministicForReorderedInput(t *testing.T) {
+	result := traversal.Result{
+		Target: node("START", "job"),
+		Nodes: []traversal.Reached{
+			reached("B", "job"), reached("END", "job"), reached("START", "job"),
+			reached("A", "job"), reached("LIMIT", "job"),
+		},
+		Connections: []traversal.Connection{
+			connection("START", "END", relation("R-END-INFERRED", "precedes", "inferred")),
+			connection("LIMIT", "A", relation("R-A-CONFIRMED", "precedes", "declared")),
+			connection("B", "A", relation("R-BA", "precedes", "declared")),
+			connection("LIMIT", "UNIT", relation("R-UNIT-CONFIRMED", "precedes", "declared")),
+			connection("START", "LIMIT", relation("R-LIMIT", "precedes", "declared")),
+			connection("A", "B", relation("R-AB", "precedes", "declared")),
+			connection("LIMIT", "END", relation("R-END-CONFIRMED", "precedes", "declared")),
+			connection("START", "UNIT", relation("R-UNIT-INFERRED", "precedes", "inferred")),
+			connection("START", "A", relation("R-A-INFERRED", "precedes", "inferred")),
+		},
+		Endpoints: []traversal.Endpoint{{
+			Node: node("UNIT", "management_unit"), Reason: traversal.EndpointNonTraversableNodeType,
+		}},
+		Cycles: []traversal.Cycle{{NodeIDs: []string{"B", "A"}}},
+	}
+	limits := limitscan.Result{Downstream: limitscan.Limits{Raw: limitGroup(limit("L-LIMIT", "LIMIT"))}}
+
+	first, err := Build(context.Background(), result, limits)
+	if err != nil {
+		t.Fatal(err)
+	}
+	slices.Reverse(result.Nodes)
+	slices.Reverse(result.Connections)
+	slices.Reverse(result.Endpoints)
+	slices.Reverse(result.Cycles)
+	for index := range result.Cycles {
+		slices.Reverse(result.Cycles[index].NodeIDs)
+	}
+	second, err := Build(context.Background(), result, limits)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(first, second) {
+		t.Errorf("result differs after input reordering:\nfirst  = %#v\nsecond = %#v", first, second)
+	}
+	for _, route := range first.UncoveredRoutes {
+		assertTreePathExcludesNode(t, &first.Tree, route.TreeNodeID, "LIMIT")
 	}
 }
 
@@ -339,6 +616,10 @@ func TestBuildSeparatesLimitFreeTerminalAndNonTraversableEndpoint(t *testing.T) 
 		reasons[route.Boundary.ID] = route.Reason
 		if route.TreeNodeID == "" {
 			t.Errorf("uncovered route %s has no tree reference", route.Boundary.ID)
+			continue
+		}
+		if referenced := findTreeNodeByTreeID(&got.Tree, route.TreeNodeID); referenced == nil || referenced.Node.ID != route.Boundary.ID {
+			t.Errorf("uncovered route %s points to %#v", route.Boundary.ID, referenced)
 		}
 	}
 	if reasons["END"] != UncoveredTerminal {
@@ -420,6 +701,44 @@ func findCanonicalTreeNode(t *testing.T, root *TreeNode, treeNodeID string) *Tre
 		t.Fatalf("tree node %q was not found", treeNodeID)
 	}
 	return result
+}
+
+func onlyUncoveredRoute(t *testing.T, routes []UncoveredRoute, boundaryID string, reason UncoveredReason) UncoveredRoute {
+	t.Helper()
+	if len(routes) != 1 {
+		t.Fatalf("UncoveredRoutes = %#v, want one route", routes)
+	}
+	route := routes[0]
+	if route.Boundary.ID != boundaryID || route.Reason != reason || route.TreeNodeID == "" {
+		t.Fatalf("UncoveredRoutes[0] = %#v, want %s with reason %q and a tree reference", route, boundaryID, reason)
+	}
+	return route
+}
+
+func assertTreePathExcludesNode(t *testing.T, root *TreeNode, treeNodeID, excludedNodeID string) {
+	t.Helper()
+	path := treePathTo(root, treeNodeID)
+	if path == nil {
+		t.Fatalf("tree node %q was not found", treeNodeID)
+	}
+	for _, current := range path {
+		if current.Node.ID == excludedNodeID || slices.Contains(current.HiddenNodeIDs, excludedNodeID) {
+			t.Errorf("tree path to %q passes excluded node %q: %#v", treeNodeID, excludedNodeID, path)
+			return
+		}
+	}
+}
+
+func treePathTo(root *TreeNode, treeNodeID string) []*TreeNode {
+	if root.TreeNodeID == treeNodeID {
+		return []*TreeNode{root}
+	}
+	for _, child := range root.Children {
+		if path := treePathTo(child, treeNodeID); path != nil {
+			return append([]*TreeNode{root}, path...)
+		}
+	}
+	return nil
 }
 
 func treeNodeReachableWithoutReference(root *TreeNode, treeNodeID string) bool {

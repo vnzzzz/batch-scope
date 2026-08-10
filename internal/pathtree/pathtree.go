@@ -34,13 +34,25 @@ const (
 	UncoveredNonTraversableType UncoveredReason = "non_traversable_node_type"
 )
 
+// HiddenConnection は、圧縮した区間の一ホップを表す。
+type HiddenConnection struct {
+	FromID       string
+	ToID         string
+	ViaRelations []traversal.Relation
+	ViaScope     bool
+}
+
 // TreeNode は、経路ツリー上の一地点を表す。
-// ViaScopeがtrueのとき、親からの接続は依存relationではなくscope遷移である。
+// ルート以外でHiddenConnectionsが空のとき、親からの接続はViaRelationsとViaScopeが表す。
+// HiddenConnectionsがあるときは、先頭のFromIDを親のNode.ID、末尾のToIDを自身のNode.IDとし、
+// 隣接要素のToIDとFromIDを一致させる。同じ接続を二重に表現しないため、
+// ViaRelationsをnil、ViaScopeをfalseにする。
 type TreeNode struct {
 	TreeNodeID                  string
 	Node                        traversal.Node
 	ViaRelations                []traversal.Relation
 	ViaScope                    bool
+	HiddenConnections           []HiddenConnection
 	Children                    []*TreeNode
 	ReferenceType               ReferenceType
 	ReferenceTo                 string
@@ -78,7 +90,8 @@ type Cycle struct {
 	ContainsUncertainRelation bool
 }
 
-// UncoveredRoute は、リミットを持たない終端、循環、探索対象外の端点を表す。
+// UncoveredRoute は、対象から一度もリミット設定先を通らずに到達できる境界を表す。
+// TreeNodeIDは、そのリミット未通過経路上の境界出現を参照する。
 type UncoveredRoute struct {
 	Boundary   traversal.Node
 	Reason     UncoveredReason
@@ -175,6 +188,7 @@ type buildState struct {
 	graph                 graph
 	allPaths              map[string]*path
 	confirmedPaths        map[string]*path
+	limitFreePaths        map[string]*path
 	selectedPaths         map[string]*path
 	alternatePathCounts   map[string]int
 	cycleByNode           map[string]string
@@ -183,10 +197,11 @@ type buildState struct {
 	uncovered             []UncoveredRoute
 	root                  *treeWorkNode
 	referenceTargets      map[string]*treeWorkNode
-	selectedPathTargets   map[string]*treeWorkNode
 	occurrences           map[string][]*treeWorkNode
 	treeByPath            map[*path]*treeWorkNode
 	limitReferenceTargets map[string]*treeWorkNode
+	uncoveredPaths        map[string]*path
+	uncoveredPathTargets  map[string]*treeWorkNode
 }
 
 // Build は、到達可能部分グラフと全リミットから、共有可能な説明用経路を生成する。
@@ -199,10 +214,11 @@ func Build(ctx context.Context, traversalResult traversal.Result, limitResult li
 		ctx:                   ctx,
 		limitOwners:           make(map[string]limitscan.Node),
 		referenceTargets:      make(map[string]*treeWorkNode),
-		selectedPathTargets:   make(map[string]*treeWorkNode),
 		occurrences:           make(map[string][]*treeWorkNode),
 		treeByPath:            make(map[*path]*treeWorkNode),
 		limitReferenceTargets: make(map[string]*treeWorkNode),
+		uncoveredPaths:        make(map[string]*path),
+		uncoveredPathTargets:  make(map[string]*treeWorkNode),
 	}
 	if err := state.prepare(traversalResult, limitResult); err != nil {
 		return Result{}, err
@@ -228,11 +244,15 @@ func (state *buildState) prepare(traversalResult traversal.Result, limitResult l
 		return err
 	}
 
-	state.allPaths, err = shortestPaths(state.ctx, currentGraph, traversalResult.Target.ID, false)
+	state.allPaths, err = shortestPaths(state.ctx, currentGraph, traversalResult.Target.ID, false, nil)
 	if err != nil {
 		return err
 	}
-	state.confirmedPaths, err = shortestPaths(state.ctx, currentGraph, traversalResult.Target.ID, true)
+	state.confirmedPaths, err = shortestPaths(state.ctx, currentGraph, traversalResult.Target.ID, true, nil)
+	if err != nil {
+		return err
+	}
+	state.limitFreePaths, err = shortestPaths(state.ctx, currentGraph, traversalResult.Target.ID, false, state.limitOwners)
 	if err != nil {
 		return err
 	}
@@ -423,7 +443,16 @@ func (state *buildState) addLimitOwner(item limitscan.Item) error {
 	return nil
 }
 
-func shortestPaths(ctx context.Context, current graph, targetID string, confirmedOnly bool) (map[string]*path, error) {
+func shortestPaths(
+	ctx context.Context,
+	current graph,
+	targetID string,
+	confirmedOnly bool,
+	excludedNodes map[string]limitscan.Node,
+) (map[string]*path, error) {
+	if _, excluded := excludedNodes[targetID]; excluded {
+		return map[string]*path{}, nil
+	}
 	start := &path{nodeID: targetID}
 	best := map[string]*path{targetID: start}
 	queue := pathQueue{start}
@@ -437,6 +466,10 @@ func shortestPaths(ctx context.Context, current graph, targetID string, confirme
 			continue
 		}
 		for _, edge := range current.outgoing[currentPath.nodeID] {
+			// 除外ノードを到達先にしなければ、bestに保持する全経路が除外ノードを一度も通らない。
+			if _, excluded := excludedNodes[edge.toID]; excluded {
+				continue
+			}
 			if confirmedOnly && !edge.confirmed() {
 				continue
 			}
@@ -592,10 +625,10 @@ func buildCycles(ctx context.Context, input []traversal.Cycle, current graph) ([
 }
 
 type hopPath struct {
-	nodeID   string
-	steps    []graphEdge
-	nodeIDs  []string
-	edgeKeys []string
+	nodeID      string
+	steps       []graphEdge
+	nodeIDs     []string
+	relationIDs []string
 }
 
 type hopQueue []*hopPath
@@ -603,13 +636,7 @@ type hopQueue []*hopPath
 func (queue hopQueue) Len() int      { return len(queue) }
 func (queue hopQueue) Swap(i, j int) { queue[i], queue[j] = queue[j], queue[i] }
 func (queue hopQueue) Less(i, j int) bool {
-	if len(queue[i].steps) != len(queue[j].steps) {
-		return len(queue[i].steps) < len(queue[j].steps)
-	}
-	if comparison := slices.Compare(queue[i].nodeIDs, queue[j].nodeIDs); comparison != 0 {
-		return comparison < 0
-	}
-	return slices.Compare(queue[i].edgeKeys, queue[j].edgeKeys) < 0
+	return lessHopPath(queue[i], queue[j])
 }
 func (queue *hopQueue) Push(value any) { *queue = append(*queue, value.(*hopPath)) }
 func (queue *hopQueue) Pop() any {
@@ -688,11 +715,18 @@ func shortestHopPath(
 			if _, ok := allowed[edge.toID]; !ok {
 				continue
 			}
+			relationIDs := slices.Clone(currentPath.relationIDs)
+			if edge.kind == edgeRelation {
+				for _, relation := range edge.relations {
+					relationIDs = append(relationIDs, relation.ID)
+				}
+			}
+			// scope遷移はrelationではないため、SCC内の経路比較に使うrelation ID列へ加えない。
 			candidate := &hopPath{
-				nodeID:   edge.toID,
-				steps:    append(slices.Clone(currentPath.steps), edge),
-				nodeIDs:  append(slices.Clone(currentPath.nodeIDs), edge.toID),
-				edgeKeys: append(slices.Clone(currentPath.edgeKeys), edge.key),
+				nodeID:      edge.toID,
+				steps:       append(slices.Clone(currentPath.steps), edge),
+				nodeIDs:     append(slices.Clone(currentPath.nodeIDs), edge.toID),
+				relationIDs: relationIDs,
 			}
 			existing, exists := best[edge.toID]
 			if exists && !lessHopPath(candidate, existing) {
@@ -712,7 +746,7 @@ func lessHopPath(left, right *hopPath) bool {
 	if comparison := slices.Compare(left.nodeIDs, right.nodeIDs); comparison != 0 {
 		return comparison < 0
 	}
-	return slices.Compare(left.edgeKeys, right.edgeKeys) < 0
+	return slices.Compare(left.relationIDs, right.relationIDs) < 0
 }
 
 func cycleSteps(edges []graphEdge) []CycleStep {
@@ -838,29 +872,43 @@ func (state *buildState) findUncoveredRoutes() ([]UncoveredRoute, error) {
 		if len(state.graph.outgoing[id]) != 0 {
 			continue
 		}
-		if _, hasLimit := state.limitOwners[id]; hasLimit {
+		limitFreePath := state.limitFreePaths[id]
+		if limitFreePath == nil {
 			continue
 		}
 		routes = append(routes, UncoveredRoute{Boundary: state.graph.nodes[id], Reason: UncoveredTerminal})
+		state.uncoveredPaths[id] = limitFreePath
 	}
 	for id, reason := range state.graph.endpoints {
+		if err := state.ctx.Err(); err != nil {
+			return nil, err
+		}
 		if reason != traversal.EndpointNonTraversableNodeType {
 			continue
 		}
+		limitFreePath := state.limitFreePaths[id]
+		if limitFreePath == nil {
+			continue
+		}
 		routes = append(routes, UncoveredRoute{Boundary: state.graph.nodes[id], Reason: UncoveredNonTraversableType})
+		state.uncoveredPaths[id] = limitFreePath
 	}
 	for _, cycle := range state.cycles {
 		hasLimit := false
+		boundaryID := ""
 		for _, node := range cycle.Nodes {
 			if _, ok := state.limitOwners[node.ID]; ok {
 				hasLimit = true
-				break
+			}
+			if state.limitFreePaths[node.ID] != nil && (boundaryID == "" || node.ID < boundaryID) {
+				boundaryID = node.ID
 			}
 		}
-		if !hasLimit {
+		if !hasLimit && boundaryID != "" {
 			routes = append(routes, UncoveredRoute{
-				Boundary: state.graph.nodes[cycle.Route[0].FromID], Reason: UncoveredCycle, CycleID: cycle.CycleID,
+				Boundary: state.graph.nodes[boundaryID], Reason: UncoveredCycle, CycleID: cycle.CycleID,
 			})
+			state.uncoveredPaths[boundaryID] = state.limitFreePaths[boundaryID]
 		}
 	}
 	sort.Slice(routes, func(i, j int) bool {
@@ -882,11 +930,14 @@ func (state *buildState) buildTree() error {
 	}
 	state.root = state.newTreeNode(state.graph.nodes[state.targetID], nil, nil)
 	state.referenceTargets[state.targetID] = state.root
-	state.selectedPathTargets[state.targetID] = state.root
 	state.occurrences[state.targetID] = []*treeWorkNode{state.root}
 	state.treeByPath[rootPath] = state.root
 	state.treeByPath[state.allPaths[state.targetID]] = state.root
 	state.treeByPath[state.confirmedPaths[state.targetID]] = state.root
+	if limitFreeRoot := state.limitFreePaths[state.targetID]; limitFreeRoot != nil {
+		// insertPathは登録済みの起点までpreviousをたどるため、別に生成した経路表の起点も停止点にする。
+		state.treeByPath[limitFreeRoot] = state.root
+	}
 
 	ids := make([]string, 0, len(state.selectedPaths))
 	for id := range state.selectedPaths {
@@ -899,10 +950,19 @@ func (state *buildState) buildTree() error {
 		}
 		terminal := state.insertPath(state.selectedPaths[id])
 		state.referenceTargets[id] = terminal
-		state.selectedPathTargets[id] = terminal
 		if _, isLimitOwner := state.limitOwners[id]; isLimitOwner {
 			state.limitReferenceTargets[id] = terminal
 		}
+	}
+	for _, route := range state.uncovered {
+		if err := state.ctx.Err(); err != nil {
+			return err
+		}
+		limitFreePath := state.uncoveredPaths[route.Boundary.ID]
+		if limitFreePath == nil {
+			return fmt.Errorf("pathtree uncovered boundary %q has no limit-free path", route.Boundary.ID)
+		}
+		state.uncoveredPathTargets[route.Boundary.ID] = state.insertPath(limitFreePath)
 	}
 
 	for id, occurrences := range state.occurrences {
@@ -1039,6 +1099,13 @@ func (state *buildState) compressTree() {
 		for childIndex, child := range parent.children {
 			for state.canHide(child) && len(child.children) == 1 {
 				next := child.children[0]
+				hiddenConnections := make([]HiddenConnection, 0, len(child.value.HiddenConnections)+len(next.value.HiddenConnections)+2)
+				hiddenConnections = append(hiddenConnections, connectionsToNode(parent.value.Node.ID, child.value)...)
+				hiddenConnections = append(hiddenConnections, connectionsToNode(child.value.Node.ID, next.value)...)
+				// 圧縮区間は各ホップの境界を保った接続列だけで表し、異なる区間のrelationを並行relationとして混在させない。
+				next.value.HiddenConnections = hiddenConnections
+				next.value.ViaRelations = nil
+				next.value.ViaScope = false
 				next.hiddenNodeCount += child.hiddenNodeCount + 1
 				hiddenIDs := make([]string, 0, min(maxHiddenNodeIDs, 1+len(child.value.HiddenNodeIDs)+len(next.value.HiddenNodeIDs)))
 				hiddenIDs = append(hiddenIDs, child.value.Node.ID)
@@ -1059,6 +1126,16 @@ func (state *buildState) compressTree() {
 		}
 	}
 	state.sortTree()
+}
+
+func connectionsToNode(fromID string, node *TreeNode) []HiddenConnection {
+	if len(node.HiddenConnections) != 0 {
+		return node.HiddenConnections
+	}
+	return []HiddenConnection{{
+		FromID: fromID, ToID: node.Node.ID,
+		ViaRelations: cloneRelations(node.ViaRelations), ViaScope: node.ViaScope,
+	}}
 }
 
 func (state *buildState) canHide(node *treeWorkNode) bool {
@@ -1142,7 +1219,7 @@ func (state *buildState) finish() (Result, error) {
 		}
 	}
 	for index := range state.uncovered {
-		target := state.selectedPathTargets[state.uncovered[index].Boundary.ID]
+		target := state.uncoveredPathTargets[state.uncovered[index].Boundary.ID]
 		if target == nil || target.value.TreeNodeID == "" {
 			return Result{}, fmt.Errorf("pathtree uncovered boundary %q was removed from tree", state.uncovered[index].Boundary.ID)
 		}
