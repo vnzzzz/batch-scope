@@ -2,21 +2,19 @@
 
 ## 提供するもの
 
-初期の公開対象は、GitHubの公開リポジトリとGitHub Releasesの単体バイナリです。
+初期の公開対象は、GitHubの公開リポジトリとGitHub ReleasesのOS別アーカイブです。
 コンテナイメージはレジストリへ公開しません。
 
 | 提供物 | 公開先 | 公開方法 |
 |---|---|---|
 | ソースコード | GitHubリポジトリ | `main`への通常のpushとPull Request |
-| OS別バイナリ | GitHub Releases | SemVerタグのpushで自動作成 |
+| OS別アーカイブ | GitHub Releases | SemVerタグのpushで自動作成 |
 | コンテナイメージ | 公開しない | 利用者がソースコードから作成 |
 
-GitHub Releasesはタグに対応するリリースを作り、OS別バイナリとSHA-256チェックサムを添付します。
+GitHub Releasesはタグに対応するリリースを作り、OS別アーカイブとSHA-256チェックサムを添付します。
 GHCRとDocker Hubは、利用要望と運用方法を確認してから追加します。
-利用者向けのPublic Skillは同じリポジトリで管理し、初回リリースまでにGitHub Releaseのアーカイブへ追加します。
-現時点のRelease WorkflowはOS別バイナリだけを作成します。
 
-## バイナリの対象環境
+## 対応環境とアーカイブ構成
 
 | OS | CPU | アーカイブ |
 |---|---|---|
@@ -28,7 +26,22 @@ GHCRとDocker Hubは、利用要望と運用方法を確認してから追加し
 SQLiteの切替は、開いているファイルをrenameできるPOSIXのセマンティクスに依存します。
 そのため、v0.1.0ではWindows向けバイナリを公開しません。
 
-各アーカイブには、`batchscope`、`README.md`、`LICENSE`を含めます。
+各アーカイブには、次を含めます。
+
+```text
+batchscope_<version>_<os>_<arch>/
+├── batchscope
+├── README.md
+├── LICENSE
+└── skills/public/batchscope/
+```
+
+Public Skillはsourceの`skills/public/batchscope/`をディレクトリ単位で取り込みます。
+配布時だけ、ルート`schema/`配下のJSON Schemaを相対パスを維持してPublic Skillの`references/schema/`へ追加します。
+JSON Schemaの正本はルート`schema/`であり、配布コピーは手編集しません。
+Internal Skillは含めません。
+
+アーカイブ内の`README.md`は、sourceでは相対リンクを保ったまま、配布時だけリポジトリ内文書へのリンクを対応する`v<version>`タグへ固定します。
 `checksums.txt`には、各アーカイブのSHA-256を記録します。
 
 ## 公開前の準備
@@ -39,27 +52,24 @@ SQLiteの切替は、開いているファイルをrenameできるPOSIXのセマ
 2. ルートの`LICENSE`にMIT Licenseが記載されている。
 3. `main`のCIが成功している。
 
-`LICENSE`がない場合、リリースWorkflowはバイナリを公開しません。
+`LICENSE`がない場合、リリースWorkflowは成果物を公開しません。
 Goモジュールパスの方針は[設計判断](../design/decisions.md#採用した方式)を参照してください。
 
-## 公開用バイナリの確認
+## 公開成果物の確認
 
 実行環境：Dev Container
 
 ```bash
 make verify
 make release-artifacts VERSION=0.1.0
+make release-artifacts-check VERSION=0.1.0
 ```
 
 成果物は`dist/`へ作成します。
 `dist/`はGit管理しません。
 
-チェックサムは`dist/`内で確認します。
-
-```bash
-cd dist
-sha256sum -c checksums.txt
-```
+`release-artifacts-check`は、全OS/CPUのアーカイブを展開し、公開ファイル構成、Public Skill、配布JSON Schema、READMEリンク、Internal Skill非同梱、チェックサムを検査します。
+通常の`make verify`とは分離し、Release成果物を作成した後だけ実行します。
 
 ```text
 dist/
@@ -68,6 +78,12 @@ dist/
 ├── batchscope_0.1.0_darwin_amd64.tar.gz
 ├── batchscope_0.1.0_darwin_arm64.tar.gz
 └── checksums.txt
+```
+
+チェックサムだけを手動確認する場合は、`dist/`内で次を実行します。
+
+```bash
+sha256sum -c checksums.txt
 ```
 
 ## GitHub Releasesへの公開
@@ -92,8 +108,9 @@ Workflowは次の順に処理します。
 flowchart LR
     Tag[SemVerタグをpush] --> Check[タグ、main、LICENSEを確認]
     Check --> Verify[make verify]
-    Verify --> Build[OS別バイナリを作成]
-    Build --> Release[GitHub Releaseを作成]
+    Verify --> Build[OS別アーカイブを作成]
+    Build --> ArtifactCheck[Release成果物を検査]
+    ArtifactCheck --> Release[GitHub Releaseを作成]
 ```
 
 `v0.1.0-rc.1`のようなタグはプレリリースとして登録します。
@@ -111,7 +128,8 @@ flowchart LR
 ```
 
 実行用イメージには、アプリケーションバイナリだけを含めます。
-Codex CLI、Claude Code、Node.js、Goコンパイラ、Git、シェル、設計文書は含めません。
+Release archiveに含めるPublic Skill、JSON Schema、設計文書は追加しません。
+Codex CLI、Claude Code、Node.js、Goコンパイラ、Git、シェルも含めません。
 
 ## ローカルイメージの作成
 
@@ -136,4 +154,5 @@ flowchart LR
 ```
 
 CIはコンテナイメージを外部へ送信しません。
+Release archiveの生成と検査はタグpush時のRelease workflowだけで行います。
 外部Actionはレビュー済みのコミットSHAへ固定し、Dependabotで更新候補を受け取ります。

@@ -1,4 +1,4 @@
-name: Release binaries
+name: Release artifacts
 
 on:
   push:
@@ -13,7 +13,7 @@ concurrency:
 
 jobs:
   release:
-    name: Build and publish binaries
+    name: Build and publish release artifacts
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -58,6 +58,9 @@ jobs:
           make release-artifacts \
             VERSION="${GITHUB_REF_NAME#v}" \
             COMMIT="${GITHUB_SHA}"
+
+      - name: Verify release artifacts
+        run: make release-artifacts-check VERSION="${GITHUB_REF_NAME#v}"
 
       - name: Publish GitHub Release
         shell: bash

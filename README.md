@@ -1,49 +1,31 @@
 # BatchScope
 
-BatchScopeは、障害発生時に巨大なジョブ定義を人間が手作業でたどることなく、指定したジョブまたはジョブネットから影響を受けるリミット設定箇所を全件洗い出す静的解析サービスです。
+BatchScopeは、指定したジョブまたはジョブネットから影響を受けるリミット設定箇所を全件洗い出す静的解析サービスです。
 
-取り込んだ定義を解析するHTTPサービスであり、現在時刻や実行状態を使った対応期限の計算は行いません。
+ジョブマネージャーへ直接接続せず、製品固有の定義を共通スナップショットへ変換して取り込みます。
+返すのは定義に保存されたリミットであり、現在時刻、実行状態、業務日を使った対応期限の計算は行いません。
 
-ジョブマネージャー固有の定義は、共通形式へ変換してから取り込みます。
-ファイル、ジョブ状態、外部イベントを介した依存関係も扱えます。
+## 利用
 
-## 利用方法
-
-| 方法 | 用途 |
-|---|---|
-| GitHub Releasesのバイナリ | Dockerを使わずにBatchScopeを起動する |
-| ソースコードから実行 | 開発版の確認、変更を加えた利用 |
-| ソースコードからイメージを作成 | DockerまたはCloud Runでの利用 |
-
-単体バイナリは、リリース後に次のコマンドで起動します。
+GitHub Releaseのアーカイブを展開し、単体バイナリを起動します。
 
 ```bash
 ./batchscope serve
 ```
 
-ソースコードからの実行方法は[開発環境](docs/development/development.md)、コンテナイメージの作成と対応OSは[ビルドと公開](docs/development/build-and-release.md)を参照してください。
+スナップショット取込から対象検索、後続リミット解析までの一連の利用方法は[デモ](docs/development/demo.md)を参照してください。
+APIの意味と保証は[API仕様](docs/design/api.md)、機械的なHTTP形式は[生成OpenAPI](docs/api/openapi.yaml)、取込データの形式は[スナップショット仕様](docs/design/canonical-snapshot.md)を正本とします。
+
+Release archiveには、スナップショットの作成、取込、検索を支援するPublic SkillをJSON Schemaとともに同梱します。
+ソースコードからの実行は[開発環境](docs/development/development.md)、公開成果物とコンテナイメージは[ビルドと公開](docs/development/build-and-release.md)を参照してください。
 
 ## ドキュメント
 
 - [設計文書](docs/index.md)
-- [開発環境](docs/development/development.md)
 - [デモ](docs/development/demo.md)
-- [コントリビューションガイド](CONTRIBUTING.md)
+- [開発環境](docs/development/development.md)
 - [ビルドと公開](docs/development/build-and-release.md)
-
-## リポジトリ構成
-
-```text
-batchscope/
-├── cmd/                       # Goのエントリーポイント
-├── internal/                  # API、取込、依存関係の検索、SQLite
-├── schema/                    # 取込データのJSON Schema
-├── docs/                      # 設計文書と開発手順
-├── examples/demo/             # デモ用の取込データとレスポンス例
-├── scripts/                   # 開発、表示、公開用の補助スクリプト
-├── skills/                    # PublicとInternalのエージェントスキル
-└── Dockerfile                 # 本番用イメージ
-```
+- [コントリビューションガイド](CONTRIBUTING.md)
 
 ## ライセンス
 

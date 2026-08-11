@@ -8,7 +8,7 @@ clone、ブランチ作成、rebase、Pull Requestの作成手順は[コント�
 |---|---|---|
 | ホスト | リポジトリのclone、Dev Containerの作成、本番イメージの操作 | Docker、Dev Containers対応エディタ |
 | Dev Container | 編集、Goのテスト、サービス起動、Codex、Claude Code、デモ表示 | Go、Node.js、GitHub CLI、SQLite CLI、`jq` |
-| GitHub Actions | Pull Requestの検査、イメージのビルド確認、タグ付きバイナリの公開 | Go、Docker、GitHub CLI |
+| GitHub Actions | Pull Requestの検査、イメージのビルド確認、タグ付き公開成果物の作成 | Go、Docker、GitHub CLI |
 
 Dev ContainerにはDocker CLIとDockerソケットを追加しません。
 本番イメージのビルドをDev Containerから行えるようにすると、ホストのDockerへ接続する権限と設定が増えるためです。
@@ -129,7 +129,7 @@ export BATCHSCOPE_CODEX_MODEL=<利用可能なCodexモデル>
 ホストのブラウザまたは`curl`から`http://localhost:8080`へ接続できます。
 
 起動済みサービスの検査や待機時間の変更方法は、`./scripts/smoke-api.sh --help`を参照してください。
-デモレスポンスの表示は[デモ](demo.md)、公開用バイナリとコンテナイメージの作成は[ビルドと公開](build-and-release.md)を参照してください。
+デモレスポンスの表示は[デモ](demo.md)、公開成果物とコンテナイメージの作成は[ビルドと公開](build-and-release.md)を参照してください。
 
 ## API仕様の確認
 

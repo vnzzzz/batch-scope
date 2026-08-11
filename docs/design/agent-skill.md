@@ -1,27 +1,31 @@
 # エージェントスキル
 
-BatchScopeでは、利用者へ配布するPublic Skillと、リポジトリ開発だけに使うInternal Skillを分けます。
+BatchScopeでは、Skillの利用目的をPublic / Internalで分けます。
+この区分と、SkillがBatchScope固有か他リポジトリでも再利用できるかという区分は別の分類軸です。
 サービス内部の処理や設計文書をSkillへ重複して実装しません。
 
 ## Skillの責務
 
-| 区分 | Skill | 利用者 | 役割 |
-|---|---|---|---|
-| Public | `batchscope` | Codex、Claude Code | スナップショットの作成、取込、検索APIの利用 |
-| Internal | `batchscope-backlog` | Claude Code | 設計、実装、既存Issueの監査とIssue候補の作成 |
-| Internal | `batchscope-development` | Claude Code | Issue単位のCodexへの委任、差分レビュー、検証、GitHub操作による自律実行 |
-| Internal | `readable-code` | Codex、Claude Code | 判断理由、制約、不変条件を残すコードコメントの作成とレビュー |
-| Internal | `japanese-technical-writing` | Codex、Claude Code | 日本語技術文書の執筆と推敲 |
+| 利用区分 | 再利用性 | Skill | 利用者 | 役割 |
+|---|---|---|---|---|
+| Public | BatchScope固有 | `batchscope` | Codex、Claude Code | スナップショットの作成、取込、検索APIの利用 |
+| Internal | BatchScope固有 | `batchscope-backlog` | Claude Code | 設計、実装、既存Issueの監査とIssue候補の作成 |
+| Internal | BatchScope固有 | `batchscope-development` | Claude Code | Issue単位のCodexへの委任、差分レビュー、検証、GitHub操作による自律実行 |
+| Internal | 汎用候補 | `readable-code` | Codex、Claude Code | 判断理由、制約、不変条件を残すコードコメントの作成とレビュー |
+| Internal | 汎用core + BatchScope固有規則の候補 | `japanese-technical-writing` | Codex、Claude Code | 日本語技術文書の執筆と推敲 |
 
-Public Skillは、BatchScope利用者と開発者が同じ手順でサービスを利用するために共有します。
-Internal Skillはリポジトリ固有の開発手順と共通規則だけを扱い、公開用成果物へ含めません。
+Public SkillはBatchScopeを利用するためのSkillであり、現在の`batchscope`はBatchScope固有です。
+Internal SkillはBatchScopeの開発で使うSkillであり、Release成果物へは含めません。
+Internal Skillの中にはBatchScope固有のものと、他リポジトリでも再利用できる汎用部分を持つものがあります。
+汎用Internal Skillの共有方式や外部リポジトリへの分離はRelease配布とは別に設計します。
+
 コードコメントと日本語技術文書のInternal Skillは、実装を担当するCodexと、レビューを担当するClaude Codeが共通して使用します。
 
 ## 管理する内容
 
 | 対象 | 正本 | Skillでの扱い |
 |---|---|---|
-| 取込JSONの機械的制約 | `schema/`配下のJSON Schema | Public Skillへフィールド一覧や境界値を全文転記しない |
+| 取込JSONの機械的制約 | `schema/`配下のJSON Schema | Public Skillへ詳細を転記せず、配布時も正本から機械的に同梱する |
 | 取込データの意味とレコード間制約 | `docs/design/canonical-snapshot.md` | Public Skillにはスナップショット作成時に必要な要点だけを記載する |
 | 変換と検索の手順 | `skills/public/batchscope/SKILL.md` | 製品利用時に直接指示する |
 | 変換時の要点 | `skills/public/batchscope/references/` | リポジトリ外でも判断できる範囲へ要約する |
@@ -78,11 +82,11 @@ Codex自身には、バックログ監査と実装指揮を担う`batchscope-bac
 
 ## 配布
 
-Public Skillはリポジトリ内を正本とし、リポジトリ外へコピーしても利用できる内容にします。
-リポジトリ内部の開発手順やIssue運用へ依存させません。
+Public Skillはリポジトリ内を正本とし、リポジトリ外でも単独利用できる内容にします。
+GitHub ReleaseではJSON Schemaを含む自己完結したPublic Skillとして配布し、Internal Skillは再利用性にかかわらず含めません。
+アーカイブ構成と生成方法は[ビルドと公開](../development/build-and-release.md#対応環境とアーカイブ構成)を正本とします。
 
-初回リリースまでに、`skills/public/batchscope`だけをGitHub Releaseのアーカイブへ追加します。
-Plugin、Marketplace、Gist同期、Skill専用リポジトリは、利用上の必要性が確認されるまで追加しません。
+Public Skill `batchscope`のPlugin、Marketplace、Gist同期、別リポジトリ化は、利用上の必要性が確認されるまで追加しません。
 
 ## 更新規則
 

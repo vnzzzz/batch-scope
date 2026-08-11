@@ -5,7 +5,7 @@ usage() {
   cat <<'USAGE'
 Usage: scripts/build-release-artifacts.sh <version> <commit> [output-dir]
 
-GitHub Releasesへ登録するOS別バイナリを作成します。
+GitHub Releasesへ登録するOS別アーカイブとチェックサムを作成します。
 実行環境はLinuxのDev ContainerまたはGitHub Actionsです。
 USAGE
 }
@@ -41,11 +41,51 @@ if [[ ! -f LICENSE ]]; then
   exit 1
 fi
 
+if [[ ! -d skills/public/batchscope/references ]]; then
+  echo "公開アーカイブへ同梱するPublic Skillがありません。" >&2
+  exit 1
+fi
+
+mapfile -d '' schema_files < <(find schema -type f -name '*.schema.json' -print0)
+if [[ ${#schema_files[@]} -eq 0 ]]; then
+  echo "公開アーカイブへ同梱するJSON Schemaがありません。" >&2
+  exit 1
+fi
+
 rm -rf "$output_dir"
 mkdir -p "$output_dir"
 output_dir="$(cd "$output_dir" && pwd)"
 work_dir="$(mktemp -d)"
 trap 'rm -rf "$work_dir"' EXIT
+
+render_release_readme() {
+  local destination="$1"
+
+  # checkoutでは相対リンクを維持し、配布版だけ対応するタグの文書へ固定する。
+  sed -E \
+    -e "s#\]\((docs/[^)]*)\)#](https://github.com/vnzzzz/batch-scope/blob/v${version}/\1)#g" \
+    -e "s#\]\((CONTRIBUTING\\.md[^)]*)\)#](https://github.com/vnzzzz/batch-scope/blob/v${version}/\1)#g" \
+    README.md > "$destination"
+}
+
+stage_public_files() {
+  local stage="$1"
+  local schema_file relative destination
+
+  cp LICENSE "$stage/"
+  render_release_readme "$stage/README.md"
+
+  mkdir -p "$stage/skills/public"
+  cp -R skills/public/batchscope "$stage/skills/public/"
+
+  rm -rf "$stage/skills/public/batchscope/references/schema"
+  for schema_file in "${schema_files[@]}"; do
+    relative="${schema_file#schema/}"
+    destination="$stage/skills/public/batchscope/references/schema/$relative"
+    mkdir -p "$(dirname "$destination")"
+    cp "$schema_file" "$destination"
+  done
+}
 
 targets=(
   "linux amd64"
@@ -69,10 +109,9 @@ for target in "${targets[@]}"; do
       -o "$stage/$binary" \
       ./cmd/batchscope
 
-  cp README.md LICENSE "$stage/"
+  stage_public_files "$stage"
 
   tar -C "$work_dir" -czf "$output_dir/${name}.tar.gz" "$name"
-
 done
 
 (

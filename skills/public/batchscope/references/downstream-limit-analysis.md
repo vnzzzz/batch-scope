@@ -18,6 +18,7 @@
 
 各リミットの`limitOwner`は設定先ジョブ、`scopeRoot`は後続ジョブネットの配下を展開した場合の起点である。
 `treeNodeId`は設定先を表す経路ツリーのノードを参照し、`alternatePathCount`は採用した経路以外の経路数を表す。
+`maxElapsed.items[].fact.duration`は、取込時に固定秒数へ変換した値をcanonicalなISO 8601 Durationで表すため、入力時の表記と異なる場合がある。
 
 ## 経路ツリー
 
