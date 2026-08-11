@@ -24,7 +24,7 @@ cd batchscope_*_linux_amd64
 
 ### 2. デモデータで試す
 
-デモでは、利用中のバイナリと同じversionのスナップショットを使います。
+利用中のバイナリと同じリリースタグにあるデモスナップショットを使います。
 同じ展開ディレクトリを別のターミナルで開き、次を実行してください。`git`、`curl`、`jq`、`tar`が必要です。
 
 ```bash
@@ -56,7 +56,7 @@ curl -fsS 'http://127.0.0.1:8080/v1/downstream-limit-analysis?targetId=JOB-A' | 
 Releaseアーカイブには`skills/public/batchscope/`を同梱しています。
 このPublic Skillは、既存のジョブマネージャーの出力やジョブ定義を読み取り、BatchScopeが受け取るスナップショットへ変換して、取込・検索するためのエージェント向け手順です。
 
-利用するエージェントのSkill配置方法に従って`skills/public/batchscope/`を読み込ませ、ジョブマネージャーから取得した定義ファイルや実行スクリプトを参照できる状態にします。
+Claude CodeやCodexなど、利用するエージェントのSkill配置方法に従って`skills/public/batchscope/`を読み込ませ、ジョブマネージャーから取得した定義ファイルや実行スクリプトを参照できる状態にします。
 そのうえで、例えば次のように依頼します。
 
 ```text
@@ -71,6 +71,7 @@ BatchScope Public Skillを使って、<ジョブ定義のパス> からBatchScop
 
 - **使い方を確認する**
   - [デモ](docs/development/demo.md) — デモスナップショットとAPI利用例
+  - `skills/public/batchscope/SKILL.md` — 実際のジョブ定義をスナップショットへ変換して利用する手順
 - **公開仕様を確認する**
   - [API仕様](docs/design/api.md) — APIの意味と利用者へ保証する動作
     - [OpenAPI](docs/api/openapi.yaml) — HTTPのパス、パラメーター、JSON形式
