@@ -1,12 +1,12 @@
 # BatchScope
 
-BatchScopeは、バッチジョブの定義を静的に解析し、指定したジョブまたはジョブネットから後続の依存関係をたどって、リミット設定とそこまでの経路を確認するためのサービスです。
+BatchScopeは、バッチジョブの定義から、指定したジョブまたはジョブネットの後続にあるリミット設定と、そこまでの依存経路を洗い出す静的解析サービスです。
 
-ジョブマネージャーへ直接接続するのではなく、製品固有の定義を共通スナップショットへ変換して取り込みます。現在時刻や実行状態、業務日から「いつまでに対応すべきか」を計算するサービスではありません。
+各ジョブマネージャーの定義を共通スナップショットに変換して取り込みます。ジョブマネージャーへ直接接続したり、現在の実行状態や業務日から対応期限を計算したりすることはありません。
 
 ## Quick Start
 
-最短で一連の動作を確認するには、リポジトリをcloneしてデモスナップショットを使います。
+リポジトリに含まれるデモスナップショットを使うと、取込から後続リミット解析まで一通り試せます。
 Go、`curl`、`jq`、`tar`が必要です。
 
 ```bash
@@ -15,15 +15,32 @@ cd batch-scope
 make smoke
 ```
 
-`make smoke`は一時的にBatchScopeを起動し、`examples/demo/snapshot`を取り込んで、`JOB-A`の検索と後続リミット解析まで実行します。結果は人が確認しやすい形で表示されます。
+`make smoke`は一時的にBatchScopeを起動し、デモスナップショットの取込、`JOB-A`の検索、後続リミット解析までを実行して結果を要約します。
 
-GitHub Releaseの単体バイナリを使う場合は、アーカイブを展開して次のように起動します。
+APIを手動で試す場合は、まず別のターミナルでBatchScopeを起動します。
 
 ```bash
-./batchscope serve
+go run ./cmd/batchscope serve
 ```
 
-起動後は `http://127.0.0.1:8080/docs` でAPIドキュメントを確認できます。詳しい利用例や仕様は下のドキュメント一覧から参照してください。
+次にデモスナップショットを取り込み、検索できる状態になるまで待ってからAPIを呼び出します。
+
+```bash
+tar -C examples/demo/snapshot -czf /tmp/batchscope-demo.tar.gz \
+  manifest.json nodes.ndjson relations.ndjson
+
+curl -fsS -X POST \
+  -H 'Content-Type: application/vnd.batchscope.snapshot+gzip' \
+  --data-binary @/tmp/batchscope-demo.tar.gz \
+  http://127.0.0.1:8080/v1/snapshot-imports
+
+until curl -fsS http://127.0.0.1:8080/readyz >/dev/null 2>&1; do sleep 1; done
+
+curl -fsS 'http://127.0.0.1:8080/v1/targets?query=JOB-A' | jq
+curl -fsS 'http://127.0.0.1:8080/v1/downstream-limit-analysis?targetId=JOB-A' | jq
+```
+
+GitHub Releaseの単体バイナリは、アーカイブを展開して `./batchscope serve` で起動できます。起動後は `http://127.0.0.1:8080/docs` でもAPIドキュメントを確認できます。
 
 ## Public Skill
 
