@@ -311,6 +311,37 @@ func TestCapacityFailureKeepsCurrentGeneration(t *testing.T) {
 	}
 }
 
+func TestLoadFailureKeepsCurrentGeneration(t *testing.T) {
+	workspace := t.TempDir()
+	storage := newImporterTestStore(t, filepath.Join(workspace, "data"))
+	if _, err := Run(context.Background(), workspace, bytes.NewReader(singleNodeArchive(t, "CURRENT")), storage); err != nil {
+		t.Fatal(err)
+	}
+
+	loadErr := errors.New("load failed")
+	originalLoad := loadSnapshot
+	loadSnapshot = func(context.Context, *sql.DB, snapshot.Extracted, snapshot.ValidationResult) error {
+		return loadErr
+	}
+	t.Cleanup(func() { loadSnapshot = originalLoad })
+
+	result, err := Run(context.Background(), workspace, bytes.NewReader(singleNodeArchive(t, "NEXT")), storage)
+	if !errors.Is(err, loadErr) {
+		t.Fatalf("Run() error = %v, want %v", err, loadErr)
+	}
+	if result.SnapshotID != "NEXT" || result.NodeCount != 1 {
+		t.Fatalf("result = %#v, want validated metadata", result)
+	}
+	db, generation, release, err := storage.Acquire()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+	if got := queryValueForImporterTest(t, db); got != "CURRENT" || generation.SnapshotID != "CURRENT" {
+		t.Fatalf("active generation after load failure: value=%q metadata=%#v", got, generation)
+	}
+}
+
 func TestRunProducesSameTableContentsFromSameInput(t *testing.T) {
 	archive := demoArchive(t)
 	want := importAndDump(t, archive)
@@ -349,6 +380,42 @@ func TestRunReservesImportBeforeReadingArchive(t *testing.T) {
 	close(firstReader.resume)
 	if err := <-firstDone; err != nil {
 		t.Fatalf("first Run() error = %v", err)
+	}
+}
+
+func TestProcessReceivedReportsEachStageWithKnownMetadata(t *testing.T) {
+	workspace := t.TempDir()
+	storage := newImporterTestStore(t, filepath.Join(workspace, "data"))
+	operation, err := storage.BeginImport(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	archivePath, err := snapshot.Receive(context.Background(), workspace, bytes.NewReader(singleNodeArchive(t, "STAGES")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var progress []Progress
+	result, err := ProcessReceived(
+		context.Background(), workspace, archivePath, operation, storage,
+		func(current Progress) { progress = append(progress, current) },
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.SnapshotID != "STAGES" || result.NodeCount != 1 {
+		t.Fatalf("result = %#v", result)
+	}
+	wantStages := []Stage{StageValidating, StageBuilding, StageActivating}
+	if len(progress) != len(wantStages) {
+		t.Fatalf("progress = %#v", progress)
+	}
+	for index, want := range wantStages {
+		if progress[index].Stage != want {
+			t.Errorf("progress[%d].Stage = %q, want %q", index, progress[index].Stage, want)
+		}
+		if want != StageValidating && (progress[index].SnapshotID != "STAGES" || progress[index].NodeCount != 1) {
+			t.Errorf("progress[%d] = %#v, want known metadata", index, progress[index])
+		}
 	}
 }
 
@@ -410,6 +477,83 @@ func TestRunReportsRetiredCleanupAsSuccessfulWarning(t *testing.T) {
 	}
 	if newCount != 1 || oldCount != 0 {
 		t.Fatalf("searchable nodes NEW=%d OLD=%d, want NEW=1 OLD=0", newCount, oldCount)
+	}
+}
+
+func TestRunReusesActiveGenerationWithSameSnapshotContent(t *testing.T) {
+	workspace := t.TempDir()
+	dataDirectory := filepath.Join(workspace, "data")
+	storage := newImporterTestStore(t, dataDirectory)
+	archive := singleNodeArchive(t, "SAME")
+	if _, err := Run(context.Background(), workspace, bytes.NewReader(archive), storage); err != nil {
+		t.Fatal(err)
+	}
+	before, err := filepath.Glob(filepath.Join(dataDirectory, "generation-*.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := Run(context.Background(), workspace, bytes.NewReader(archive), storage)
+	if err != nil {
+		t.Fatalf("second Run() error = %v", err)
+	}
+	if !result.Reused || result.SnapshotID != "SAME" {
+		t.Fatalf("second result = %#v, want reused SAME", result)
+	}
+	after, err := filepath.Glob(filepath.Join(dataDirectory, "generation-*.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(after, before) {
+		t.Fatalf("generation files changed on reuse: before=%v after=%v", before, after)
+	}
+}
+
+func TestRunRejectsSameSnapshotIDWithDifferentContent(t *testing.T) {
+	workspace := t.TempDir()
+	storage := newImporterTestStore(t, filepath.Join(workspace, "data"))
+	first := archiveWithSnapshotIDAndNode(t, "shared-id", "FIRST")
+	second := archiveWithSnapshotIDAndNode(t, "shared-id", "SECOND")
+	if _, err := Run(context.Background(), workspace, bytes.NewReader(first), storage); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := Run(context.Background(), workspace, bytes.NewReader(second), storage)
+	if !errors.Is(err, ErrSnapshotIDConflict) {
+		t.Fatalf("Run() error = %v, want %v", err, ErrSnapshotIDConflict)
+	}
+	if result.SnapshotID != "shared-id" {
+		t.Fatalf("result = %#v, want known snapshot ID", result)
+	}
+	db, generation, release, err := storage.Acquire()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+	if got := queryValueForImporterTest(t, db); got != "FIRST" || generation.SnapshotID != "shared-id" {
+		t.Fatalf("active generation changed: node=%q generation=%#v", got, generation)
+	}
+}
+
+func TestRunReusesContentAcrossDifferentTarAndGzipRepresentations(t *testing.T) {
+	workspace := t.TempDir()
+	dataDirectory := filepath.Join(workspace, "data")
+	storage := newImporterTestStore(t, dataDirectory)
+	files := archiveFilesWithSnapshotIDAndNode("stable-id", "NODE")
+	first := makeArchive(t, files)
+	second := makeArchiveVariant(t, files)
+	if bytes.Equal(first, second) {
+		t.Fatal("archive variants unexpectedly have the same container bytes")
+	}
+	if _, err := Run(context.Background(), workspace, bytes.NewReader(first), storage); err != nil {
+		t.Fatal(err)
+	}
+	result, err := Run(context.Background(), workspace, bytes.NewReader(second), storage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Reused {
+		t.Fatalf("result = %#v, want reuse", result)
 	}
 }
 
@@ -544,6 +688,19 @@ func singleNodeArchive(t *testing.T, nodeID string) []byte {
 	})
 }
 
+func archiveWithSnapshotIDAndNode(t *testing.T, snapshotID, nodeID string) []byte {
+	t.Helper()
+	return makeArchive(t, archiveFilesWithSnapshotIDAndNode(snapshotID, nodeID))
+}
+
+func archiveFilesWithSnapshotIDAndNode(snapshotID, nodeID string) map[string]string {
+	nodes := fmt.Sprintf("{\"type\":\"job\",\"id\":%q,\"name\":%q,\"limitFacts\":[]}\n", nodeID, nodeID)
+	manifest := fmt.Sprintf(`{"schemaVersion":"0.5","snapshotId":%q,"generatedAt":"2026-08-08T00:00:00Z","nodeCount":1,"relationCount":0,"producer":{"name":"test","version":"1"}}`, snapshotID)
+	return map[string]string{
+		"manifest.json": manifest, "nodes.ndjson": nodes, "relations.ndjson": "",
+	}
+}
+
 func generationArchive(t *testing.T, generation string) []byte {
 	t.Helper()
 	nodes := strings.Join([]string{
@@ -571,6 +728,37 @@ func makeArchive(t *testing.T, files map[string]string) []byte {
 	for _, name := range names {
 		contents := files[name]
 		header := &tar.Header{Name: name, Mode: 0o600, Size: int64(len(contents)), Typeflag: tar.TypeReg}
+		if err := tarWriter.WriteHeader(header); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := io.WriteString(tarWriter, contents); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := tarWriter.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := gzipWriter.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return compressed.Bytes()
+}
+
+func makeArchiveVariant(t *testing.T, files map[string]string) []byte {
+	t.Helper()
+	var compressed bytes.Buffer
+	gzipWriter, err := gzip.NewWriterLevel(&compressed, gzip.BestCompression)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gzipWriter.Header.ModTime = time.Date(2025, 1, 2, 3, 4, 5, 0, time.UTC)
+	tarWriter := tar.NewWriter(gzipWriter)
+	for _, name := range []string{"relations.ndjson", "nodes.ndjson", "manifest.json"} {
+		contents := files[name]
+		header := &tar.Header{
+			Name: name, Mode: 0o640, Size: int64(len(contents)), Typeflag: tar.TypeReg,
+			ModTime: time.Date(2024, 2, 3, 4, 5, 6, 0, time.UTC),
+		}
 		if err := tarWriter.WriteHeader(header); err != nil {
 			t.Fatal(err)
 		}

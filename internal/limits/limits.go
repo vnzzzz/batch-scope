@@ -1,9 +1,14 @@
 // Package limits は、サービスが入力と処理量へ適用する上限を定義する。
 package limits
 
+import "time"
+
 const (
 	// MaxCompressedArchiveBytes は、受信中のディスク使用量を制限する。
 	MaxCompressedArchiveBytes int64 = 500 << 20
+	// SnapshotUploadDeadlineは、500 MiBを約0.85 MiB/秒で送信できる10分を受信上限とする。
+	// 検索SLOとは異なり、遅い送信元が一件だけの取込枠を保持し続けることを防ぐ。
+	SnapshotUploadDeadline = 10 * time.Minute
 	// MaxExtractedArchiveBytes は、圧縮率の高い入力による一時ディスクの枯渇を防ぐ。
 	MaxExtractedArchiveBytes int64 = 4 << 30
 	// MaxManifestBytes は、JSON decode前に保持するmanifest.jsonのメモリ量を制限する。

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"sync"
 	"time"
 
 	"batchscope/internal/observability"
@@ -36,6 +37,10 @@ type App struct {
 	store   *store.Store
 	logger  *slog.Logger
 	handler http.Handler
+	imports *importRegistry
+	workMu  sync.Mutex
+	work    sync.WaitGroup
+	closing bool
 }
 
 type HealthResponse struct {
@@ -51,10 +56,18 @@ type StatusResponse struct {
 	State     string    `json:"state"`
 	BootID    string    `json:"bootId"`
 	StartedAt time.Time `json:"startedAt"`
-	// Snapshotは、使用中のスナップショット情報を保持する。
-	// 取込を実装するまでは常にnullを返すため、任意の値を許す型にしている。
-	Snapshot any       `json:"snapshot"`
-	Build    BuildInfo `json:"build"`
+	// Snapshotは検索に使用中の世代を表し、取込中も切替前の世代を維持する。
+	Snapshot *SnapshotInfo `json:"snapshot"`
+	Build    BuildInfo     `json:"build"`
+}
+
+type SnapshotInfo struct {
+	SnapshotID    string    `json:"snapshotId"`
+	GeneratedAt   time.Time `json:"generatedAt"`
+	SchemaVersion string    `json:"schemaVersion"`
+	NodeCount     int       `json:"nodeCount"`
+	RelationCount int       `json:"relationCount"`
+	LimitCount    int       `json:"limitCount"`
 }
 
 type BuildInfo struct {
@@ -129,6 +142,7 @@ func NewWithStore(config Config, storage *store.Store) (*App, error) {
 		started: time.Now().UTC(),
 		store:   storage,
 		logger:  slog.Default(),
+		imports: newImportRegistry(),
 	}
 
 	mux := http.NewServeMux()
@@ -154,8 +168,12 @@ func (a *App) BootID() string {
 	return a.bootID
 }
 
-// Close は、Appが所有するSQLiteストアを閉じる。
+// Closeは非同期取込の終了を待ってから、Appが所有するSQLiteストアを閉じる。
 func (a *App) Close() error {
+	a.workMu.Lock()
+	a.closing = true
+	a.workMu.Unlock()
+	a.work.Wait()
 	return a.store.Close()
 }
 
@@ -218,6 +236,12 @@ func registerRoutes(api huma.API, a *App) {
 		Path:        "/v1/status",
 		Summary:     "Get service status",
 	}, a.status)
+	// SnapshotInfoを使う他の応答は非nullのまま、未取込を表すstatusのプロパティだけnullを許可する。
+	statusSchema := api.OpenAPI().Components.Schemas.Map()["StatusResponse"]
+	statusSchema.Properties["snapshot"] = &huma.Schema{AnyOf: []*huma.Schema{
+		{Ref: "#/components/schemas/SnapshotInfo"},
+		{Type: "null"},
+	}}
 
 	huma.Register(api, huma.Operation{
 		OperationID: "search-targets",
@@ -236,6 +260,7 @@ func registerRoutes(api huma.API, a *App) {
 	delete(api.OpenAPI().Paths["/v1/targets"].Get.Responses, "422")
 
 	registerAnalysisRoute(api, a)
+	registerSnapshotRoutes(api, a)
 }
 
 func (a *App) health(context.Context, *struct{}) (*healthOutput, error) {
@@ -264,18 +289,45 @@ func (a *App) ready(context.Context, *struct{}) (*readyOutput, error) {
 }
 
 func (a *App) status(context.Context, *struct{}) (*statusOutput, error) {
+	state, generation, ok := a.store.StateAndGeneration()
 	return &statusOutput{
 		Body: StatusResponse{
-			State:     string(a.store.State()),
+			State:     string(state),
 			BootID:    a.bootID,
 			StartedAt: a.started,
-			Snapshot:  nil,
+			Snapshot:  snapshotInfo(generation, ok),
 			Build: BuildInfo{
 				Version: a.config.Version,
 				Commit:  a.config.Commit,
 			},
 		},
 	}, nil
+}
+
+func (a *App) currentSnapshotInfo() *SnapshotInfo {
+	generation, ok := a.store.CurrentGeneration()
+	return snapshotInfo(generation, ok)
+}
+
+func snapshotInfo(generation store.Generation, ok bool) *SnapshotInfo {
+	if !ok {
+		return nil
+	}
+	return &SnapshotInfo{
+		SnapshotID: generation.SnapshotID, GeneratedAt: generation.GeneratedAt,
+		SchemaVersion: generation.SchemaVersion, NodeCount: generation.NodeCount,
+		RelationCount: generation.RelationCount, LimitCount: generation.LimitCount,
+	}
+}
+
+func (a *App) beginImportWork() bool {
+	a.workMu.Lock()
+	defer a.workMu.Unlock()
+	if a.closing {
+		return false
+	}
+	a.work.Add(1)
+	return true
 }
 
 func (a *App) targets(ctx context.Context, input *targetsInput) (*targetsOutput, error) {

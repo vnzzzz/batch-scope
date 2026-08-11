@@ -19,7 +19,12 @@ stateDiagram-v2
 | `importing` | 既存データがあれば可 | 既存データの有無による | 新しいスナップショットを検査し、SQLiteを作成している |
 | `ready` | 可 | 200 | 検査済みのスナップショットを使用している |
 
-新しいスナップショットの取込に失敗しても、現在使用中のスナップショットは残します。
+サービス状態の`empty`、`importing`、`ready`は、検索できる世代と進行中の取込の有無を表します。
+取込リソースの状態は別の概念であり、`accepted`、`validating`、`building`、`activating`、`succeeded`の順に進み、各途中状態から`failed`へ遷移します。
+取込リソースの各状態で公開する項目は[API仕様の取込状況](design/api.md#取込状況)を参照してください。
+
+`GET /v1/status`の`snapshot`は検索に使用中の世代を型付きで返します。
+初回取込中は`null`であり、更新取込中は切替前の世代を返します。
 
 ## SQLiteの切替
 
@@ -33,6 +38,8 @@ sequenceDiagram
     participant O as 旧世代のgeneration-M.db
 
     L->>A: POST スナップショット
+    A->>A: リクエストボディを一時ファイルへ保存
+    A->>I: 受信後の非同期処理を開始
     A-->>L: 202、取込状況のURI
     I->>N: ノードと依存関係を登録
     I->>N: インデックスを作成して検査
@@ -72,16 +79,27 @@ Cloud Runへ32 MiBを超えるアーカイブを直接送る場合は、通信�
 
 ## 取込時の処理
 
-| 段階 | 処理 | 問題がある場合 |
-|---|---|---|
-| 受信 | リクエストボディを一時ファイルへ保存し、圧縮後サイズを確認する | 上限超過または中断として終了する |
-| 展開 | 展開後サイズを確認しながら読み出す | 不正なパス、リンク、重複、未定義エントリを拒否する |
-| 登録 | NDJSONをPrepared StatementとトランザクションでSQLiteへ登録する | `importing.db`を破棄する |
-| 索引作成 | 全件登録後に検索用インデックスを作る | `importing.db`を破棄する |
-| 検査 | 外部キー、SQLite、親子関係、代表的な検索結果を確認する | 現在のSQLiteを維持する |
-| 切替 | 新しいSQLiteを検索先にする | すべての検査に通った場合だけ実行する |
+| 段階 | 応答との関係 | 処理 | 問題がある場合 |
+|---|---|---|---|
+| 受信 | 同期 | リクエストボディを一時ファイルへ保存し、圧縮後サイズを確認する | `202 Accepted`を返さず、上限超過または中断として終了する |
+| `validating` | 非同期 | 展開後サイズを確認しながら展開し、JSON、参照関係、対応規模、内容のフィンガープリントを検査する | 取込リソースを`failed`にする |
+| `building` | 非同期 | NDJSONをPrepared StatementとトランザクションでSQLiteへ登録する | `importing.db`を破棄し、取込リソースを`failed`にする |
+| `activating` | 非同期 | 索引とSQLiteを検査し、世代別ファイルを読み取り専用で開いて検索先を切り替える | 切替前の検索世代を維持し、取込リソースを`failed`にする |
 
 500 MiBのアーカイブをメモリへ一度に展開しません。
+
+新しい世代の取込リソースは、検索先の切替が完了した後に`succeeded`となります。
+`succeeded`となった世代を使う検索は、同じ世代のSQLiteとメタデータを処理終了まで保持するため、切替による部分結果を返しません。
+取込が失敗した場合は現在の検索世代を維持します。
+切替後に旧世代のSQLiteを後始末できなかった場合は警告として扱い、完了済みの切替を取込失敗へ変更しません。
+
+## 取込履歴
+
+取込リソースはプロセスメモリ内で有界に保持します。
+進行中の取込に加えて、完了した取込は`succeeded`と`failed`を合わせて新しいものから16件まで保持し、17件目の完了時に最も古い履歴を破棄します。
+
+取込履歴は再起動をまたいで永続化しません。
+破棄済みまたは再起動前の`importId`を`GET /v1/snapshot-imports/{importId}`へ指定した場合は、`import-not-found`を返します。
 
 ## 検索と取込の同時実行
 
@@ -113,9 +131,14 @@ Cloud Runへ32 MiBを超えるアーカイブを直接送る場合は、通信�
 | 項目 | 初期上限 |
 |---|---:|
 | 圧縮アーカイブ | 500 MiB |
+| リクエストボディの受信 | 10分 |
 | 展開後合計 | 4 GiB |
 | `manifest.json` | 1 MiB |
 | `nodes.ndjson`と`relations.ndjson`の一行 | 16 MiB |
+
+受信上限は、一件だけの取込枠を送信途中の要求が保持し続けることを防ぎます。
+10分を超えた要求は`invalid-request`の`400 Bad Request`となり、取込予約と受信中の一時ファイルを破棄します。
+値の根拠と検索SLOとの違いは[API仕様の大容量リクエストの制御](design/api.md#大容量リクエストの制御)を参照してください。
 
 ## 初期対応規模
 
@@ -171,13 +194,15 @@ MVPの観測情報は、Goの`log/slog`による構造化ログを正本とし�
 | 要求の識別 | `request_id`、`operation`、`duration_ms` |
 | プロセスとデータ | `boot_id`、`snapshot_id`、`import_id` |
 | 検索対象 | `target_id` |
-| 処理量 | `reached_nodes`、`returned_tree_nodes`、`returned_limits`、`returned_targets`、`uncovered_routes` |
-| 完了状態 | `cycles_detected`、`error_type` |
+| 処理量 | `reached_nodes`、`returned_tree_nodes`、`returned_limits`、`returned_targets`、`uncovered_routes`、`node_count`、`relation_count`、`limit_count` |
+| 完了状態 | `cycles_detected`、`import_state`、`error_type` |
 
 `duration_ms`は正の処理時間がある場合だけ出力します。
 件数フィールドは0の場合に省略するため、ログ集計では省略を0として扱います。
 
 ジョブ名、完全パス、検索の`query`、`evidence`、入力資料の内容は、既定ログへ出力しません。
+スナップショット取込では`operation=snapshot_import`に固定し、受信開始から非同期処理の完了までを一件の完了ログとして記録します。
+このログは、上表の要求識別、プロセスとデータ、取込件数、完了状態の項目を使用し、失敗時だけ`error_type`を記録します。
 完全一致検索では`operation`を`target_search`に固定し、`returned_targets`へ返却件数を記録します。
 後続リミット取得では`operation`を`downstream_limit_analysis`に固定し、到達ノード、返却ツリーノード、返却リミット、循環、リミット未通過経路の件数を記録します。
 `error_type=analysis-timeout`は、後続リミット取得が時間上限を超えた場合または要求がキャンセルされた場合を表し、部分結果が返されたことを意味しません。
@@ -189,8 +214,8 @@ MVPは専用のメトリクスexporterと`/metrics`エンドポイントを実�
 
 | 指標名 | 構造化ログからの導出方法 |
 |---|---|
-| `snapshot_import_duration_seconds` | 取込を表す`operation`の`duration_ms`を1,000で割る |
-| `snapshot_import_failures_total` | 取込を表す`operation`で`error_type`がある完了ログを数える |
+| `snapshot_import_duration_seconds` | `operation=snapshot_import`の`duration_ms`を1,000で割る |
+| `snapshot_import_failures_total` | `operation=snapshot_import`かつ`import_state=failed`の完了ログを数える |
 | `target_lookup_duration_seconds` | `operation=target_search`の`duration_ms`を1,000で割る |
 | `limit_analysis_duration_seconds` | `operation=downstream_limit_analysis`の`duration_ms`を1,000で割る |
 | `limit_analysis_reached_nodes` | `operation=downstream_limit_analysis`の`reached_nodes`を集計する |

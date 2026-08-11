@@ -129,6 +129,28 @@ func TestStateTransitionsAndSingleImport(t *testing.T) {
 	}
 }
 
+func TestCurrentGenerationDoesNotAcquireSearchReference(t *testing.T) {
+	directory := t.TempDir()
+	storage := newTestStore(t, directory)
+	if generation, ok := storage.CurrentGeneration(); ok || generation != (Generation{}) {
+		t.Fatalf("empty CurrentGeneration() = %#v, %t", generation, ok)
+	}
+	activateValue(t, storage, "current")
+
+	generation, ok := storage.CurrentGeneration()
+	if !ok || generation.SnapshotID != "current" {
+		t.Fatalf("CurrentGeneration() = %#v, %t", generation, ok)
+	}
+	activateValue(t, storage, "next")
+	files, err := filepath.Glob(filepath.Join(directory, "generation-*.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(files) != 1 {
+		t.Fatalf("generation files = %v, want old generation released without an Acquire reference", files)
+	}
+}
+
 func TestAcquireKeepsOldDatabaseUntilReleaseAfterSwitch(t *testing.T) {
 	directory := t.TempDir()
 	storage := newTestStore(t, directory)

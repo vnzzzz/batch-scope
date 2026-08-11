@@ -37,8 +37,10 @@ description: ジョブマネージャーの定義をBatchScopeの入力形式へ
 8. 根拠がないノード、依存関係、リミットを`confirmed`として生成しない。
 9. JSON Schemaに従って`nodes.ndjson`と`relations.ndjson`を生成する。
 10. JSON形式と参照関係を検査し、`manifest.json`を生成してアーカイブへまとめる。
-11. `POST /v1/snapshot-imports`でアーカイブを送信する。
-12. 取込状況を確認し、成功後に`GET /v1/snapshots/current`で`snapshotId`を確認する。
+11. `Content-Type: application/vnd.batchscope.snapshot+gzip`を指定し、`POST /v1/snapshot-imports`でアーカイブを送信する。
+12. `202 Accepted`の`Location`が示す取込状況URIを、`state=succeeded`になるまで確認する。
+    `state=failed`になった場合は、取込リソースの`error`を確認して取込を終了する。
+13. `GET /v1/snapshots/current`で有効な世代の`snapshotId`と件数を確認する。
 
 専用のBatchScope CLIは前提にしない。
 検査、梱包、送信には、利用環境の`jq`、`tar`、`curl`などを使う。
