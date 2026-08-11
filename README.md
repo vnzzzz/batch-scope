@@ -23,7 +23,7 @@ GitHub Releaseの単体バイナリを使う場合は、アーカイブを展開
 ./batchscope serve
 ```
 
-起動後は `http://127.0.0.1:8080/docs` でAPIドキュメントを確認できます。実際のスナップショットとAPI利用例は[デモ](docs/development/demo.md)を参照してください。
+起動後は `http://127.0.0.1:8080/docs` でAPIドキュメントを確認できます。詳しい利用例や仕様は下のドキュメント一覧から参照してください。
 
 ## Public Skill
 
