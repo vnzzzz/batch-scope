@@ -17,10 +17,10 @@ make smoke
 
 `make smoke`は一時的にBatchScopeを起動し、デモスナップショットの取込、`JOB-A`の検索、後続リミット解析までを実行して結果を要約します。
 
-APIを手動で試す場合は、まず別のターミナルでBatchScopeを起動します。
+APIを手動で試す場合は、まず別のターミナルで空のデータディレクトリを使ってBatchScopeを起動します。
 
 ```bash
-go run ./cmd/batchscope serve
+go run ./cmd/batchscope serve -data-dir "$(mktemp -d)"
 ```
 
 次にデモスナップショットを取り込み、検索できる状態になるまで待ってからAPIを呼び出します。
