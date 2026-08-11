@@ -85,7 +85,7 @@ release-artifacts: ## [Dev Container/CI] GitHub Releasesへ登録するアーカ
 	./scripts/build-release-artifacts.sh "$(VERSION)" "$(COMMIT)" dist
 
 release-artifacts-check: ## [Dev Container/CI] 作成済みRelease成果物の構成と内容を検査する
-	./scripts/check-release-artifacts.sh "$(VERSION)" dist
+	bash ./scripts/check-release-artifacts.sh "$(VERSION)" dist
 
 check-docker:
 	@command -v docker >/dev/null 2>&1 || { echo 'Dockerを利用できるホスト上で実行してください。Dev ContainerにはDocker CLIとソケットを追加していません。' >&2; exit 1; }
