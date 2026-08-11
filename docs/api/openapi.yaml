@@ -8,6 +8,9 @@ components:
         name:
           type: string
         type:
+          enum:
+            - management_unit
+            - job_network
           type: string
       required:
         - id

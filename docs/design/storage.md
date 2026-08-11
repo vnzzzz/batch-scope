@@ -88,8 +88,16 @@ CREATE INDEX idx_limit_elapsed ON limit_fact(kind, duration_seconds);
 
 ## 完全一致検索の前処理
 
-ID、名前、パスの比較前の処理と検索方式は[API仕様の対象検索](api.md#対象の検索)で定めます。
-SQLiteには、同じ処理を取込時に適用した`name_normalized`と`path_normalized`を保存します。
+完全一致検索では、取込時と検索時に同じ正規化を適用します。
+実装上の正本は`internal/normalize`です。
+
+| 検索対象 | 保存と検索の規則 |
+|---|---|
+| ID | 入力された文字列を変更せず`node_id`へ保存し、検索値も変更せず比較する |
+| 名前 | Unicode NFKC、前後空白の除去、Unicodeケースフォールディングを適用し、`name_normalized`へ保存する |
+| パス | Unicode NFKCと前後空白の除去を適用し、`path_normalized`へ保存する。大文字と小文字は区別する |
+
+名前とパスの検索値には、保存時と同じ正規化を適用してから比較します。
 
 ## 依存関係の重複判定
 

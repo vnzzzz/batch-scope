@@ -42,8 +42,6 @@ func TestTargetsRejectInvalidParameters(t *testing.T) {
 	a := newTestApp(t)
 	for _, path := range []string{
 		"/v1/targets",
-		"/v1/targets?query=",
-		"/v1/targets?query=%20%20%09",
 		"/v1/targets?query=JOB&type=management_unit",
 	} {
 		recorder := serveRequest(a, path)
@@ -54,6 +52,26 @@ func TestTargetsRejectInvalidParameters(t *testing.T) {
 			t.Errorf("%s type = %v", path, body["type"])
 		}
 	}
+}
+
+func TestTargetsAcceptEmptyAndWhitespaceQueries(t *testing.T) {
+	a := newTestApp(t)
+	completeAppGeneration(t, a, "snapshot-query-boundaries", []appTestNode{
+		{id: " ", typeName: "job", name: "whitespace ID", path: appString("/whitespace-id")},
+		{id: "WHITESPACE-NAME", typeName: "job", name: " ", path: appString("/whitespace-name")},
+		{id: "WHITESPACE-PATH", typeName: "job", name: "whitespace path", path: appString(" ")},
+		{id: "EMPTY-PATH", typeName: "job", name: "empty path", path: appString("")},
+	})
+
+	emptyQuery := serveRequest(a, "/v1/targets?query=")
+	assertStatus(t, emptyQuery, http.StatusOK)
+	assertTargetMatchedBy(t, emptyQuery, "EMPTY-PATH", "path")
+
+	whitespaceQuery := serveRequest(a, "/v1/targets?query=%20")
+	assertStatus(t, whitespaceQuery, http.StatusOK)
+	assertTargetMatchedBy(t, whitespaceQuery, " ", "id")
+	assertTargetMatchedBy(t, whitespaceQuery, "WHITESPACE-NAME", "name")
+	assertTargetMatchedBy(t, whitespaceQuery, "WHITESPACE-PATH", "path")
 }
 
 func TestTargetsMapsStoreFailureToInternalError(t *testing.T) {
@@ -269,6 +287,23 @@ func responseTargetIDs(t *testing.T, recorder *httptest.ResponseRecorder) []stri
 		ids[index] = value.(map[string]any)["id"].(string)
 	}
 	return ids
+}
+
+func assertTargetMatchedBy(t *testing.T, recorder *httptest.ResponseRecorder, targetID, matchedBy string) {
+	t.Helper()
+	for _, value := range decodeObject(t, recorder)["items"].([]any) {
+		item := value.(map[string]any)
+		if item["id"] != targetID {
+			continue
+		}
+		for _, match := range item["matchedBy"].([]any) {
+			if match == matchedBy {
+				return
+			}
+		}
+		t.Fatalf("target %q matchedBy = %v, want %q", targetID, item["matchedBy"], matchedBy)
+	}
+	t.Fatalf("target %q was not returned", targetID)
 }
 
 func appString(value string) *string {

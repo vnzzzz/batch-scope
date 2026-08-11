@@ -19,7 +19,7 @@ type Node struct {
 // Ancestor は対象ノードの親子階層を構成する祖先の公開表現である。
 type Ancestor struct {
 	ID   string `json:"id"`
-	Type string `json:"type"`
+	Type string `json:"type" enum:"management_unit,job_network"`
 	Name string `json:"name"`
 }
 

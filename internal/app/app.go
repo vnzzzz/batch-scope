@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
-	"strings"
 	"time"
 
 	"batchscope/internal/observability"
@@ -77,9 +76,17 @@ type statusOutput struct {
 }
 
 type targetsInput struct {
-	Query     string   `query:"query" doc:"Exact ID, name, or full path to search for"`
-	Types     []string `query:"type,explode" doc:"Target type filter; may be repeated" enum:"job,job_network"`
-	RequestID string   `header:"X-Request-Id" doc:"Request identifier used in structured logs"`
+	Query         string   `query:"query" doc:"Exact ID, name, or full path to search for"`
+	Types         []string `query:"type,explode" doc:"Target type filter; may be repeated" enum:"job,job_network"`
+	RequestID     string   `header:"X-Request-Id" doc:"Request identifier used in structured logs"`
+	queryProvided bool
+}
+
+// Resolveは、Humaのパラメーター束縛では区別できないqueryの未指定と指定された空文字を区別する。
+func (input *targetsInput) Resolve(ctx huma.Context) []error {
+	requestURL := ctx.URL()
+	input.queryProvided = requestURL.Query().Has("query")
+	return nil
 }
 
 type targetsResponse struct {
@@ -291,7 +298,12 @@ func (a *App) targets(ctx context.Context, input *targetsInput) (*targetsOutput,
 		}
 	}
 
-	types, problem := targetTypes(input.Query, input.Types)
+	if !input.queryProvided {
+		errorType = "invalid-request"
+		return nil, InvalidRequestProblem("query is required")
+	}
+
+	types, problem := targetTypes(input.Types)
 	if problem != nil {
 		errorType = "invalid-request"
 		return nil, problem
@@ -322,10 +334,7 @@ func (a *App) targets(ctx context.Context, input *targetsInput) (*targetsOutput,
 	}}, nil
 }
 
-func targetTypes(query string, requested []string) ([]string, *huma.ErrorModel) {
-	if strings.TrimSpace(query) == "" {
-		return nil, InvalidRequestProblem("query must not be empty or whitespace")
-	}
+func targetTypes(requested []string) ([]string, *huma.ErrorModel) {
 	if len(requested) == 0 {
 		return []string{"job", "job_network"}, nil
 	}
