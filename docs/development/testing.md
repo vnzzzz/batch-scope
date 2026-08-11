@@ -1,154 +1,78 @@
-# テストと受入条件
+# テスト戦略
 
-## APIと入力形式
+BatchScopeのテストは、テスト数やcoverage率ではなく、公開する入出力形式と処理中に維持する不変条件を守るために配置します。
+同じ値を複数レイヤーで確認する場合は、各レイヤーで検出するfailure modeが異なることを条件とします。
 
-- 正しいスナップショットをJSON Schemaが受け入れる。
-- 各制約を一つずつ破った入力を、JSON Schemaまたは追加検査が拒否する。
-- HumaによるAPI実装後は、OpenAPIをGoコードから生成できる。
-- `SnapshotInfo`自体は非nullとし、`/v1/status`の`snapshot`だけが`SnapshotInfo`または`null`、`/v1/snapshots/current`の200が非nullの`SnapshotInfo`をOpenAPIで表現する。
-- `POST /v1/snapshot-imports`の同期エラーが既存の`ErrorModel`を参照し、取込リソースの`ImportFailure`と混同されない。
-- 同じ入力と検索条件に対する配列の順序が変わらない。
-- すべてのエラーがRFC 9457のメディアタイプと必須項目を使う。
-- 完全一致検索が最大1,000件を返し、超過時に`truncated=true`となる。
-- 後続検索の公開パラメーターが`targetId`と`includeEvidence`に限定される。
+## 守る対象
 
-## スナップショット取込API
+### 受入済みスナップショットの完全な検索
 
-- リクエストボディを最後まで一時ファイルへ保存してから`202 Accepted`を返し、その後の取込を非同期で続ける。
-- `202 Accepted`が本文を持たず、取込状況URIを`Location`、確認間隔を`Retry-After: 2`で返す。
-- 進行中の取込がある場合、二件目を`snapshot-import-in-progress`の`409`としてリクエストボディを読む前に拒否する。
-- 実際のTCP接続でchunked bodyの送信を途中停止した場合、10分の受信deadlineで読み取りを中断し、`invalid-request`の`400`を返す。
-- 受信deadlineまたは受信エラーで取込予約と一時ファイルを解放し、次の取込を開始でき、同期読み取りが`App.Close()`を無期限に止めない。
-- 取込リソースが定めた順序で遷移し、`snapshotId`は判明後、`error`は`failed`の場合だけ返す。
-- 同じ`snapshotId`と展開後内容の再送ではSQLiteを再構築せず`succeeded`とし、tarまたはgzipの表現差を競合としない。
-- 同じ`snapshotId`で展開後内容が異なる場合、取込リソースを`failed`として`snapshot-id-conflict`を記録し、現在世代を維持する。
-- 圧縮後または展開後のサイズ超過を`snapshot-too-large`、ノード数、relation数、リミット設定数などの対応規模超過を`snapshot-capacity-exceeded`として区別する。
-- 初回取込前の`GET /v1/snapshots/current`と、更新取込中または失敗後の`GET /v1/status`および`GET /v1/snapshots/current`が現在世代を正しく表す。
-- 世代切替と`GET /v1/status`を並行しても、`state`と`snapshot`をStoreに同時に存在した組合せで返す。
-- 進行中の取込を完了済み履歴の削除対象とせず、完了済みは最新16件だけをFIFOで保持し、破棄後は`import-not-found`を返す。
-- `operation=snapshot_import`の完了ログへ取込識別子、世代、件数、状態、処理時間、失敗種別を記録し、ジョブ名、完全パス、入力内容を記録しない。
-- 切替後の旧世代の後始末警告を`succeeded`として扱い、切替前の失敗では現在世代を維持する。
+受入済みスナップショットの後続リミット取得は、検索時のdepth、state、relation、limit、tree nodeの件数を理由に部分結果へ打ち切りません。
+対象、配下、後続の全リミット、経路の接続、循環、リミット未通過経路を、[後続リミットの検索](../design/dependency-analysis.md)の規則に従って返します。
 
-## 対象の完全一致検索
+キャンセル、deadline超過、SQLiteエラー、内部不整合では、蓄積済みの結果を`200 OK`として返しません。
+HTTP層は[API仕様](../design/api.md#エラー)に定めたProblem Detailsへ変換します。
 
-- ID、名前、完全パスの各項目との完全一致を返す。
-- 名前ではUnicode NFKC、前後空白の除去、Unicodeケースフォールディングを適用する。
-- パスではUnicode NFKCと前後空白の除去を適用し、大文字と小文字は区別する。
-- IDでは表記幅と大文字小文字を含めて入力値を変更しない。
-- `query`を省略した場合だけ`invalid-request`を返し、指定された空文字と空白のみの値を検索する。
-- 空文字のパス、空白のみのID、名前、パスが、それぞれの正規化規則に従って一致する。
-- `type`を省略した場合は`job`と`job_network`だけを対象とし、繰り返し指定と不正値を検査する。
-- 同じノードが複数項目で一致した場合も一件だけ返し、`matchedBy`を`id`、`name`、`path`の順にする。
-- 一致項目の優先度、完全パス、IDの順で同じ入力に同じ結果順を返す。
-- `ancestorPath`を`parent_id`だけから最上位の祖先、直近の親の順に組み立て、依存relationを含めない。
-- 1,001件目がある場合は先頭1,000件と`truncated=true`を返す。
-- スナップショット未投入時は`snapshot-not-loaded`を返す。
-- SQLite切替と複数の読み取り接続による並行検索でも、`snapshotId`と検索結果を同じ世代から返す。
-- 構造化ログへ`snapshot_id`、`duration_ms`、`returned_targets`を記録し、ジョブ名、完全パス、`query`を記録しない。
+### 検索世代の一貫性
 
-## 後続リミット取得API
+一回の検索は、SQLiteと検索世代メタデータを同じ世代、同じ参照寿命で扱います。
+世代切替前に開始した検索は、処理を終えて参照を解放するまで旧SQLiteを保持します。
+新しい世代の準備または切替に失敗した場合は、現在世代を検索可能な状態で維持します。
 
-- トップレベルの公開項目と各DTOの必須項目を[API仕様](../design/api.md#後続リミットの取得)と一致させ、内部距離や部分成功用の項目を公開しない。
-- `includeEvidence`の切替を、treeの通常接続、`hiddenConnections`、cycleの`route`にあるrelationで一貫して適用し、limit factへ適用しない。
-- `max_elapsed`の整数秒を同じISO 8601 Durationへ正規化する。
-- デモスナップショットを実際に取り込み、固定した`bootId`以外の成功レスポンス全体を`examples/demo/responses/downstream-limit-analysis.json`と比較する。
-- 同じ世代と検索条件では、JSON化後のレスポンスを含めて同じ順序と内容を返す。
-- SQLite切替と並行検索でも、`snapshotId`と対象、リミット、経路を同じ世代から返す。
-- スナップショット未投入、対象なし、不正な要求、内部エラーをProblem Detailsへ写像し、部分成功を返さない。
-- 10秒のdeadline超過と要求のキャンセルを`analysis-timeout`へ写像し、蓄積済みの結果を200で返さない。
-- deadlineによる終了後に検索世代の参照を解放し、正常な要求は同じ全件解析結果を返す。
+### スナップショット取込の資源管理
 
-## 親子関係
+取込予約はrequest bodyを読む前に確保し、競合する取込のbodyを消費せずに拒否します。
+受信失敗と受信deadlineでは、socket readを中断し、取込予約と一時ファイルを解放します。
+実際のsocket readの中断は、`httptest`の直接呼出しではなく実TCPで検査します。
 
-次の入力を確認します。
+### 完全一致検索
 
-- ルートが一件の階層
-- ルートが複数件の階層
-- 入れ子になった管理単位
-- 深いジョブネット階層
-- 許可されない親種別
-- 存在しない親
-- 複数の親を指定した入力
-- 親子関係の循環
+ID、名前、パスの正規化規則と検索結果の順序は、[SQLiteの完全一致検索の前処理](../design/storage.md#完全一致検索の前処理)と[API仕様](../design/api.md#対象の検索)を正本とします。
+空文字、空白のみの値、最大返却件数、`truncated`、同一ノードの重複排除を境界値として検査します。
 
-複数親と親子関係の循環は、取込時に拒否します。
+### 入出力形式
 
-## 依存関係
+取込データは`schema/`のJSON Schemaと[取込データの形式](../design/canonical-snapshot.md)に定めた単体制約とレコード間制約を検査します。
+HTTPテストはstatus code、Problem Details、header、公開DTOの必須項目と境界値を検査します。
 
-次の経路を確認します。
+生成したOpenAPIは実装と一致させます。
+デモレスポンスは、デモスナップショットを実際に取り込んだHTTPレスポンス全体と一致させます。
 
-- ジョブ定義に記載された直列の先行後続関係
-- ファイルを介する依存関係
-- ファイルパターンを介する依存関係
-- 別ジョブの状態を確認するジョブ
-- 外部ベンダーから届くイベント
-- サーバレス処理の完了イベント
-- 同じノード間にある複数の依存関係
-- 複数経路から合流するノード
-- ファイルなどを介する循環
-- 循環に入らない後続枝
-- 2,000本を超える直列経路の末端まで到達すること
-- 高分岐ですべての枝へ到達すること
-- 合流後に同じノードの外向きrelationを一度だけ読むこと
-- 大きなSCC、複数の独立したSCC、自己ループを検出すること
-- 依存relationとscope遷移をまたぐ循環をSCCとして検出すること
-- 親子のscope遷移だけでは循環として扱わないこと
-- 対象ジョブネットの全配下と、深い入れ子のジョブネットを探索すること
-- 探索途中で到達したジョブネットの全配下と、配下から外へ出る依存関係を探索すること
-- scope遷移を依存関係として結果へ混入させないこと
-- 探索しないノード種別への到達を意味上の端点として扱うこと
-- キャンセルとDBエラーで部分成功を返さないこと
-- 入力の登録順を変えても結果順が変わらないこと
+### 情報の非公開
 
-## リミットの抽出と閲覧順
+既定ログには、検索query、ジョブ名、完全パス、evidence、入力内容を出しません。
+正常系と入力エラーの両方で、構造化ログに必要な識別子と件数だけが残ることを検査します。
 
-- `target`では、指定したジョブ自身のリミットを全件返す。
-- `contained`では、指定したジョブネットの配下ジョブに設定されたリミットを全件返す。
-- `downstream`では、依存関係をたどって見つかったリミットを全件返す。
-- ジョブネット自体にリミットを設定した入力を拒否する。
-- 同じタイムゾーンの`finish_by`を、`businessDayOffset`、`localTime`、設定先ノードID、リミットIDの順に返す。
-- 異なるタイムゾーンを別のグループへ分け、タイムゾーンの順に返す。
-- `max_elapsed`を`duration`、設定先ノードID、リミットIDの順に返す。
-- `raw`を設定先ノードID、リミットIDの順に返す。
-- 同じリミットIDを一件にまとめる。
-- 同じ入力と検索条件に対し、各区分内の閲覧順が変わらない。
-- リミットがない終端と循環を`uncoveredRoutes`へ含める。
+## テストレイヤー
 
-## 経路ツリー
+| レイヤー | 主なfailure mode |
+|---|---|
+| pure functionまたはunit test | 正規化、変換規則、同じ入力に対する並び順が変わる |
+| storeまたはintegration test | SQLiteの制約、transaction、世代の参照寿命、並行切替でデータが混在する |
+| HTTP integration test | status code、Problem Details、DTO、header、cancelの写像が公開仕様と異なる |
+| 実TCP test | upload deadlineがsocket readを中断せず、取込資源を保持し続ける |
+| demo response test | 取込から公開DTOまでの代表フローで、個別レイヤーの組合せが崩れる |
+| local smoke test | 実プロセスの起動、公開ポート、公開フローの接続が成立しない |
 
-- [後続リミットの検索](../design/dependency-analysis.md#経路ツリー)で定めた代表経路の選択
-- `alternatePathCount`
-- 各リミットの`treeNodeId`が設定先のツリーノードを参照すること
-- ルート以外のツリーノードに`viaRelations`が含まれること
-- `includeEvidence=false`でも`kind`、`origin`、`certainty`が返ること
-- `includeEvidence=true`の場合だけ`evidence`が返ること
-- 別経路との合流を循環として扱わないこと
-- 循環に入らない枝を調べ続けること
-- 循環の`nodes`と一周分の表示経路が入力順に依存せず、各接続がrelationまたはscope遷移を保つこと
-- `uncoveredRoutes`が終端、循環、探索対象外の種別を区別し、その`treeNodeId`が判定に使ったリミット未通過経路の境界を参照すること
-- 長い直列経路を省略しても、`hiddenConnections`が親から表示ノードまでの全接続を順番どおりに保持すること
-- `hiddenNodeIds`が1,000件を上限とし、超過時に`hiddenNodeIdsTruncated=true`となること
-- `hiddenConnections`が`hiddenNodeIds`の表示上限とは独立し、1,000接続を超えても切り詰められないこと
-- 圧縮した接続を`hiddenConnections`と`viaRelations`またはscope遷移の両方で重ねて表さないこと
+同じ仕様を下位レイヤーとHTTPレイヤーで検査する場合、下位レイヤーは規則そのもの、HTTPレイヤーは公開形式への写像を担当します。
+同じ入力、同じfixture、同じassertionで同じ不具合を検出するテストは統合します。
 
-## 取込の安全性
+private helperの配置、内部の呼出順、複数の不正入力がある場合の未規定なエラー優先順は固定しません。
+過去の実装を削除した事実だけを守るテストも置きません。
 
-- 圧縮後500 MiBの境界値
-- 展開後4 GiBの超過
-- NDJSONの一行サイズ超過
-- 親ディレクトリを指すパス
-- シンボリックリンクとハードリンク
-- アーカイブ内の同名エントリ
-- アップロードの中断
-- 不正なUTF-8
-- 不正なJSON
-- `manifest.json`のノード数またはrelation数が初期対応規模を超えた場合に、NDJSON走査前に拒否すること
-- `manifest.json`が実件数を少なく宣言した場合も、ノードまたはrelationの有効行が初期対応規模を超えた時点で走査を停止すること
-- リミット設定の総数が初期対応規模を超えた最初の設定で走査を停止し、以後の設定を保持しないこと
-- ジョブネット階層深さが初期対応規模を超えた場合に、検査工程で拒否すること
-- 検索時に展開するrelationとscope遷移を含む探索グラフのSCCサイズが初期対応規模を超えた場合に、検査工程で拒否すること
-- 取込失敗時に現在のスナップショットを維持すること
-- 検索中にSQLiteを切り替えられること
+## 通常検査
+
+実行環境：Dev ContainerまたはCI
+
+```bash
+make verify
+```
+
+`make verify`はGoのformat、shell scriptの構文、`go vet`、race detector付きのテスト、生成OpenAPIと実装の差分を検査します。
+通常のテストは、初期対応規模の受入境界と軽量な病理グラフを件数の合否に使いますが、実行時間やメモリ量の性能閾値を合否に使いません。
+
+Issue #40で追加するlocal smoke testは、実プロセスを起動した公開フローを確認する役割を持ちます。
+実装後もunit testやintegration testの代替にはせず、`make verify`との役割を分けます。
 
 ## 性能測定用データ
 
@@ -161,12 +85,6 @@
 | Medium | 100,000ノード、300,000 relation | `NET-TARGET`、`JOB-TARGET` | 8 GiB以上の利用可能メモリを目安とする専用環境で測定する |
 | Scale | 1,000,000ノード、3,000,000 relation | `NET-TARGET`、`JOB-TARGET` | Mediumより大きい専用環境で上限値の判断材料を測定する |
 | Pathological | 個別の軽量ケース | ケースごとの一対象 | Dev ContainerとCIで規模以外の形状を検査する |
-
-Small、Medium、Scaleは、管理単位と入れ子のジョブネット、ジョブ、分岐、合流、循環、リミット、圧縮対象の直列経路を同じ生成規則で含みます。
-`file`、`file_pattern`、`job_status`、`external_event`は、ジョブが`produces`した後に別のジョブへ到達する中間ノードとして使い、中間ノードの先にあるリミット設定済みジョブとその後続までを探索する経路を持ちます。
-ジョブネットとジョブを起点とする二つの解析対象により、`target`、`contained`、`downstream`を検査します。
-
-Pathologicalは、`long-chain`、`high-fan-out`、`high-fan-in`、`large-and-multiple-scc`、`cycle-with-exit`、`deep-nested-networks`、`reached-network-with-outbound`、`many-limits`、`parallel-relations`、`long-compression`、`covered-and-uncovered-merge`、`uncovered-cycle-and-endpoint`、`large-pathtree-scc`を個別に生成します。
 
 `CapacityBoundary`はノード数、relation数、リミット設定数を受入上限へ合わせた有向非巡回グラフを生成します。
 `DenseSCC`はringへ弦を加え、指定したサイズのSCCとその内外のリミット設定を生成します。
@@ -213,18 +131,10 @@ SCCサイズの測定では、`DenseSCC(size, size)`を使いました。
 内部処理の中央値1秒以下を判定基準とし、測定点のうちこの基準を満たす最大の3,000ノードをSCCサイズの受入上限に採用します。
 SCCサイズは取込時に検査し、受入済みスナップショットの検索は処理量によって打ち切りません。
 
-## 対応規模と並行負荷
-
-Issue #14で測定した単一検索の内部処理（`Traverse`、`Scan`、`Build`）の中央値に基づき、Smallをノード数とrelation数の受入上限に採用します。
-規模別の中央値は[性能測定結果](performance-measurement.md#中間規模)を参照してください。
-
-複数読み取り接続における内部処理のp95に基づき、検索用SQLiteの最大接続数と想定同時検索数を4にします。
-並行度別のp95は[性能測定結果](performance-measurement.md#sqlite接続方式の比較)を参照してください。
-DTO組立てとJSON化を含む後続リミット取得の最終p95は[後続リミット取得のHTTP性能測定結果](limit-analysis-performance.md)で確認します。
-リミット設定の総数5,000件、SCCサイズ3,000ノード、ジョブネット階層深さ64階層も取込時に検査し、測定した入力から一つの要素だけが無制限に増える条件を受け入れません。
-リミット設定数とSCCサイズの測定結果は[Issue #32の対応規模境界](#issue-32の対応規模境界)を参照してください。
-
 ## 性能測定
+
+性能測定は通常検査から分離し、専用コマンドがJSONの測定結果を出力します。
+SmallとPathologicalは開発環境で形状別の傾向を確認し、MediumとScaleは必要なメモリを確保した専用環境で実行します。
 
 `cmd/perf-measure`は取込と静的解析を同じプロセスで実行し、JSONを標準出力へ出します。
 出力は設定、実行環境、測定方法、入力件数とアーカイブのSHA-256、各実行の値、`min`、`median`、`p95`、`max`の要約を含みます。
@@ -301,31 +211,19 @@ OSのページキャッシュは既存の並行負荷測定と同様に保持し
 go test -run TestSearchKeepsOneSnapshotGenerationAcrossConcurrentSwitch -count=1 -v ./internal/importer
 ```
 
-## CIと専用測定環境
+測定条件と採用済みの性能値は[性能測定結果](performance-measurement.md)、[完全一致検索のHTTP性能測定結果](target-search-performance.md)、[後続リミット取得のHTTP性能測定結果](limit-analysis-performance.md)を参照します。
+通常テストへ性能閾値を追加せず、性能判断は再現可能な測定結果にもとづいて行います。
 
-通常CIの`make verify`は、Smallと全Pathologicalケースに加え、リミット設定数とSCCサイズの受入境界について、取込から経路ツリー作成までの完了、上限超過の拒否、拒否時の世代維持を検査します。
-`make verify`は性能値を合否判定に使わず、`perf-*`ターゲットも呼び出しません。
+## テストデータの正本
 
-Mediumの完全な静的解析は、8 GiB以上の利用可能メモリを目安とする専用環境で実行します。
-Scaleの完全な測定に必要なメモリは未測定であり、Mediumを完走できる環境で段階的に確認します。
-測定済み環境と結果は[性能測定結果](performance-measurement.md)を参照してください。
+取込形式の境界値は`schema/`と[取込データの形式](../design/canonical-snapshot.md)を正本とします。
+JSON Schemaの制約をテスト専用定数へ複製しません。
 
-## 受入条件
+利用者へ示す代表データは`examples/demo/snapshot/`、代表レスポンスは`examples/demo/responses/`を正本とします。
+デモレスポンスは手で組み立てず、実HTTP DTOとの比較で維持します。
 
-- 初期対応規模の入力で、内部の`Traverse`、`Scan`、`Build`を完了できることをIssue #32の性能測定で確認する。
-- 初期対応規模を超えた入力を取込時に拒否し、受入済み入力の検索を処理量によって打ち切らない。
-- 公開HTTPの完全一致検索がp95 200 ms以下であることを、[完全一致検索のHTTP性能測定結果](target-search-performance.md)で確認する。
-- 公開HTTPの後続リミット取得がp95 1秒以下であることを、[後続リミット取得のHTTP性能測定結果](limit-analysis-performance.md)で確認する。
-- 循環を含む入力で、処理が終わらなくなったりプロセスが停止したりしない。
-- 各リミットの閲覧順を、レスポンス内の項目から説明できる。
-- 取込失敗によって、現在使用中のSQLiteが破損または置換されない。
+規模とグラフ形状の共通fixtureは`internal/testsupport/graphgen`を正本とします。
+Small、Medium、Scale、Pathological、受入境界の生成規則と期待値を、利用側のテストへ複製しません。
 
-## 公開用バイナリ
-
-- `scripts/build-release-artifacts.sh`の構文を`make verify`で確認する。
-- Linux amd64、Linux arm64、macOS amd64、macOS arm64の成果物名が重複しない。
-- バイナリへ指定したバージョンとコミットが埋め込まれる。
-- 各アーカイブに`README.md`と`LICENSE`が含まれる。
-- `checksums.txt`がすべてのアーカイブを含む。
-- `LICENSE`がない状態では公開処理を開始しない。
-- GitHub ReleasesのWorkflowは、`main`へ含まれないコミットのタグを拒否する。
+個別failure modeに必要な最小データは、その不具合を最も低いレイヤーで再現するテストの近くへ置きます。
+共通化によって入力と期待値の関係が読めなくなる場合は、無理に共通fixtureへ移しません。

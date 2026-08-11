@@ -167,7 +167,7 @@ func TestScanBatchesAllReachedIDsAndDeduplicatesLimits(t *testing.T) {
 		limits = append(limits, rawLimit("LIMIT-"+id, id, fmt.Sprintf("raw-%d", index)))
 		reachedNodes = append(reachedNodes, reached(id, "job", traversal.MembershipDownstream))
 	}
-	// 同じIDを別バッチでも問い合わせ、同じlimit_idの行を再取得する状況を作る。
+	// 同じ到達先がバッチ境界をまたいでも、同一リミットを重複して返さない。
 	reachedNodes = append(reachedNodes, reached("JOB-0000", "job", traversal.MembershipDownstream))
 
 	got, err := Scan(
@@ -186,7 +186,7 @@ func TestScanBatchesAllReachedIDsAndDeduplicatesLimits(t *testing.T) {
 	}
 }
 
-func TestScanCachesDeepScopeRootsForEveryLimit(t *testing.T) {
+func TestScanFindsScopeRootsForEveryLimitInDeepHierarchy(t *testing.T) {
 	const depth = 500
 
 	nodes := make([]testNode, 0, depth*2)
@@ -216,7 +216,10 @@ func TestScanCachesDeepScopeRootsForEveryLimit(t *testing.T) {
 	}
 
 	result := traversal.Result{Nodes: reachedNodes, ScopeEdges: scopeEdges}
-	first, firstReferences := runScanWithStats(t, nodes, limits, result)
+	first, err := Scan(context.Background(), openTestDB(t, nodes, limits), result)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if total, count := first.Downstream.Raw.Total, len(first.Downstream.Raw.Items); total != depth || count != depth {
 		t.Fatalf("downstream raw total = %d, items = %d, want both %d", total, count, depth)
 	}
@@ -229,25 +232,20 @@ func TestScanCachesDeepScopeRootsForEveryLimit(t *testing.T) {
 			t.Errorf("item %d ScopeRoot = %#v, want %s", index, item.ScopeRoot, rootID)
 		}
 	}
-	if maxLinearReferences := 2 * len(scopeEdges); firstReferences > maxLinearReferences {
-		t.Errorf("scope parent references = %d, want at most twice the %d scope edges", firstReferences, len(scopeEdges))
-	}
-
 	slices.Reverse(nodes)
 	slices.Reverse(limits)
 	slices.Reverse(reachedNodes)
 	slices.Reverse(scopeEdges)
-	second, secondReferences := runScanWithStats(
-		t,
-		nodes,
-		limits,
+	second, err := Scan(
+		context.Background(),
+		openTestDB(t, nodes, limits),
 		traversal.Result{Nodes: reachedNodes, ScopeEdges: scopeEdges},
 	)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if !reflect.DeepEqual(first, second) {
 		t.Errorf("result differs by insertion order:\nfirst  = %#v\nsecond = %#v", first, second)
-	}
-	if secondReferences != firstReferences {
-		t.Errorf("reversed scope parent references = %d, want %d", secondReferences, firstReferences)
 	}
 }
 
@@ -493,21 +491,6 @@ func openIncompleteTestDB(t *testing.T) *sql.DB {
 		t.Fatal(err)
 	}
 	return db
-}
-
-func runScanWithStats(
-	t *testing.T,
-	nodes []testNode,
-	limits []testLimit,
-	result traversal.Result,
-) (Result, int) {
-	t.Helper()
-	state := newScanState(context.Background(), openTestDB(t, nodes, limits), result)
-	got, err := state.run(result)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return got, state.scopeParentReferenceCount
 }
 
 func reached(id, nodeType string, membership traversal.Membership) traversal.Reached {

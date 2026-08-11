@@ -26,7 +26,7 @@ import (
 	"batchscope/internal/traversal"
 )
 
-func TestRunImportsDemoSnapshotWithIndexes(t *testing.T) {
+func TestRunImportsDemoSnapshotWithGenerationMetadata(t *testing.T) {
 	archive := demoArchive(t)
 	workspace := t.TempDir()
 	storage := newImporterTestStore(t, filepath.Join(workspace, "data"))
@@ -49,82 +49,6 @@ func TestRunImportsDemoSnapshotWithIndexes(t *testing.T) {
 		generation.NodeCount != 19 || generation.RelationCount != 19 || generation.LimitCount != 5 || generation.MaxSCCNodes != 6 ||
 		len(generation.Fingerprint) != 64 {
 		t.Fatalf("generation metadata = %#v", generation)
-	}
-
-	rows, err := db.Query(`SELECT name FROM sqlite_master
-        WHERE type = 'index' AND name NOT LIKE 'sqlite_%' ORDER BY name`)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer rows.Close()
-	var indexes []string
-	for rows.Next() {
-		var name string
-		if err := rows.Scan(&name); err != nil {
-			t.Fatal(err)
-		}
-		indexes = append(indexes, name)
-	}
-	wantIndexes := []string{
-		"idx_limit_elapsed", "idx_limit_finish", "idx_limit_node", "idx_node_id", "idx_node_name_exact",
-		"idx_node_parent", "idx_node_path_exact", "idx_relation_from", "idx_relation_to",
-	}
-	if !reflect.DeepEqual(indexes, wantIndexes) {
-		t.Fatalf("indexes = %v, want %v", indexes, wantIndexes)
-	}
-}
-
-func TestRunDemoSnapshotSupportsDownstreamLimitScan(t *testing.T) {
-	ctx := context.Background()
-	archive := demoArchive(t)
-	workspace := t.TempDir()
-	storage := newImporterTestStore(t, filepath.Join(workspace, "data"))
-	if _, err := Run(ctx, workspace, bytes.NewReader(archive), storage); err != nil {
-		t.Fatalf("Run() error = %v", err)
-	}
-
-	db, _, release, err := storage.Acquire()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer release()
-	reached, err := traversal.Traverse(ctx, db, "JOB-A")
-	if err != nil {
-		t.Fatalf("Traverse() error = %v", err)
-	}
-	got, err := limitscan.Scan(ctx, db, reached)
-	if err != nil {
-		t.Fatalf("Scan() error = %v", err)
-	}
-
-	if len(got.Downstream.FinishByGroups) != 2 {
-		t.Fatalf("finish_by groups = %#v, want two groups", got.Downstream.FinishByGroups)
-	}
-	finishGroup := got.Downstream.FinishByGroups[0]
-	finishItems := finishGroup.Items
-	if finishGroup.Total != 2 || len(finishItems) != 2 {
-		t.Fatalf("finish_by total = %d, items = %d, want both 2", finishGroup.Total, len(finishItems))
-	}
-	if ids := limitFactIDs(finishItems); !reflect.DeepEqual(ids, []string{
-		"LIMIT-JOB-C-FINISH",
-		"LIMIT-JOB-B-FINISH",
-	}) {
-		t.Errorf("finish_by IDs = %v", ids)
-	}
-	if got.Downstream.MaxElapsed.Total != 1 || got.Downstream.MaxElapsed.Items[0].Fact.ID != "LIMIT-JOB-B-ELAPSED" {
-		t.Errorf("max_elapsed = %#v, want LIMIT-JOB-B-ELAPSED", got.Downstream.MaxElapsed)
-	}
-	if total := finishGroup.Total + got.Downstream.FinishByGroups[1].Total + got.Downstream.MaxElapsed.Total + got.Downstream.Raw.Total; total != 5 {
-		t.Errorf("downstream limit total = %d, want 5", total)
-	}
-	if got.Downstream.Raw.Total != 1 || got.Downstream.Raw.Items[0].Fact.ID != "LIMIT-HIDDEN-RAW" {
-		t.Errorf("raw = %#v, want LIMIT-HIDDEN-RAW", got.Downstream.Raw)
-	}
-	if finishItems[0].ScopeRoot == nil || finishItems[0].ScopeRoot.ID != "NET-CLOSE" {
-		t.Errorf("JOB-C ScopeRoot = %#v, want NET-CLOSE", finishItems[0].ScopeRoot)
-	}
-	if finishItems[1].ScopeRoot != nil || got.Downstream.MaxElapsed.Items[0].ScopeRoot != nil {
-		t.Errorf("JOB-B ScopeRoots = finish %#v, elapsed %#v, want nil", finishItems[1].ScopeRoot, got.Downstream.MaxElapsed.Items[0].ScopeRoot)
 	}
 }
 
@@ -278,36 +202,6 @@ func TestRunFailureKeepsCurrentAndRemovesImportingDatabase(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(dataDirectory, "importing.db")); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("importing.db after failure: %v", err)
-	}
-}
-
-func TestCapacityFailureKeepsCurrentGeneration(t *testing.T) {
-	workspace := t.TempDir()
-	dataDirectory := filepath.Join(workspace, "data")
-	storage := newImporterTestStore(t, dataDirectory)
-	if _, err := Run(context.Background(), workspace, bytes.NewReader(singleNodeArchive(t, "CURRENT")), storage); err != nil {
-		t.Fatal(err)
-	}
-
-	manifest := `{"schemaVersion":"0.5","snapshotId":"too-large","generatedAt":"2026-08-10T00:00:00Z","nodeCount":10001,"relationCount":0,"producer":{"name":"test","version":"1"}}`
-	overCapacity := makeArchive(t, map[string]string{
-		"manifest.json": manifest, "nodes.ndjson": "not-json\n", "relations.ndjson": "",
-	})
-	_, err := Run(context.Background(), workspace, bytes.NewReader(overCapacity), storage)
-	var snapshotErr *snapshot.Error
-	if !errors.As(err, &snapshotErr) || snapshotErr.Kind != snapshot.ErrorCapacityExceeded {
-		t.Fatalf("Run() error = %v, want capacity error", err)
-	}
-	db, generation, release, err := storage.Acquire()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer release()
-	if got := queryValueForImporterTest(t, db); got != "CURRENT" || generation.SnapshotID != "CURRENT" {
-		t.Fatalf("active generation after capacity failure: value=%q metadata=%#v", got, generation)
-	}
-	if _, err := os.Stat(filepath.Join(dataDirectory, "importing.db")); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("importing.db after capacity failure: %v", err)
 	}
 }
 

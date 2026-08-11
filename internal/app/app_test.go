@@ -364,13 +364,6 @@ func TestProblemDetails(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			if test.problem.Type != test.wantType {
-				t.Fatalf("type = %q, want %q", test.problem.Type, test.wantType)
-			}
-			if test.problem.Status != test.wantStatus {
-				t.Fatalf("status = %d, want %d", test.problem.Status, test.wantStatus)
-			}
-
 			mux := http.NewServeMux()
 			api := buildAPI(mux, &App{})
 			huma.Register(api, huma.Operation{

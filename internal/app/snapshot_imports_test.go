@@ -452,7 +452,7 @@ func restoreSnapshotUploadDeadline(t *testing.T, deadline time.Duration) {
 
 func newTCPTestServer(t *testing.T, handler http.Handler) *httptest.Server {
 	t.Helper()
-	// 制限付きsandboxではlisten自体が拒否されるため、製品と同じTCP検査を実行できる環境だけで開始する。
+	// socket readの中断はhttptestの直接呼出しでは再現できないため、実TCPを使える環境だけで検査する。
 	listener, err := net.Listen("tcp4", "127.0.0.1:0")
 	if errors.Is(err, syscall.EPERM) {
 		t.Skip("sandbox does not permit TCP listeners")

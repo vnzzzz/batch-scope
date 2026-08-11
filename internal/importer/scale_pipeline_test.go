@@ -213,16 +213,6 @@ func assertGeneratedExpectation(t *testing.T, want graphgen.Expectation, result 
 	if got := traversalSCCs(result.Traversal); !reflect.DeepEqual(got, sccNodeIDs(want.SCCs)) {
 		t.Fatalf("traversal SCCs = %#v, want %#v", got, sccNodeIDs(want.SCCs))
 	}
-	if result.Traversal.Stats.ExpandedNodes != len(want.ReachedNodeIDs) {
-		t.Errorf("ExpandedNodes = %d, want %d", result.Traversal.Stats.ExpandedNodes, len(want.ReachedNodeIDs))
-	}
-	if result.Traversal.Stats.RelationRows != len(want.ReachedRelations) {
-		t.Errorf("RelationRows = %d, want %d", result.Traversal.Stats.RelationRows, len(want.ReachedRelations))
-	}
-	if result.Traversal.Stats.RelationQueries < 1 || result.Traversal.Stats.RelationQueries > result.Traversal.Stats.ExpandedNodes {
-		t.Errorf("RelationQueries = %d for %d uniquely expanded nodes", result.Traversal.Stats.RelationQueries, result.Traversal.Stats.ExpandedNodes)
-	}
-
 	if got := limitIDs(result.Limits); !reflect.DeepEqual(got, want.Limits) {
 		t.Fatalf("limits = %#v, want %#v", got, want.Limits)
 	}

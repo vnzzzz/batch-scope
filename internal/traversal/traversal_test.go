@@ -65,7 +65,7 @@ func TestTraverseReachesEndOfLongSerialPath(t *testing.T) {
 	}
 }
 
-func TestTraverseReachesEveryHighFanOutBranchInBatches(t *testing.T) {
+func TestTraverseReachesEveryHighFanOutBranch(t *testing.T) {
 	const branches = 1_200
 	nodes := []testNode{{id: "START", typeName: "job"}}
 	relations := make([]testRelation, 0, branches)
@@ -82,11 +82,18 @@ func TestTraverseReachesEveryHighFanOutBranchInBatches(t *testing.T) {
 	if got, want := len(result.Nodes), branches+1; got != want {
 		t.Errorf("len(Nodes) = %d, want %d", got, want)
 	}
-	if got, want := result.Stats.RelationQueries, 4; got != want {
-		t.Errorf("RelationQueries = %d, want %d", got, want)
-	}
 	if got, want := result.Stats.RelationRows, branches; got != want {
 		t.Errorf("RelationRows = %d, want %d", got, want)
+	}
+	minimumBatches := (len(result.Nodes) + queryBatchSize - 1) / queryBatchSize
+	maximumRelationQueries := minimumBatches * 2
+	// 探索の波ごとに端数バッチが生じる余裕は残すが、到達ノードごとの問い合わせは許さない。
+	// 理論最小回数の2倍ならバッチ境界の変更に耐えつつ、1ノード1 queryへの退行を区別できる。
+	if maximumRelationQueries >= len(result.Nodes) {
+		t.Fatalf("query upper bound = %d, want less than %d reached nodes", maximumRelationQueries, len(result.Nodes))
+	}
+	if got := result.Stats.RelationQueries; got > maximumRelationQueries {
+		t.Errorf("RelationQueries = %d, want at most %d", got, maximumRelationQueries)
 	}
 }
 

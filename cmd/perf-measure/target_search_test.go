@@ -70,24 +70,3 @@ func TestMeasureTargetSearchCompletesHTTPRunsAndBuildsJSON(t *testing.T) {
 		t.Fatalf("JSON configuration = %v", decoded["configuration"])
 	}
 }
-
-func TestTargetSearchDatasetKeepsDefaultSmallUnchanged(t *testing.T) {
-	baseline := graphgen.Small()
-	measured := targetSearchDataset()
-	if len(baseline.Nodes) != graphgen.SmallNodeCount || len(measured.Nodes) != graphgen.SmallNodeCount {
-		t.Fatalf("node counts = %d and %d", len(baseline.Nodes), len(measured.Nodes))
-	}
-	for index := range baseline.Nodes {
-		if baseline.Nodes[index].Path != nil {
-			t.Fatalf("baseline node %s unexpectedly has a path", baseline.Nodes[index].ID)
-		}
-		if baseline.Nodes[index].ID == "JOB-TARGET" {
-			if baseline.Nodes[index].Name != "JOB-TARGET" {
-				t.Fatalf("baseline JOB-TARGET name = %q", baseline.Nodes[index].Name)
-			}
-			if measured.Nodes[index].Name != targetSearchSingleName || measured.Nodes[index].Path == nil {
-				t.Fatalf("measured JOB-TARGET = %#v", measured.Nodes[index])
-			}
-		}
-	}
-}
