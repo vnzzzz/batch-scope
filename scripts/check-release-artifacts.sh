@@ -5,7 +5,7 @@ usage() {
   cat <<'USAGE'
 Usage: scripts/check-release-artifacts.sh <version> [output-dir]
 
-作成済みのRelease archive、Public Skill、JSON Schema、READMEリンク、チェックサムを検査します。
+作成済みのRelease archive、Public Skill、JSON Schema、デモスナップショット、READMEリンク、チェックサムを検査します。
 USAGE
 }
 
@@ -29,7 +29,7 @@ for command in tar sha256sum find diff grep mktemp; do
   }
 done
 
-if [[ ! -d skills/public/batchscope || ! -d schema ]]; then
+if [[ ! -d skills/public/batchscope || ! -d schema || ! -d examples/demo/snapshot ]]; then
   echo "リポジトリのルートで実行してください。" >&2
   exit 1
 fi
@@ -70,7 +70,14 @@ for target in "${targets[@]}"; do
   mkdir -p "$extract_dir"
   tar -xzf "$archive" -C "$extract_dir"
 
-  for required in batchscope README.md LICENSE skills/public/batchscope/SKILL.md; do
+  for required in \
+    batchscope \
+    README.md \
+    LICENSE \
+    skills/public/batchscope/SKILL.md \
+    examples/demo/snapshot/manifest.json \
+    examples/demo/snapshot/nodes.ndjson \
+    examples/demo/snapshot/relations.ndjson; do
     [[ -f "$root/$required" ]] || { echo "$name: $required がありません。" >&2; exit 1; }
   done
 
@@ -82,6 +89,12 @@ for target in "${targets[@]}"; do
   if ! diff -r "$expected_skill" "$root/skills/public/batchscope" >/dev/null; then
     echo "$name: Public Skillまたは配布JSON Schemaがsourceと一致しません。" >&2
     diff -r "$expected_skill" "$root/skills/public/batchscope" >&2 || true
+    exit 1
+  fi
+
+  if ! diff -r examples/demo/snapshot "$root/examples/demo/snapshot" >/dev/null; then
+    echo "$name: 配布デモスナップショットがsourceと一致しません。" >&2
+    diff -r examples/demo/snapshot "$root/examples/demo/snapshot" >&2 || true
     exit 1
   fi
 
