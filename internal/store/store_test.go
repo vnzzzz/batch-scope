@@ -129,6 +129,23 @@ func TestStateTransitionsAndSingleImport(t *testing.T) {
 	}
 }
 
+func TestReadingCurrentGenerationAllowsPreviousDatabaseRetirement(t *testing.T) {
+	directory := t.TempDir()
+	storage := newTestStore(t, directory)
+	activateValue(t, storage, "current")
+	previousPath := activeGenerationPath(t, directory)
+
+	generation, ok := storage.CurrentGeneration()
+	if !ok || generation.SnapshotID != "current" {
+		t.Fatalf("CurrentGeneration() = %#v, %t", generation, ok)
+	}
+	activateValue(t, storage, "next")
+
+	if _, err := os.Stat(previousPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("previous generation remains after metadata lookup and switch: %v", err)
+	}
+}
+
 func TestAcquireKeepsOldDatabaseUntilReleaseAfterSwitch(t *testing.T) {
 	directory := t.TempDir()
 	storage := newTestStore(t, directory)

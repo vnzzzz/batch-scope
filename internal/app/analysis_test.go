@@ -252,6 +252,7 @@ func TestDownstreamLimitAnalysisErrors(t *testing.T) {
 			"/v1/downstream-limit-analysis",
 			"/v1/downstream-limit-analysis?targetId=",
 			"/v1/downstream-limit-analysis?targetId=A&targetId=B",
+			"/v1/downstream-limit-analysis?targetId=A&includeEvidence=",
 			"/v1/downstream-limit-analysis?targetId=A&includeEvidence=yes",
 			"/v1/downstream-limit-analysis?targetId=A&includeEvidence=true&includeEvidence=false",
 		} {
@@ -288,11 +289,31 @@ func TestDownstreamLimitAnalysisErrors(t *testing.T) {
 				},
 			},
 			{
-				name: "incomplete fact", targetID: "BROKEN-JOB",
+				name: "incomplete finish_by fact", targetID: "BROKEN-JOB",
+				data: analysisTestData{
+					nodes: []appTestNode{{id: "BROKEN-JOB", typeName: "job", name: "Broken"}},
+					facts: []analysisTestFact{{
+						id: "BROKEN-LIMIT", ownerID: "BROKEN-JOB", kind: "finish_by",
+						origin: "manual", certainty: "declared",
+					}},
+				},
+			},
+			{
+				name: "incomplete max_elapsed fact", targetID: "BROKEN-JOB",
 				data: analysisTestData{
 					nodes: []appTestNode{{id: "BROKEN-JOB", typeName: "job", name: "Broken"}},
 					facts: []analysisTestFact{{
 						id: "BROKEN-LIMIT", ownerID: "BROKEN-JOB", kind: "max_elapsed",
+						origin: "manual", certainty: "declared",
+					}},
+				},
+			},
+			{
+				name: "incomplete raw fact", targetID: "BROKEN-JOB",
+				data: analysisTestData{
+					nodes: []appTestNode{{id: "BROKEN-JOB", typeName: "job", name: "Broken"}},
+					facts: []analysisTestFact{{
+						id: "BROKEN-LIMIT", ownerID: "BROKEN-JOB", kind: "raw",
 						origin: "manual", certainty: "declared",
 					}},
 				},

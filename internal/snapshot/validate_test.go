@@ -550,6 +550,67 @@ func TestValidateRejectsNodeAndParentViolations(t *testing.T) {
 	}
 }
 
+func TestValidateSelectsNodeErrorsDeterministically(t *testing.T) {
+	tests := []struct {
+		name        string
+		nodes       []string
+		wantKind    ErrorKind
+		wantLine    int
+		wantPointer string
+	}{
+		{
+			name: "earlier parent reference before later duplicate",
+			nodes: []string{
+				testNode("job", "FIRST", stringPointer("MISSING"), nil),
+				testNode("management_unit", "ROOT", nil, nil),
+				testNode("job", "OTHER", nil, nil),
+				testNode("job", "DUPLICATE", nil, nil),
+				testNode("job", "DUPLICATE", nil, nil),
+			},
+			wantKind: ErrorMissingParent, wantLine: 1, wantPointer: "/parentId",
+		},
+		{
+			name: "earlier duplicate before later parent reference",
+			nodes: []string{
+				testNode("job", "DUPLICATE", nil, nil),
+				testNode("job", "DUPLICATE", nil, nil),
+				testNode("management_unit", "ROOT", nil, nil),
+				testNode("job", "OTHER", nil, nil),
+				testNode("job", "LAST", stringPointer("MISSING"), nil),
+			},
+			wantKind: ErrorDuplicateNode, wantLine: 2, wantPointer: "/id",
+		},
+		{
+			name: "line validation before node cross-validation",
+			nodes: []string{
+				testNode("job", "DUPLICATE", nil, nil),
+				testNode("job", "DUPLICATE", nil, nil),
+				`{"type":"job","id":"INVALID","name":""}`,
+			},
+			wantKind: ErrorSchemaViolation, wantLine: 3, wantPointer: "/name",
+		},
+		{
+			name: "smallest line in parent cycle",
+			nodes: []string{
+				testNode("management_unit", "BRANCH", stringPointer("C"), nil),
+				testNode("management_unit", "A", stringPointer("C"), nil),
+				testNode("management_unit", "B", stringPointer("A"), nil),
+				testNode("management_unit", "C", stringPointer("B"), nil),
+			},
+			wantKind: ErrorParentCycle, wantLine: 2, wantPointer: "/parentId",
+		},
+	}
+
+	// 行内検査をノード横断検査より先に完了し、横断検査では種別にかかわらず最小行を選ぶ。
+	// 親循環も最小行へ揃えることで、同じ入力で取込元が最初に直す位置を変えない。
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			_, err := Validate(context.Background(), writeExtractedSnapshot(t, test.nodes, nil))
+			assertValidationError(t, err, test.wantKind, nodesName, test.wantLine, test.wantPointer)
+		})
+	}
+}
+
 func TestValidateRejectsDuplicateLimitIDs(t *testing.T) {
 	limit := func(id string) map[string]any {
 		return map[string]any{

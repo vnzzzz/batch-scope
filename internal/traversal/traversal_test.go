@@ -85,6 +85,16 @@ func TestTraverseReachesEveryHighFanOutBranch(t *testing.T) {
 	if got, want := result.Stats.RelationRows, branches; got != want {
 		t.Errorf("RelationRows = %d, want %d", got, want)
 	}
+	minimumBatches := (len(result.Nodes) + queryBatchSize - 1) / queryBatchSize
+	maximumRelationQueries := minimumBatches * 2
+	// 探索の波ごとに端数バッチが生じる余裕は残すが、到達ノードごとの問い合わせは許さない。
+	// 理論最小回数の2倍ならバッチ境界の変更に耐えつつ、1ノード1 queryへの退行を区別できる。
+	if maximumRelationQueries >= len(result.Nodes) {
+		t.Fatalf("query upper bound = %d, want less than %d reached nodes", maximumRelationQueries, len(result.Nodes))
+	}
+	if got := result.Stats.RelationQueries; got > maximumRelationQueries {
+		t.Errorf("RelationQueries = %d, want at most %d", got, maximumRelationQueries)
+	}
 }
 
 func TestTraverseExpandsMergedNodeOnce(t *testing.T) {
