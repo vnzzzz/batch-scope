@@ -9,19 +9,22 @@ Usage: scripts/smoke-api.sh [options]
 接続先を指定しない場合は、一時バイナリと一時データディレクトリでサービスを起動します。
 起動済みサービスを指定する場合は、スナップショット未取込のサービスを使用してください。
 
-通常は、各APIのRequest、curl相当コマンド、raw response、jq整形結果、検査結果を表示します。
+出力は既定で人間向けに要約します。
+後続リミット解析は、チャットツール等からJOB IDを指定して問い合わせた場合の返答を想定した形で表示します。
+APIの加工前レスポンスを確認したい場合は --output raw を指定してください。
 
 Options:
-  --base-url URL    起動済みサービスを検査するURL。指定時はビルドと起動を行わない
-  --port PORT       ローカル起動で使うポート。未指定時は空いているポートを選ぶ
-  --timeout SEC     起動と取込の待機上限（既定値: 30秒）
-  --quiet           Request/responseの詳細を省略し、進捗と成否だけを表示する
-  -h, --help        このヘルプを表示する
+  --base-url URL       起動済みサービスを検査するURL。指定時はビルドと起動を行わない
+  --port PORT          ローカル起動で使うポート。未指定時は空いているポートを選ぶ
+  --timeout SEC        起動と取込の待機上限（既定値: 30秒）
+  --output MODE        出力形式。human（既定）またはraw
+  -h, --help           このヘルプを表示する
 
 Environment:
   BATCHSCOPE_SMOKE_BASE_URL  --base-urlの既定値
   BATCHSCOPE_SMOKE_PORT      --portの既定値
   BATCHSCOPE_SMOKE_TIMEOUT   --timeoutの既定値
+  BATCHSCOPE_SMOKE_OUTPUT    --outputの既定値
 USAGE
 }
 
@@ -33,7 +36,7 @@ fail() {
 base_url="${BATCHSCOPE_SMOKE_BASE_URL:-}"
 port="${BATCHSCOPE_SMOKE_PORT:-}"
 timeout_seconds="${BATCHSCOPE_SMOKE_TIMEOUT:-30}"
-quiet=false
+output_mode="${BATCHSCOPE_SMOKE_OUTPUT:-human}"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -64,8 +67,13 @@ while [[ $# -gt 0 ]]; do
       timeout_seconds="${1#*=}"
       shift
       ;;
-    --quiet)
-      quiet=true
+    --output)
+      [[ $# -ge 2 ]] || fail '--outputにはhumanまたはrawが必要です。'
+      output_mode="$2"
+      shift 2
+      ;;
+    --output=*)
+      output_mode="${1#*=}"
       shift
       ;;
     -h|--help)
@@ -80,6 +88,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 [[ "$timeout_seconds" =~ ^[1-9][0-9]*$ ]] || fail '--timeoutは1以上の整数で指定してください。'
+[[ "$output_mode" == human || "$output_mode" == raw ]] || fail '--outputはhumanまたはrawで指定してください。'
 if [[ -n "$base_url" && -n "$port" ]]; then
   fail '--base-urlと--portは同時に指定できません。'
 fi
@@ -98,6 +107,7 @@ server_pid=''
 server_log="$work_dir/server.log"
 response_body="$work_dir/response.json"
 response_headers="$work_dir/response.headers"
+response_status=''
 
 cleanup() {
   if [[ -n "$server_pid" ]] && kill -0 "$server_pid" 2>/dev/null; then
@@ -115,25 +125,28 @@ trap 'exit 143' TERM
 step() {
   local number="$1"
   local title="$2"
-  printf '\n[%s/9] %s\n' "$number" "$title"
+  if [[ "$output_mode" == human ]]; then
+    printf '\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n'
+    printf '%s/9  %s\n' "$number" "$title"
+    printf '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n'
+  else
+    printf '\n=== [%s/9] %s ===\n' "$number" "$title"
+  fi
 }
 
-pass_check() {
-  [[ "$quiet" == true ]] && return
-  printf '  ✓ %s\n' "$1"
+human_request_result() {
+  local method="$1"
+  local path="$2"
+  printf '%-6s %-52s → HTTP %s\n' "$method" "$path" "$response_status"
 }
 
-show_request() {
+raw_request() {
   local method="$1"
   local url="$2"
   shift 2
 
-  [[ "$quiet" == true ]] && return
-
-  printf '\nRequest\n'
-  printf '  %s %s\n' "$method" "$url"
-  printf '\ncurl\n'
-  printf '  curl -i --request %q' "$method"
+  printf '> %s %s\n' "$method" "$url"
+  printf '$ curl -i --request %q' "$method"
   local arg
   for arg in "$@"; do
     printf ' %q' "$arg"
@@ -141,45 +154,37 @@ show_request() {
   printf ' %q\n' "$url"
 }
 
-show_saved_response() {
-  local force="${1:-false}"
-  if [[ "$quiet" == true && "$force" != true ]]; then
-    return
-  fi
-
-  printf '\nRaw response\n'
+raw_response() {
   if [[ -s "$response_headers" ]]; then
-    sed 's/\r$//' "$response_headers" | sed 's/^/  /'
-  else
-    printf '  (response headersなし)\n'
+    sed 's/\r$//' "$response_headers"
   fi
   if [[ -s "$response_body" ]]; then
-    sed 's/^/  /' "$response_body"
+    cat "$response_body"
+    printf '\n'
   else
-    printf '  (bodyなし)\n'
+    printf '(bodyなし)\n'
   fi
+}
 
-  if [[ -s "$response_body" ]] && jq empty "$response_body" >/dev/null 2>&1; then
-    printf '\nPretty response\n'
-    jq . "$response_body" | sed 's/^/  /'
-  fi
+show_failure_response() {
+  printf '\n--- response ---\n' >&2
+  raw_response >&2
 }
 
 fail_response() {
   echo "エラー: $*" >&2
-  show_saved_response true >&2
+  show_failure_response
   exit 1
 }
 
 http_request() {
-  local trace_mode="$1"
-  local method="$2"
-  local url="$3"
-  local max_time="$4"
-  shift 4
+  local method="$1"
+  local url="$2"
+  local max_time="$3"
+  shift 3
 
-  if [[ "$trace_mode" == show ]]; then
-    show_request "$method" "$url" "$@"
+  if [[ "$output_mode" == raw ]]; then
+    raw_request "$method" "$url" "$@"
   fi
 
   : >"$response_body"
@@ -196,15 +201,14 @@ http_request() {
     fail "HTTP要求に失敗しました: $method $url"
   fi
 
-  if [[ "$trace_mode" == show ]]; then
-    show_saved_response
+  if [[ "$output_mode" == raw ]]; then
+    raw_response
   fi
 }
 
 header_value() {
   local name="$1"
   awk -v wanted="$name" '
-    BEGIN { IGNORECASE = 1 }
     {
       line = $0
       sub(/\r$/, "", line)
@@ -228,18 +232,15 @@ assert_status() {
   if [[ "$response_status" != "$expected" ]]; then
     fail_response "$labelのHTTPステータスが${expected}ではありません: $response_status"
   fi
-  pass_check "HTTP $expected"
 }
 
 assert_json() {
   local filter="$1"
-  local failure_message="$2"
-  local success_message="$3"
-  shift 3
+  local message="$2"
+  shift 2
   if ! jq --exit-status "$@" "$filter" "$response_body" >/dev/null; then
-    fail_response "$failure_message"
+    fail_response "$message"
   fi
-  pass_check "$success_message"
 }
 
 port_is_open() {
@@ -297,12 +298,12 @@ start_local_service() {
   port="$((10#$port))"
   base_url="http://127.0.0.1:$port"
 
-  echo "[準備] 一時バイナリをビルドします。"
+  printf '[準備] 一時バイナリをビルド\n'
   if ! go build -o "$work_dir/batchscope" ./cmd/batchscope; then
     fail '一時バイナリのビルドに失敗しました。'
   fi
   mkdir -p "$work_dir/data"
-  echo "[起動] $base_url でサービスを起動します。"
+  printf '[起動] %s\n' "$base_url"
   "$work_dir/batchscope" serve -listen "127.0.0.1:$port" -data-dir "$work_dir/data" >"$server_log" 2>&1 &
   server_pid=$!
 }
@@ -316,30 +317,42 @@ prepare_snapshot_archive() {
   fi
 }
 
+human_json_value() {
+  local filter="$1"
+  jq --raw-output "$filter" "$response_body"
+}
+
 check_health() {
-  step 1 'GET /healthz — ヘルスチェック'
-  http_request show GET "$base_url/healthz" "$timeout_seconds"
+  step 1 'ヘルスチェック'
+  http_request GET "$base_url/healthz" "$timeout_seconds"
   assert_status 200 'ヘルスチェック'
-  assert_json '.status == "ok"' \
-    'ヘルスチェックのstatusがokではありません。' \
-    'status = "ok"'
+  assert_json '.status == "ok"' 'ヘルスチェックのstatusがokではありません。'
+
+  if [[ "$output_mode" == human ]]; then
+    human_request_result GET '/healthz'
+    printf '  プロセスは正常に応答しています。\n'
+  fi
 }
 
 check_initial_readiness() {
-  step 2 'GET /readyz — 取込前の準備状態'
-  http_request show GET "$base_url/readyz" "$timeout_seconds"
+  step 2 '取込前の準備状態'
+  http_request GET "$base_url/readyz" "$timeout_seconds"
   # ローカル起動と--base-url指定のどちらも、スナップショット未取込の空状態から始めることを不変条件とする。
   assert_status 503 '取込前の準備状態'
   assert_json '.status == "not_ready" and .reason == "snapshot_not_loaded"' \
-    '取込前の準備状態がnot_ready / snapshot_not_loadedではありません。' \
-    'status = "not_ready", reason = "snapshot_not_loaded"'
+    '取込前の準備状態がnot_ready / snapshot_not_loadedではありません。'
+
+  if [[ "$output_mode" == human ]]; then
+    human_request_result GET '/readyz'
+    printf '  状態: 未準備（snapshot未取込）\n'
+  fi
 }
 
 import_snapshot() {
   local import_deadline import_state location import_url remaining retry_after sleep_seconds previous_state
 
-  step 3 'POST /v1/snapshot-imports — デモスナップショットを送信'
-  http_request show POST "$base_url/v1/snapshot-imports" "$timeout_seconds" \
+  step 3 'デモスナップショットを送信'
+  http_request POST "$base_url/v1/snapshot-imports" "$timeout_seconds" \
     --header 'Content-Type: application/vnd.batchscope.snapshot+gzip' \
     --data-binary "@$archive"
   assert_status 202 'スナップショット取込'
@@ -348,21 +361,24 @@ import_snapshot() {
   location="$(header_value 'Location')"
   [[ -n "$location" ]] || fail_response 'スナップショット取込のLocationヘッダーがありません。'
   [[ "$location" == /* ]] || fail_response "Locationヘッダーが相対パスではありません: $location"
-  pass_check "Location = $location"
 
   retry_after="$(header_value 'Retry-After')"
   [[ "$retry_after" =~ ^[1-9][0-9]*$ ]] || fail_response \
     "スナップショット取込のRetry-Afterが1以上の整数ではありません: ${retry_after:-<missing>}"
-  pass_check "Retry-After = ${retry_after}s"
 
   import_url="$base_url$location"
-  step 4 'GET /v1/snapshot-imports/{importId} — 取込完了をpoll'
 
-  if [[ "$quiet" != true ]]; then
-    printf '\nFollow\n'
-    printf '  GET %s\n' "$import_url"
-    printf '  Retry-After: %ss\n' "$retry_after"
-    printf '\nPoll states\n'
+  if [[ "$output_mode" == human ]]; then
+    human_request_result POST '/v1/snapshot-imports'
+    printf '  取込受付: OK\n'
+    printf '  追跡先:   %s\n' "$location"
+    printf '  再確認:   %s秒後\n' "$retry_after"
+  fi
+
+  step 4 '取込完了を待機'
+  if [[ "$output_mode" == human ]]; then
+    printf 'GET    %-52s\n' "$location"
+    printf '  状態: '
   fi
 
   import_deadline=$((SECONDS + timeout_seconds))
@@ -380,113 +396,242 @@ import_snapshot() {
 
     remaining=$((import_deadline - SECONDS))
     ((remaining > 0)) || break
-    http_request poll GET "$import_url" "$remaining"
+    http_request GET "$import_url" "$remaining"
     if [[ "$response_status" != '200' ]]; then
       fail_response "取込状況のHTTPステータスが200ではありません: $response_status"
     fi
     import_state="$(jq --exit-status --raw-output '.state | select(type == "string")' "$response_body")" \
       || fail_response '取込状況のstateを取得できません。'
 
-    if [[ "$import_state" != "$previous_state" && "$quiet" != true ]]; then
-      printf '  %s\n' "$import_state"
+    if [[ "$import_state" != "$previous_state" ]]; then
+      if [[ "$output_mode" == human ]]; then
+        if [[ -n "$previous_state" ]]; then
+          printf ' → '
+        fi
+        printf '%s' "$import_state"
+      fi
       previous_state="$import_state"
     fi
 
     case "$import_state" in
       succeeded)
-        if [[ "$quiet" != true ]]; then
-          printf '\nFinal status response\n'
-          show_request GET "$import_url"
-          show_saved_response
-        fi
-        pass_check 'HTTP 200'
         assert_json '.snapshotId == $snapshot_id' \
           '取込結果のsnapshotIdがmanifest.jsonと一致しません。' \
-          "snapshotId = \"$snapshot_id\"" \
           --arg snapshot_id "$snapshot_id"
+        if [[ "$output_mode" == human ]]; then
+          printf '\n'
+          printf '  snapshotId: %s\n' "$snapshot_id"
+        fi
         break
         ;;
       failed)
+        [[ "$output_mode" == human ]] && printf '\n'
         fail_response 'スナップショットの取込が失敗しました。'
         ;;
       accepted|validating|building|activating)
         ;;
       *)
+        [[ "$output_mode" == human ]] && printf '\n'
         fail_response "取込状況に未知のstateが返されました: $import_state"
         ;;
     esac
   done
 
+  [[ "$output_mode" != human || -z "$import_state" || "$import_state" == succeeded ]] || printf '\n'
   [[ "$import_state" == 'succeeded' ]] || fail \
     "スナップショットの取込が${timeout_seconds}秒以内に完了しませんでした。"
 }
 
 check_ready_after_import() {
-  step 5 'GET /readyz — 取込後の準備状態'
-  http_request show GET "$base_url/readyz" "$timeout_seconds"
+  step 5 '取込後の準備状態'
+  http_request GET "$base_url/readyz" "$timeout_seconds"
   assert_status 200 '取込後の準備状態'
   assert_json '.status == "ready" and .reason == "snapshot_loaded"' \
-    '取込後の準備状態がready / snapshot_loadedではありません。' \
-    'status = "ready", reason = "snapshot_loaded"'
+    '取込後の準備状態がready / snapshot_loadedではありません。'
+
+  if [[ "$output_mode" == human ]]; then
+    human_request_result GET '/readyz'
+    printf '  状態: ready（snapshot loaded）\n'
+  fi
 }
 
 check_current_snapshot() {
-  step 6 'GET /v1/snapshots/current — 現在のスナップショット'
-  http_request show GET "$base_url/v1/snapshots/current" "$timeout_seconds"
+  step 6 '現在のスナップショット'
+  http_request GET "$base_url/v1/snapshots/current" "$timeout_seconds"
   assert_status 200 '現在のスナップショット'
   assert_json '.snapshotId == $snapshot_id' \
     '現在のスナップショットIDがmanifest.jsonと一致しません。' \
-    "snapshotId = \"$snapshot_id\"" \
     --arg snapshot_id "$snapshot_id"
+
+  if [[ "$output_mode" == human ]]; then
+    human_request_result GET '/v1/snapshots/current'
+    printf '  snapshotId: %s\n' "$(human_json_value '.snapshotId')"
+    printf '  nodes: %s / relations: %s / limits: %s\n' \
+      "$(human_json_value '.nodeCount')" \
+      "$(human_json_value '.relationCount')" \
+      "$(human_json_value '.limitCount')"
+  fi
 }
 
 check_status() {
-  step 7 'GET /v1/status — サービス状態'
-  http_request show GET "$base_url/v1/status" "$timeout_seconds"
+  step 7 'サービス状態'
+  http_request GET "$base_url/v1/status" "$timeout_seconds"
   assert_status 200 'サービス状態'
-  assert_json '.state == "ready"' \
-    'サービス状態のstateがreadyではありません。' \
-    'state = "ready"'
+  assert_json '.state == "ready"' 'サービス状態のstateがreadyではありません。'
   assert_json '.snapshot.snapshotId == $snapshot_id' \
     'サービス状態のsnapshotIdがmanifest.jsonと一致しません。' \
-    "snapshot.snapshotId = \"$snapshot_id\"" \
     --arg snapshot_id "$snapshot_id"
+
+  if [[ "$output_mode" == human ]]; then
+    human_request_result GET '/v1/status'
+    printf '  state: %s\n' "$(human_json_value '.state')"
+    printf '  snapshot: %s\n' "$(human_json_value '.snapshot.snapshotId')"
+  fi
 }
 
-# 以下の期待値はデモスナップショットとレスポンス例に由来する。公開DTO全体の厳密一致はGoテストへ委ね、ここではE2Eで代表値が失われていないことだけを検知する。
 check_target_search() {
-  step 8 'GET /v1/targets?query=JOB-A&type=job — 完全一致検索'
-  http_request show GET "$base_url/v1/targets?query=JOB-A&type=job" "$timeout_seconds"
+  step 8 'JOB-Aを完全一致検索'
+  http_request GET "$base_url/v1/targets?query=JOB-A&type=job" "$timeout_seconds"
   assert_status 200 '完全一致検索'
   assert_json '.snapshotId == $snapshot_id' \
     '完全一致検索のsnapshotIdがmanifest.jsonと一致しません。' \
-    "snapshotId = \"$snapshot_id\"" \
     --arg snapshot_id "$snapshot_id"
-  assert_json '.truncated == false' \
-    '完全一致検索がtruncated=trueを返しました。' \
-    'truncated = false'
+  assert_json '.truncated == false' '完全一致検索がtruncated=trueを返しました。'
   assert_json '(.items | length) == 1 and .items[0].id == "JOB-A" and .items[0].type == "job"' \
-    '完全一致検索でJOB-Aを一件取得できません。' \
-    'items[0] = JOB-A (job)'
+    '完全一致検索でJOB-Aを一件取得できません。'
+
+  if [[ "$output_mode" == human ]]; then
+    human_request_result GET '/v1/targets?query=JOB-A&type=job'
+    jq --raw-output '
+      .items[0] |
+      "  見つかった対象: \(.id)  \(.name)\n" +
+      "  種別: \(.type)\n" +
+      (if .path then "  path: \(.path)" else "" end)
+    ' "$response_body"
+  fi
+}
+
+show_analysis_human() {
+  jq --raw-output '
+    def owner:
+      .limitOwner as $o |
+      ($o.id + (if ($o.name // "") != "" then "  " + $o.name else "" end));
+
+    def fact_text:
+      if .fact.kind == "finish_by" then
+        (.fact.sourceText // (
+          "営業日+" + ((.fact.businessDayOffset // 0) | tostring) +
+          " " + (.fact.localTime // "?") +
+          " (" + (.fact.timeZone // "?") + ")"
+        ))
+      elif .fact.kind == "max_elapsed" then
+        (.fact.sourceText // .fact.duration // "最大経過時間")
+      else
+        (.fact.sourceText // "raw limit")
+      end;
+
+    def kind_label:
+      if .fact.kind == "finish_by" then "終了時刻"
+      elif .fact.kind == "max_elapsed" then "最大経過時間"
+      else "その他"
+      end;
+
+    def item_line:
+      "  • " + owner + "  [" + kind_label + "]\n" +
+      "      " + fact_text +
+      (if .fact.kind == "finish_by" and (.fact.timeZone // "") != "" then
+         "\n      timezone: " + .fact.timeZone
+       else "" end) +
+      (if .scopeRoot then
+         "\n      scope: " + .scopeRoot.id +
+         (if (.scopeRoot.name // "") != "" then "  " + .scopeRoot.name else "" end)
+       else "" end) +
+      (if (.alternatePathCount // 0) > 0 then
+         "\n      別経路: +" + ((.alternatePathCount // 0) | tostring)
+       else "" end);
+
+    def items_in($bucket):
+      [
+        ($bucket.finishByGroups[]?.items[]?),
+        ($bucket.maxElapsed.items[]?),
+        ($bucket.raw.items[]?)
+      ];
+
+    def bucket_total($bucket):
+      ([ $bucket.finishByGroups[]?.total ] + [ $bucket.maxElapsed.total, $bucket.raw.total ] | add);
+
+    def reason_text:
+      if . == "cycle_without_limit" then "循環内にリミットなし"
+      elif . == "terminal_without_limit" then "終端までリミットなし"
+      elif . == "non_traversable_node_type" then "探索対象外ノードで終了"
+      else .
+      end;
+
+    . as $r |
+    (bucket_total(.limits.target)) as $target_total |
+    (bucket_total(.limits.contained)) as $contained_total |
+    (bucket_total(.limits.downstream)) as $downstream_total |
+
+    "── 想定チャット返答 ─────────────────────────────────────",
+    "",
+    "入力例: /batchscope limits " + .target.id,
+    "",
+    "JOB: " + .target.id + "  " + (.target.name // ""),
+    (if .target.path then "Path: " + .target.path else empty end),
+    "Snapshot: " + .snapshotId,
+    "",
+    "リミット: 合計 " + (($target_total + $contained_total + $downstream_total) | tostring) + "件" +
+      "（対象 " + ($target_total | tostring) +
+      " / 配下 " + ($contained_total | tostring) +
+      " / 後続 " + ($downstream_total | tostring) + "）",
+    "",
+
+    (if $target_total > 0 then
+       "【対象自身】",
+       (items_in(.limits.target)[] | item_line),
+       ""
+     else empty end),
+
+    (if $contained_total > 0 then
+       "【配下】",
+       (items_in(.limits.contained)[] | item_line),
+       ""
+     else empty end),
+
+    (if $downstream_total > 0 then
+       "【後続】",
+       (items_in(.limits.downstream)[] | item_line),
+       ""
+     else empty end),
+
+    "注意:",
+    "  循環: " + ((.cycles | length) | tostring) + "件" +
+      (if (.cycles | length) > 0 then
+         " (" + ([.cycles[].cycleId] | join(", ")) + ")"
+       else "" end),
+    "  リミット未検出の経路: " + ((.uncoveredRoutes | length) | tostring) + "件",
+    (
+      .uncoveredRoutes[]? |
+      "    - " + .boundary.id +
+      (if (.boundary.name // "") != "" then "  " + .boundary.name else "" end) +
+      " — " + (.reason | reason_text)
+    )
+  ' "$response_body"
 }
 
 check_downstream_limit_analysis() {
-  step 9 'GET /v1/downstream-limit-analysis?targetId=JOB-A — 後続リミット解析'
-  http_request show GET "$base_url/v1/downstream-limit-analysis?targetId=JOB-A" "$timeout_seconds"
+  step 9 'JOB-Aの後続リミット解析'
+  http_request GET "$base_url/v1/downstream-limit-analysis?targetId=JOB-A" "$timeout_seconds"
   assert_status 200 '後続リミット解析'
   assert_json '.snapshotId == $snapshot_id' \
     '後続リミット解析のsnapshotIdがmanifest.jsonと一致しません。' \
-    "snapshotId = \"$snapshot_id\"" \
     --arg snapshot_id "$snapshot_id"
-  assert_json '.target.id == "JOB-A"' \
-    '後続リミット解析のtarget.idがJOB-Aではありません。' \
-    'target.id = "JOB-A"'
+  assert_json '.target.id == "JOB-A"' '後続リミット解析のtarget.idがJOB-Aではありません。'
   assert_json '
     def limit_total:
       ([.finishByGroups[]?.total] + [.maxElapsed.total, .raw.total] | add);
     (.limits.downstream | limit_total) == 5
-  ' '後続リミット解析のdownstream limit件数が5ではありません。' \
-    'downstream limits = 5'
+  ' '後続リミット解析のdownstream limit件数が5ではありません。'
   assert_json '
     any(
       .limits.downstream.finishByGroups[]?.items[],
@@ -494,27 +639,29 @@ check_downstream_limit_analysis() {
       .limits.downstream.raw.items[];
       .fact.id == "LIMIT-JOB-C-FINISH"
     )
-  ' 'LIMIT-JOB-C-FINISHが後続リミットにありません。' \
-    'LIMIT-JOB-C-FINISHを検出'
+  ' 'LIMIT-JOB-C-FINISHが後続リミットにありません。'
   assert_json '([.cycles[].cycleId] | sort) == ["cycle-1", "cycle-2"]' \
-    'cycle一覧がデモデータと一致しません。' \
-    'cycles = cycle-1, cycle-2'
+    'cycle一覧がデモデータと一致しません。'
   assert_json '(.uncoveredRoutes | length) == 3' \
-    'uncoveredRoutesの件数が3ではありません。' \
-    'uncoveredRoutes = 3'
+    'uncoveredRoutesの件数が3ではありません。'
   assert_json '
     any(.uncoveredRoutes[]; .boundary.id == "JOB-CYCLE-A" and .reason == "cycle_without_limit") and
     any(.uncoveredRoutes[]; .boundary.id == "JOB-TERMINAL" and .reason == "terminal_without_limit") and
     any(.uncoveredRoutes[]; .boundary.id == "UNIT-BOUNDARY" and .reason == "non_traversable_node_type")
-  ' 'uncoveredRoutesの代表境界がデモデータと一致しません。' \
-    'cycle / terminal / non-traversable の代表境界を検出'
+  ' 'uncoveredRoutesの代表境界がデモデータと一致しません。'
+
+  if [[ "$output_mode" == human ]]; then
+    human_request_result GET '/v1/downstream-limit-analysis?targetId=JOB-A'
+    printf '\n'
+    show_analysis_human
+  fi
 }
 
 if [[ -z "$base_url" ]]; then
   start_local_service
 else
   base_url="${base_url%/}"
-  echo "[接続] 起動済みサービスを検査します: $base_url"
+  printf '[接続] 起動済みサービス: %s\n' "$base_url"
 fi
 
 wait_for_service
