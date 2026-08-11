@@ -5,11 +5,26 @@
 - 正しいスナップショットをJSON Schemaが受け入れる。
 - 各制約を一つずつ破った入力を、JSON Schemaまたは追加検査が拒否する。
 - HumaによるAPI実装後は、OpenAPIをGoコードから生成できる。
+- `/v1/status`の`snapshot`が`SnapshotInfo`を参照し、未取込時の`null`をOpenAPIで表現できる。
+- `POST /v1/snapshot-imports`の同期エラーが既存の`ErrorModel`を参照し、取込リソースの`ImportFailure`と混同されない。
 - 同じ入力と検索条件に対する配列の順序が変わらない。
 - すべてのエラーがRFC 9457のメディアタイプと必須項目を使う。
-- 同じスナップショットの再送と`snapshotId`の競合を、仕様どおりに処理する。
 - 完全一致検索が最大1,000件を返し、超過時に`truncated=true`となる。
 - 後続検索の公開パラメーターが`targetId`と`includeEvidence`に限定される。
+
+## スナップショット取込API
+
+- リクエストボディを最後まで一時ファイルへ保存してから`202 Accepted`を返し、その後の取込を非同期で続ける。
+- `202 Accepted`が本文を持たず、取込状況URIを`Location`、確認間隔を`Retry-After: 2`で返す。
+- 進行中の取込がある場合、二件目を`snapshot-import-in-progress`の`409`としてリクエストボディを読む前に拒否する。
+- 取込リソースが定めた順序で遷移し、`snapshotId`は判明後、`error`は`failed`の場合だけ返す。
+- 同じ`snapshotId`と展開後内容の再送ではSQLiteを再構築せず`succeeded`とし、tarまたはgzipの表現差を競合としない。
+- 同じ`snapshotId`で展開後内容が異なる場合、取込リソースを`failed`として`snapshot-id-conflict`を記録し、現在世代を維持する。
+- 圧縮後または展開後のサイズ超過を`snapshot-too-large`、ノード数、relation数、リミット設定数などの対応規模超過を`snapshot-capacity-exceeded`として区別する。
+- 初回取込前の`GET /v1/snapshots/current`と、更新取込中または失敗後の`GET /v1/status`および`GET /v1/snapshots/current`が現在世代を正しく表す。
+- 進行中の取込を完了済み履歴の削除対象とせず、完了済みは最新16件だけをFIFOで保持し、破棄後は`import-not-found`を返す。
+- `operation=snapshot_import`の完了ログへ取込識別子、世代、件数、状態、処理時間、失敗種別を記録し、ジョブ名、完全パス、入力内容を記録しない。
+- 切替後の旧世代の後始末警告を`succeeded`として扱い、切替前の失敗では現在世代を維持する。
 
 ## 対象の完全一致検索
 

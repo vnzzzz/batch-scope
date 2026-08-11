@@ -10,7 +10,7 @@
 スナップショットの検査とSQLiteの作成は、アップロード完了後も続く場合があります。
 取込APIは`202 Accepted`を返し、取込状況を確認するURIを`Location`ヘッダーへ設定します。
 
-エラーはRFC 9457のProblem Details形式で返します。
+APIが同期して返すエラーはRFC 9457のProblem Details形式とします。
 ジョブIDとジョブネットIDにはパス区切り文字が含まれる場合があるため、検索対象のIDはクエリパラメーターで受け取ります。
 
 ## API一覧
@@ -28,6 +28,10 @@
 
 HumaによるAPI実装後は、生成されたAPIドキュメントを`/docs`、OpenAPIを`/openapi.json`と`/openapi.yaml`で公開します。
 取込データ用のJSON SchemaはHTTP APIから配信せず、リポジトリの`schema/`とエージェントスキルに含めます。
+
+`GET /v1/status`の`snapshot`は、検索に使用中の世代を`SnapshotInfo`として返します。
+未取込時は`null`とし、更新取込中は切替前の世代を維持します。
+`SnapshotInfo`の項目は、[現在使用中のスナップショット](#現在使用中のスナップショット)で定めます。
 
 ## 対象の検索
 
@@ -244,11 +248,14 @@ scope遷移で到達した通常ノードは`viaScope=true`を持ち、`viaRelat
 ```http
 POST /v1/snapshot-imports
 Content-Type: application/vnd.batchscope.snapshot+gzip
-Idempotency-Key: 7d20a0aa-...
 ```
 
 圧縮アーカイブは、リクエストボディとして受け取ります。
 受信中に500 MiBの上限を検査し、メモリへ一括読込しません。
+リクエストボディの受信と一時ファイルへの保存までは同期して行い、受信完了後の展開、検査、SQLite作成、切替は非同期で行います。
+
+受信が完了して取込を開始した場合は、本文のない`202 Accepted`を返します。
+`Location`は取込状況を確認するURI、`Retry-After`は次の確認まで待つ秒数です。
 
 ```http
 HTTP/1.1 202 Accepted
@@ -269,11 +276,50 @@ stateDiagram-v2
     activating --> failed
 ```
 
-同時に実行できる取込は一件です。
-二件目は`409 Conflict`を返します。
+### 取込状況
 
-同じ`snapshotId`と同じ内容の再送は成功済みとして扱います。
-同じ`snapshotId`で内容が異なる場合は`409 Conflict`を返します。
+`Location`のURIへ`GET`を送り、取込リソースの状態を確認します。
+
+| 項目 | 内容 |
+|---|---|
+| `importId` | 取込処理の識別子 |
+| `state` | `accepted`、`validating`、`building`、`activating`、`succeeded`、`failed`のいずれか |
+| `createdAt` | 受信を完了して取込リソースを作成した日時 |
+| `updatedAt` | 状態または判明済み情報を最後に更新した日時 |
+| `snapshotId` | 検査で判明したスナップショットID。判明前は省略する |
+| `error` | `failed`の場合の失敗詳細。それ以外では省略する |
+
+`error`は`type`、`status`、`detail`を持ちます。
+入力内の位置を安全に特定できる場合は、`file`、`line`、`pointer`、`reason`も持ちます。
+
+取込履歴の保持期間と、履歴が見つからない場合の扱いは[取込履歴](../operations.md#取込履歴)を参照してください。
+
+### 現在使用中のスナップショット
+
+`GET /v1/snapshots/current`は、検索に使用中の世代を返します。
+検索可能な世代がない場合は`snapshot-not-loaded`を返します。
+
+| 項目 | 内容 |
+|---|---|
+| `snapshotId` | スナップショットの識別子 |
+| `generatedAt` | スナップショットの生成日時 |
+| `schemaVersion` | 取込形式のバージョン |
+| `nodeCount` | ノード数 |
+| `relationCount` | relation数 |
+| `limitCount` | リミット設定数 |
+
+内容の同一性を判定するフィンガープリントは公開しません。
+
+### 同時取込と再送
+
+同時に実行できる取込は一件です。
+進行中の取込がある場合、二件目はリクエストボディを読む前に`snapshot-import-in-progress`の`409 Conflict`を返します。
+
+現在世代と同じ`snapshotId`かつ同じ内容の再送は、SQLiteの再構築と検索先の切替を行わず、取込リソースを`succeeded`にします。
+同じ`snapshotId`で内容が異なる場合、`POST`は受信完了後に`202 Accepted`を返し、取込リソースを`failed`として`snapshot-id-conflict`の`409`を`error`へ記録します。
+
+内容の同一性は、展開後の`manifest.json`、`nodes.ndjson`、`relations.ndjson`から求めたフィンガープリントで判定します。
+tar内の順序、ファイルモード、更新日時、gzipの圧縮方法など、アーカイブ表現だけの差は競合としません。
 
 ## 大容量リクエストの制御
 
@@ -296,17 +342,20 @@ Smallのwarmかつ並行度4のp95は753.289 ms、coldかつ並行度4の最大�
 |---:|---|---|
 | 400 | `invalid-request` | クエリパラメーターまたは要求形式が不正 |
 | 404 | `target-not-found` | 対象IDが見つからない |
+| 404 | `import-not-found` | 取込履歴が見つからない |
 | 409 | `snapshot-import-in-progress` | 別の取込を実行中 |
 | 409 | `snapshot-id-conflict` | 同じIDで異なる内容を受信 |
 | 413 | `snapshot-too-large` | サイズ上限を超えた |
+| 422 | `snapshot-capacity-exceeded` | 初期対応規模の上限を超えた |
 | 422 | `invalid-snapshot` | スナップショットの内容が不正 |
 | 503 | `snapshot-not-loaded` | 検索可能なスナップショットがない |
 | 503 | `analysis-timeout` | 解析が時間上限内に完了しなかった |
 | 500 | `internal-error` | サーバー内部のエラー |
 
-スナップショットの検査エラーには、対象ファイル、行番号、JSON Pointer、理由コードを含められます。
+受信後の取込が失敗した場合は、取込リソースの`error`で失敗を報告します。
+`invalid-snapshot`と`snapshot-capacity-exceeded`には、対象ファイル、行番号、JSON Pointer、理由コードを含められます。
 
-Problem Detailsの`type`には、上表の種別に対応するURI参照を設定します。
+Problem Detailsの`type`と取込リソースの`error.type`には、上表の種別に対応するURI参照を設定します。
 
 ```text
 /problems/<種別>

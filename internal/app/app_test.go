@@ -129,11 +129,38 @@ func TestOpenAPISpec(t *testing.T) {
 	if spec.Info.Version != "v1" {
 		t.Fatalf("info.version = %q, want v1", spec.Info.Version)
 	}
-	for _, path := range []string{"/healthz", "/readyz", "/v1/status", "/v1/targets", "/v1/downstream-limit-analysis"} {
+	for _, path := range []string{
+		"/healthz", "/readyz", "/v1/status", "/v1/targets", "/v1/downstream-limit-analysis",
+		"/v1/snapshot-imports/{importId}", "/v1/snapshots/current",
+	} {
 		item := spec.Paths[path]
 		if item == nil || item.Get == nil {
 			t.Errorf("GET %s is missing from OpenAPI", path)
 		}
+	}
+	if item := spec.Paths["/v1/snapshot-imports"]; item == nil || item.Post == nil {
+		t.Error("POST /v1/snapshot-imports is missing from OpenAPI")
+	} else if item.Post.RequestBody == nil || item.Post.RequestBody.Content[snapshotMediaType] == nil {
+		t.Errorf("POST /v1/snapshot-imports request body does not expose %s", snapshotMediaType)
+	} else {
+		for _, status := range []string{"400", "409", "413", "500"} {
+			response := item.Post.Responses[status]
+			if response == nil {
+				t.Errorf("POST /v1/snapshot-imports response %s is missing", status)
+				continue
+			}
+			media := response.Content["application/problem+json"]
+			if media == nil || media.Schema == nil || media.Schema.Ref != "#/components/schemas/ErrorModel" {
+				t.Errorf("POST /v1/snapshot-imports response %s does not use ErrorModel", status)
+			}
+		}
+	}
+	schemas := spec.Components.Schemas.Map()
+	if schema := schemas["SnapshotInfo"]; schema == nil || !schema.Nullable {
+		t.Errorf("SnapshotInfo schema = %#v, want nullable", schema)
+	}
+	if _, ok := schemas["ProblemDetails"]; ok {
+		t.Error("OpenAPI unexpectedly contains ProblemDetails")
 	}
 	targets := spec.Paths["/v1/targets"].Get
 	queryRequired := false
@@ -185,6 +212,42 @@ func TestProblemDetails(t *testing.T) {
 			problem:    SnapshotNotLoadedProblem("snapshot is not loaded"),
 			wantType:   "/problems/snapshot-not-loaded",
 			wantStatus: http.StatusServiceUnavailable,
+		},
+		{
+			name:       "snapshot import in progress",
+			problem:    SnapshotImportInProgressProblem("import is in progress"),
+			wantType:   "/problems/snapshot-import-in-progress",
+			wantStatus: http.StatusConflict,
+		},
+		{
+			name:       "snapshot ID conflict",
+			problem:    SnapshotIDConflictProblem("snapshot ID conflicts"),
+			wantType:   "/problems/snapshot-id-conflict",
+			wantStatus: http.StatusConflict,
+		},
+		{
+			name:       "snapshot too large",
+			problem:    SnapshotTooLargeProblem("snapshot is too large"),
+			wantType:   "/problems/snapshot-too-large",
+			wantStatus: http.StatusRequestEntityTooLarge,
+		},
+		{
+			name:       "snapshot capacity exceeded",
+			problem:    SnapshotCapacityExceededProblem("capacity exceeded"),
+			wantType:   "/problems/snapshot-capacity-exceeded",
+			wantStatus: http.StatusUnprocessableEntity,
+		},
+		{
+			name:       "invalid snapshot",
+			problem:    InvalidSnapshotProblem("snapshot is invalid"),
+			wantType:   "/problems/invalid-snapshot",
+			wantStatus: http.StatusUnprocessableEntity,
+		},
+		{
+			name:       "import not found",
+			problem:    ImportNotFoundProblem("import does not exist"),
+			wantType:   "/problems/import-not-found",
+			wantStatus: http.StatusNotFound,
 		},
 	}
 

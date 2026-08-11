@@ -120,6 +120,17 @@ func (s *Store) Ready() bool {
 	return s.current != nil
 }
 
+// CurrentGenerationは、検索参照を増やさずに現在の世代メタデータのコピーを返す。
+// 呼出側はSQLiteへ問い合わせず、同一IDの取込判定や状態表示にだけ使用する。
+func (s *Store) CurrentGeneration() (Generation, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.current == nil {
+		return Generation{}, false
+	}
+	return s.current.generation, true
+}
+
 // BeginImport はimporting.dbを新規作成し、テーブルを準備する。
 // 同時に開始できる取込は一件だけである。
 func (s *Store) BeginImport(ctx context.Context) (*Import, error) {

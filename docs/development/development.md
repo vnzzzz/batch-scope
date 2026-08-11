@@ -145,12 +145,15 @@ export BATCHSCOPE_CODEX_MODEL=<利用可能なCodexモデル>
 | `GET /healthz` | プロセスの生存確認 |
 | `GET /readyz` | スナップショット未投入時は503 |
 | `GET /v1/status` | 起動状態とスナップショット状態 |
+| `POST /v1/snapshot-imports` | スナップショットの受信と非同期取込の開始 |
+| `GET /v1/snapshot-imports/{importId}` | 取込状況の取得 |
+| `GET /v1/snapshots/current` | 現在使用中のスナップショット情報の取得 |
 | `GET /v1/targets` | ジョブとジョブネットの完全一致検索 |
 | `GET /v1/downstream-limit-analysis` | 後続リミットと依存経路の全件解析 |
 
 このほかに、Humaが`/docs`、`/openapi.json`、`/openapi.yaml`を提供します。
 
-スナップショット取込APIは設計済みで未実装です。
+スナップショット取込APIの入出力は[API仕様](../design/api.md#スナップショットの取込)を参照してください。
 デモ用レスポンスの確認方法は[デモ](demo.md)を参照してください。
 
 ## AIエージェントによる開発

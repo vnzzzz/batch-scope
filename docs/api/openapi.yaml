@@ -545,6 +545,60 @@ components:
       required:
         - status
       type: object
+    ImportFailure:
+      additionalProperties: false
+      properties:
+        detail:
+          type: string
+        file:
+          type: string
+        line:
+          format: int64
+          type: integer
+        pointer:
+          type: string
+        reason:
+          type: string
+        status:
+          format: int64
+          type: integer
+        type:
+          type: string
+      required:
+        - type
+        - status
+        - detail
+      type: object
+    ImportResource:
+      additionalProperties: false
+      properties:
+        createdAt:
+          format: date-time
+          type: string
+        error:
+          $ref: "#/components/schemas/ImportFailure"
+        importId:
+          type: string
+        snapshotId:
+          type: string
+        state:
+          enum:
+            - accepted
+            - validating
+            - building
+            - activating
+            - succeeded
+            - failed
+          type: string
+        updatedAt:
+          format: date-time
+          type: string
+      required:
+        - importId
+        - state
+        - createdAt
+        - updatedAt
+      type: object
     ReadyResponse:
       additionalProperties: false
       properties:
@@ -589,6 +643,35 @@ components:
         - type
         - name
       type: object
+    SnapshotInfo:
+      additionalProperties: false
+      properties:
+        generatedAt:
+          format: date-time
+          type: string
+        limitCount:
+          format: int64
+          type: integer
+        nodeCount:
+          format: int64
+          type: integer
+        relationCount:
+          format: int64
+          type: integer
+        schemaVersion:
+          type: string
+        snapshotId:
+          type: string
+      required:
+        - snapshotId
+        - generatedAt
+        - schemaVersion
+        - nodeCount
+        - relationCount
+        - limitCount
+      type:
+        - object
+        - "null"
     StatusResponse:
       additionalProperties: false
       properties:
@@ -596,7 +679,8 @@ components:
           type: string
         build:
           $ref: "#/components/schemas/BuildInfo"
-        snapshot: {}
+        snapshot:
+          $ref: "#/components/schemas/SnapshotInfo"
         startedAt:
           format: date-time
           type: string
@@ -730,6 +814,118 @@ paths:
                 $ref: "#/components/schemas/ErrorModel"
           description: Service Unavailable
       summary: Analyze downstream configured limits and dependency routes
+  /v1/snapshot-imports:
+    post:
+      operationId: create-snapshot-import
+      parameters:
+        - description: Request identifier used in structured logs
+          in: header
+          name: X-Request-Id
+          schema:
+            type: string
+      requestBody:
+        content:
+          application/vnd.batchscope.snapshot+gzip:
+            schema:
+              contentMediaType: application/octet-stream
+              format: binary
+              type: string
+        required: true
+      responses:
+        "202":
+          description: Accepted
+          headers:
+            Location:
+              schema:
+                type: string
+            Retry-After:
+              schema:
+                type: string
+        "400":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorModel"
+          description: Bad Request
+        "409":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorModel"
+          description: Conflict
+        "413":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorModel"
+          description: Request Entity Too Large
+        "500":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorModel"
+          description: Internal Server Error
+      summary: Upload a snapshot and start an asynchronous import
+  /v1/snapshot-imports/{importId}:
+    get:
+      operationId: get-snapshot-import
+      parameters:
+        - description: Snapshot import identifier
+          in: path
+          name: importId
+          required: true
+          schema:
+            description: Snapshot import identifier
+            type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ImportResource"
+          description: OK
+        "404":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorModel"
+          description: Not Found
+        "422":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorModel"
+          description: Unprocessable Entity
+        "500":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorModel"
+          description: Internal Server Error
+      summary: Get snapshot import status
+  /v1/snapshots/current:
+    get:
+      operationId: get-current-snapshot
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SnapshotInfo"
+          description: OK
+        "500":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorModel"
+          description: Internal Server Error
+        "503":
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorModel"
+          description: Service Unavailable
+      summary: Get the current searchable snapshot
   /v1/status:
     get:
       operationId: status
