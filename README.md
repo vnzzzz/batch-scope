@@ -24,59 +24,72 @@ cd batchscope_*_linux_amd64
 
 ### 2. デモデータで試す
 
-利用中のバイナリと同じリリースタグにあるデモスナップショットを使います。
-同じ展開ディレクトリを別のターミナルで開き、次を実行してください。`git`、`curl`、`jq`、`tar`が必要です。
+Releaseアーカイブにはデモスナップショットも同梱されています。
+BatchScopeを起動したターミナルはそのままにして、同じ展開ディレクトリを別のターミナルで開きます。`curl`、`jq`、`tar`が必要です。
+
+まず、同梱されたデモスナップショットを取込用のtar.gzにまとめます。
 
 ```bash
-VERSION="v$(./batchscope version | awk '{print $2}')"
-DEMO_DIR="$(mktemp -d)"
-
-git clone --quiet --depth 1 --branch "$VERSION" \
-  https://github.com/vnzzzz/batch-scope.git "$DEMO_DIR/source"
-
-tar -C "$DEMO_DIR/source/examples/demo/snapshot" \
-  -czf "$DEMO_DIR/snapshot.tar.gz" \
+DEMO_ARCHIVE="$(mktemp)"
+tar -C examples/demo/snapshot -czf "$DEMO_ARCHIVE" \
   manifest.json nodes.ndjson relations.ndjson
-
-curl -fsS -X POST \
-  -H 'Content-Type: application/vnd.batchscope.snapshot+gzip' \
-  --data-binary "@$DEMO_DIR/snapshot.tar.gz" \
-  http://127.0.0.1:8080/v1/snapshot-imports
-
-until curl -fsS http://127.0.0.1:8080/readyz >/dev/null 2>&1; do sleep 1; done
-
-curl -fsS 'http://127.0.0.1:8080/v1/targets?query=JOB-A' | jq
-curl -fsS 'http://127.0.0.1:8080/v1/downstream-limit-analysis?targetId=JOB-A' | jq
 ```
 
-これで、デモスナップショットの取込、対象ジョブの検索、後続リミット解析まで確認できます。
+スナップショットをBatchScopeへ送信します。
+
+```bash
+curl -i -X POST \
+  -H 'Content-Type: application/vnd.batchscope.snapshot+gzip' \
+  --data-binary "@$DEMO_ARCHIVE" \
+  http://127.0.0.1:8080/v1/snapshot-imports
+```
+
+取込が完了して検索可能になるまで待ちます。
+
+```bash
+until curl -fsS http://127.0.0.1:8080/readyz >/dev/null 2>&1; do
+  sleep 1
+done
+```
+
+デモの`JOB-A`を検索します。
+
+```bash
+curl -fsS 'http://127.0.0.1:8080/v1/targets?query=JOB-A' | jq
+```
+
+`JOB-A`から後続のリミット設定と依存経路を解析します。
+
+```bash
+curl -fsS \
+  'http://127.0.0.1:8080/v1/downstream-limit-analysis?targetId=JOB-A' \
+  | jq
+```
 
 ### 3. 実際のジョブ定義をPublic Skillで変換する
 
-Releaseアーカイブには`skills/public/batchscope/`を同梱しています。
-このPublic Skillは、既存のジョブマネージャーの出力やジョブ定義を読み取り、BatchScopeが受け取るスナップショットへ変換して、取込・検索するためのエージェント向け手順です。
+Releaseアーカイブには`skills/public/batchscope/`も同梱されています。
+Public Skillは、既存のジョブマネージャーの出力やジョブ定義を読み取り、BatchScopeが受け取る共通スナップショットへ変換して、取込・検索するためのエージェント向け手順です。
 
-Claude CodeやCodexなど、利用するエージェントのSkill配置方法に従って`skills/public/batchscope/`を読み込ませ、ジョブマネージャーから取得した定義ファイルや実行スクリプトを参照できる状態にします。
-そのうえで、例えば次のように依頼します。
+Claude CodeやCodexなど、利用するエージェントのSkill配置方法に従って`skills/public/batchscope/`を読み込ませます。ジョブマネージャーから取得した定義ファイルや実行スクリプトを参照できる状態にしたうえで、例えば次のように依頼します。
 
 ```text
 BatchScope Public Skillを使って、<ジョブ定義のパス> からBatchScope用スナップショットを作成してください。
 起動中の http://127.0.0.1:8080 に取り込み、<調べたいジョブ名またはジョブネット名> の後続リミットと依存経路を調べてください。
 ```
 
-スナップショットのJSON SchemaはPublic Skill内に同梱されています。
-製品固有の定義をどのように解釈・変換するかはPublic Skillが扱い、BatchScope本体は共通スナップショットの取込と解析に専念します。
+スナップショットのJSON SchemaはPublic Skill内に同梱されています。変換規則や取込・検索の詳細はPublic Skillを参照し、READMEには重複して記載しません。
 
 ## ドキュメント
 
-- **使い方を確認する**
+- **使い方**
   - [デモ](docs/development/demo.md) — デモスナップショットとAPI利用例
   - `skills/public/batchscope/SKILL.md` — 実際のジョブ定義をスナップショットへ変換して利用する手順
-- **公開仕様を確認する**
+- **公開仕様**
   - [API仕様](docs/design/api.md) — APIの意味と利用者へ保証する動作
     - [OpenAPI](docs/api/openapi.yaml) — HTTPのパス、パラメーター、JSON形式
   - [スナップショット仕様](docs/design/canonical-snapshot.md) — 取込データの意味とレコード間制約
-- **設計・開発について確認する**
+- **設計・開発**
   - [設計文書](docs/index.md) — 設計文書全体への入口
   - [開発環境](docs/development/development.md) — ソースコードからの開発と実行
   - [ビルドと公開](docs/development/build-and-release.md) — Release成果物とコンテナイメージの扱い
