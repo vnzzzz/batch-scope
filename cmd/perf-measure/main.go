@@ -1,5 +1,7 @@
 // Command perf-measure measures snapshot import and downstream analysis without
 // making the long-running datasets part of the ordinary verification target.
+// Standard Make targets use datasets accepted by the current product limits;
+// oversized generators remain available only to preserve historical measurement inputs.
 package main
 
 import (
@@ -146,7 +148,7 @@ func run() error {
 func parseConfig(arguments []string) (config, error) {
 	flags := flag.NewFlagSet("perf-measure", flag.ContinueOnError)
 	mode := flags.String("mode", "pipeline", "measurement mode: pipeline, import, concurrent, connection-comparison, target-search, or limit-analysis")
-	profile := flags.String("profile", "small", "dataset profile: small, medium, scale, pathological, or custom")
+	profile := flags.String("profile", "small", "dataset profile: small, pathological, or a historical oversized generator (medium, scale, custom)")
 	pathological := flags.String("pathological-cases", "all", "comma-separated pathological cases, or all")
 	nodes := flags.Int("nodes", 0, "custom profile node count")
 	relations := flags.Int("relations", 0, "custom profile relation count")
@@ -232,12 +234,15 @@ func selectDatasets(configured config) ([]datasetSpec, error) {
 	case "small":
 		return []datasetSpec{{name: "small", build: graphgen.Small}}, nil
 	case "medium":
+		// Medium and Scale are kept so historical measurement inputs remain identifiable.
+		// Current product validation still applies, so standard Make targets do not expose them.
 		return []datasetSpec{{name: "medium", build: graphgen.Medium}}, nil
 	case "scale":
 		return []datasetSpec{{name: "scale", build: graphgen.Scale}}, nil
 	case "pathological":
 		return selectPathological(configured.PathologicalCases)
 	case "custom":
+		// Custom preserves the old growth-profile generator; it does not bypass current capacity checks.
 		name := fmt.Sprintf("custom-%d-%d", configured.Nodes, configured.Relations)
 		return []datasetSpec{{name: name, build: func() graphgen.Dataset {
 			return graphgen.Custom(configured.Nodes, configured.Relations)
