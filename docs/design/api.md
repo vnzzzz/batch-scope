@@ -126,9 +126,12 @@ IDは入力どおり比較します。
 同時に実行できる取込は一件です。
 進行中の取込がある場合、二件目はリクエストボディを読む前に`snapshot-import-in-progress`を返します。
 
-現在世代と同じ`snapshotId`かつ同じ展開後内容の再送は、SQLiteを再構築せず`succeeded`にします。
-同じ`snapshotId`で展開後内容が異なる場合は、非同期取込を`failed`とし、`snapshot-id-conflict`を記録します。
-アーカイブ内のファイル順、権限、更新日時、gzipの圧縮方法だけの違いは、内容の違いとして扱いません。
+現在世代と同じ`snapshotId`を再送した場合、展開後の`manifest.json`、`nodes.ndjson`、`relations.ndjson`のbyte内容がすべて同じときだけ同一内容として扱い、SQLiteを再構築せず`succeeded`にします。
+JSONとして意味が同じでも、空白、改行、objectのキー順などで展開後ファイルのbyte内容が変われば異なる内容です。
+同じ`snapshotId`で内容が異なる場合は、非同期取込を`failed`とし、`snapshot-id-conflict`を記録します。
+
+アーカイブ内のファイル順、権限、更新日時、gzipの圧縮方法は展開後三ファイルのbyte内容ではないため、これらだけが異なる再送は同一内容として扱います。
+同一性判定に使用する内部のfingerprint値とhash形式は公開しません。
 
 ## 大容量リクエストの制御
 
