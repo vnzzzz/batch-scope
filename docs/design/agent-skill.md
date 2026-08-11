@@ -86,7 +86,7 @@ Public Skillはリポジトリ内を正本とし、リポジトリ外でも単�
 GitHub ReleaseではJSON Schemaを含む自己完結したPublic Skillとして配布し、Internal Skillは再利用性にかかわらず含めません。
 アーカイブ構成と生成方法は[ビルドと公開](../development/build-and-release.md#対応環境とアーカイブ構成)を正本とします。
 
-Plugin、Marketplace、Gist同期、Skill専用リポジトリは、利用上の必要性が確認されるまで追加しません。
+Public Skill `batchscope`のPlugin、Marketplace、Gist同期、別リポジトリ化は、利用上の必要性が確認されるまで追加しません。
 
 ## 更新規則
 
