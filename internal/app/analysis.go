@@ -581,8 +581,6 @@ func mapAnalysisFact(source limitscan.Fact) (analysisFact, error) {
 	}
 }
 
-// normalizeISODurationは、同じ固定秒数が常に一つの公開表現になるよう、
-// 年、月、週、小数を使わず、0でない日、時、分、秒だけを順に出力する。
 func normalizeISODuration(totalSeconds int64) (string, error) {
 	if totalSeconds < 0 {
 		return "", errors.New("duration seconds must not be negative")
