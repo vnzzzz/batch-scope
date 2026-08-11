@@ -21,7 +21,7 @@ Internal Skillはリポジトリ固有の開発手順と共通規則だけを扱
 
 | 対象 | 正本 | Skillでの扱い |
 |---|---|---|
-| 取込JSONの機械的制約 | `schema/`配下のJSON Schema | Public Skillへフィールド一覧や境界値を全文転記しない |
+| 取込JSONの機械的制約 | `schema/`配下のJSON Schema | Public Skillへフィールド一覧や境界値を全文転記せず、Releaseのビルド時に`references/schema/`へコピーする |
 | 取込データの意味とレコード間制約 | `docs/design/canonical-snapshot.md` | Public Skillにはスナップショット作成時に必要な要点だけを記載する |
 | 変換と検索の手順 | `skills/public/batchscope/SKILL.md` | 製品利用時に直接指示する |
 | 変換時の要点 | `skills/public/batchscope/references/` | リポジトリ外でも判断できる範囲へ要約する |
@@ -76,12 +76,17 @@ Claude CodeとCodexは、シンボリックリンクから必要なSkillだけ�
 CodexにはPublic Skillに加えて、コードコメントと日本語技術文書の共通規則だけを公開します。
 Codex自身には、バックログ監査と実装指揮を担う`batchscope-backlog`と`batchscope-development`を公開しません。
 
+Releaseのアーカイブでは、Public Skillの`references/schema/`からJSON Schemaを参照できます。
+このディレクトリはルートの`schema/*.schema.json`からビルド時に生成し、リポジトリでは管理しません。
+アーカイブの構成は[ビルドと公開](../development/build-and-release.md#バイナリの対象環境)を参照してください。
+
 ## 配布
 
 Public Skillはリポジトリ内を正本とし、リポジトリ外へコピーしても利用できる内容にします。
 リポジトリ内部の開発手順やIssue運用へ依存させません。
 
-初回リリースまでに、`skills/public/batchscope`だけをGitHub Releaseのアーカイブへ追加します。
+GitHub Releaseのアーカイブには`skills/public/batchscope`をディレクトリ単位で追加し、ルートのJSON Schemaを`references/schema/`へコピーします。
+Internal Skillはアーカイブへ追加しません。
 Plugin、Marketplace、Gist同期、Skill専用リポジトリは、利用上の必要性が確認されるまで追加しません。
 
 ## 更新規則

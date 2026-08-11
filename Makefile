@@ -81,7 +81,7 @@ perf-target-search: ## [Dev Container] Smallデータで公開HTTPの完全一�
 perf-limit-analysis: ## [Dev Container] 公開HTTPの後続リミット取得性能をJSONで測定する
 	@go run ./cmd/perf-measure -mode limit-analysis -profile $(PERF_LIMIT_ANALYSIS_PROFILE) -runs $(PERF_LIMIT_ANALYSIS_RUNS) -concurrencies $(PERF_LIMIT_ANALYSIS_CONCURRENCIES)
 
-release-artifacts: ## [Dev Container/CI] GitHub Releasesへ登録するバイナリを作成する
+release-artifacts: ## [Dev Container/CI] GitHub Releasesへ登録するアーカイブを作成する
 	./scripts/build-release-artifacts.sh "$(VERSION)" "$(COMMIT)" dist
 
 check-docker:

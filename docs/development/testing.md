@@ -41,6 +41,11 @@ HTTPテストはstatus code、Problem Details、header、公開DTOの必須項�
 既定ログには、検索query、ジョブ名、完全パス、evidence、入力内容を出しません。
 正常系と入力エラーの両方で、構造化ログに必要な識別子と件数だけが残ることを検査します。
 
+### 公開成果物
+
+OS別アーカイブには、バイナリ、`README.md`、`LICENSE`、Public Skillとルート`schema/`からコピーしたJSON Schemaを含めます。
+全ターゲットの公開ファイル構成とSchemaの内容が一致し、Internal Skillと版未固定のREADMEリンクが含まれないことを実際に作成したアーカイブで検査します。
+
 ## テストレイヤー
 
 | レイヤー | 主なfailure mode |

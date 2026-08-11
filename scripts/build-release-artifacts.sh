@@ -5,7 +5,7 @@ usage() {
   cat <<'USAGE'
 Usage: scripts/build-release-artifacts.sh <version> <commit> [output-dir]
 
-GitHub Releasesへ登録するOS別バイナリを作成します。
+GitHub Releasesへ登録するOS別アーカイブとチェックサムを作成します。
 実行環境はLinuxのDev ContainerまたはGitHub Actionsです。
 USAGE
 }
@@ -41,11 +41,42 @@ if [[ ! -f LICENSE ]]; then
   exit 1
 fi
 
+if [[ ! -d skills/public/batchscope/references ]]; then
+  echo "公開アーカイブへ同梱するPublic Skillがありません。" >&2
+  exit 1
+fi
+
+shopt -s nullglob
+schema_files=(schema/*.schema.json)
+if [[ ${#schema_files[@]} -eq 0 ]]; then
+  echo "公開アーカイブへ同梱するJSON Schemaがありません。" >&2
+  exit 1
+fi
+
 rm -rf "$output_dir"
 mkdir -p "$output_dir"
 output_dir="$(cd "$output_dir" && pwd)"
 work_dir="$(mktemp -d)"
 trap 'rm -rf "$work_dir"' EXIT
+
+stage_public_files() {
+  local stage="$1"
+
+  cp LICENSE "$stage/"
+
+  # checkoutのREADMEはmain上の最新文書を案内し、配布版だけは対応するタグの文書へ固定する。
+  sed \
+    "s#https://github.com/vnzzzz/batch-scope/blob/main/#https://github.com/vnzzzz/batch-scope/blob/v${version}/#g" \
+    README.md > "$stage/README.md"
+
+  mkdir -p "$stage/skills/public"
+  cp -R skills/public/batchscope "$stage/skills/public/"
+
+  rm -rf "$stage/skills/public/batchscope/references/schema"
+  mkdir -p "$stage/skills/public/batchscope/references/schema"
+  # schema/はGoの埋込コードも持つため、配布対象を命名規則に合うJSON Schemaへ限定する。
+  cp "${schema_files[@]}" "$stage/skills/public/batchscope/references/schema/"
+}
 
 targets=(
   "linux amd64"
@@ -69,7 +100,7 @@ for target in "${targets[@]}"; do
       -o "$stage/$binary" \
       ./cmd/batchscope
 
-  cp README.md LICENSE "$stage/"
+  stage_public_files "$stage"
 
   tar -C "$work_dir" -czf "$output_dir/${name}.tar.gz" "$name"
 

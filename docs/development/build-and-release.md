@@ -2,19 +2,18 @@
 
 ## 提供するもの
 
-初期の公開対象は、GitHubの公開リポジトリとGitHub Releasesの単体バイナリです。
+初期の公開対象は、GitHubの公開リポジトリとGitHub ReleasesのOS別アーカイブです。
 コンテナイメージはレジストリへ公開しません。
 
 | 提供物 | 公開先 | 公開方法 |
 |---|---|---|
 | ソースコード | GitHubリポジトリ | `main`への通常のpushとPull Request |
-| OS別バイナリ | GitHub Releases | SemVerタグのpushで自動作成 |
+| OS別アーカイブ | GitHub Releases | SemVerタグのpushで自動作成 |
 | コンテナイメージ | 公開しない | 利用者がソースコードから作成 |
 
-GitHub Releasesはタグに対応するリリースを作り、OS別バイナリとSHA-256チェックサムを添付します。
+GitHub Releasesはタグに対応するリリースを作り、OS別アーカイブとSHA-256チェックサムを添付します。
 GHCRとDocker Hubは、利用要望と運用方法を確認してから追加します。
-利用者向けのPublic Skillは同じリポジトリで管理し、初回リリースまでにGitHub Releaseのアーカイブへ追加します。
-現時点のRelease WorkflowはOS別バイナリだけを作成します。
+利用者向けのPublic SkillとJSON Schemaは、各OS別アーカイブへ追加します。
 
 ## バイナリの対象環境
 
@@ -28,7 +27,28 @@ GHCRとDocker Hubは、利用要望と運用方法を確認してから追加し
 SQLiteの切替は、開いているファイルをrenameできるPOSIXのセマンティクスに依存します。
 そのため、v0.1.0ではWindows向けバイナリを公開しません。
 
-各アーカイブには、`batchscope`、`README.md`、`LICENSE`を含めます。
+各アーカイブは、次の構成を持ちます。
+
+```text
+batchscope_<version>_<os>_<arch>/
+├── batchscope
+├── README.md
+├── LICENSE
+└── skills/
+    └── public/
+        └── batchscope/
+            ├── SKILL.md
+            └── references/
+                ├── canonical-snapshot.md
+                ├── downstream-limit-analysis.md
+                ├── normalization-rules.md
+                └── schema/
+```
+
+Public Skillは`skills/public/batchscope/`をディレクトリ単位で取り込みます。
+`references/schema/`にはルートの`schema/*.schema.json`をビルド時にコピーし、Internal Skillは含めません。
+どちらもファイル名を固定せずディレクトリ単位で扱うため、Public Skillの参照資料やJSON Schemaが増えても追加設定は不要です。
+アーカイブ内の`README.md`は、リポジトリ内文書へのリンクを対応する`v<version>`タグへ固定します。
 `checksums.txt`には、各アーカイブのSHA-256を記録します。
 
 ## 公開前の準備
@@ -42,7 +62,7 @@ SQLiteの切替は、開いているファイルをrenameできるPOSIXのセマ
 `LICENSE`がない場合、リリースWorkflowはバイナリを公開しません。
 Goモジュールパスの方針は[設計判断](../design/decisions.md#採用した方式)を参照してください。
 
-## 公開用バイナリの確認
+## 公開成果物の確認
 
 実行環境：Dev Container
 
@@ -92,7 +112,7 @@ Workflowは次の順に処理します。
 flowchart LR
     Tag[SemVerタグをpush] --> Check[タグ、main、LICENSEを確認]
     Check --> Verify[make verify]
-    Verify --> Build[OS別バイナリを作成]
+    Verify --> Build[OS別アーカイブを作成]
     Build --> Release[GitHub Releaseを作成]
 ```
 
@@ -111,6 +131,7 @@ flowchart LR
 ```
 
 実行用イメージには、アプリケーションバイナリだけを含めます。
+Releaseのアーカイブと異なり、Public SkillとJSON Schemaは含めません。
 Codex CLI、Claude Code、Node.js、Goコンパイラ、Git、シェル、設計文書は含めません。
 
 ## ローカルイメージの作成

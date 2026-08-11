@@ -46,6 +46,12 @@ description: ジョブマネージャーの定義をBatchScopeの入力形式へ
 検査、梱包、送信には、利用環境の`jq`、`tar`、`curl`などを使う。
 取込API側でも、JSON Schemaと参照関係を必ず再検査する。
 
+## JSON Schemaの参照先
+
+source checkoutでは、リポジトリルートの`schema/*.schema.json`を参照する。
+GitHub Releaseの配布物では、このSkill内の`references/schema/*.schema.json`を参照する。
+Schemaのフィールドと機械的制約は参照先を正本とし、このSkillの説明から推測して補わない。
+
 ## 検索結果の読み方
 
 BatchScopeが返す値は、定義に保存されたリミットである。
@@ -64,3 +70,4 @@ BatchScopeが返す値は、定義に保存されたリミットである。
 - `references/canonical-snapshot.md`
 - `references/downstream-limit-analysis.md`
 - `references/normalization-rules.md`
+- GitHub Releaseの配布物では`references/schema/*.schema.json`
