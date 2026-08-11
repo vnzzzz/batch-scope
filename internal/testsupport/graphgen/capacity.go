@@ -33,7 +33,7 @@ func CapacityBoundary(nodeCount, relationCount, limitCount int) Dataset {
 	}
 
 	return Dataset{
-		Name: fmt.Sprintf("capacity-boundary-%d-%d-%d", nodeCount, relationCount, limitCount),
+		Name:  fmt.Sprintf("capacity-boundary-%d-%d-%d", nodeCount, relationCount, limitCount),
 		Nodes: nodes, Relations: relations,
 		Expectations: []Expectation{{
 			InputNodeCount: nodeCount, InputRelationCount: len(relations), InputLimitCount: limitCount,
@@ -91,7 +91,7 @@ func DenseSCC(sccSize, chordCount int) Dataset {
 		limitCount += len(node.LimitFacts)
 	}
 	return Dataset{
-		Name: fmt.Sprintf("dense-scc-%d-%d", sccSize, chordCount),
+		Name:  fmt.Sprintf("dense-scc-%d-%d", sccSize, chordCount),
 		Nodes: nodes, Relations: relations,
 		Expectations: []Expectation{{
 			InputNodeCount: len(nodes), InputRelationCount: len(relations), InputLimitCount: limitCount,
