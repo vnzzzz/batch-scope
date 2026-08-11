@@ -43,8 +43,8 @@ HTTPテストはstatus code、Problem Details、header、公開DTOの必須項�
 
 ### 公開成果物
 
-OS別アーカイブには、バイナリ、`README.md`、`LICENSE`、Public Skillとルート`schema/`からコピーしたJSON Schemaを含めます。
-全ターゲットの公開ファイル構成とSchemaの内容が一致し、Internal Skillと版未固定のREADMEリンクが含まれないことを実際に作成したアーカイブで検査します。
+Release archiveは[ビルドと公開](build-and-release.md#対応環境とアーカイブ構成)を正本とし、専用の成果物検査で実際に生成したアーカイブがその契約へ一致することを確認します。
+Public Skillと配布JSON Schemaのsource一致、Internal Skill非同梱、READMEの版固定リンク、ターゲット間の構成一致、チェックサムを検査します。
 
 ## テストレイヤー
 
@@ -56,6 +56,7 @@ OS別アーカイブには、バイナリ、`README.md`、`LICENSE`、Public Ski
 | 実TCP test | upload deadlineがsocket readを中断せず、取込資源を保持し続ける |
 | demo response test | 取込から公開DTOまでの代表フローで、個別レイヤーの組合せが崩れる |
 | local smoke test | 実プロセスの起動、公開ポート、公開フローの接続が成立しない |
+| Release artifact check | 公開用archiveの構成、配布コピー、リンク、checksumがRelease契約と異なる |
 
 同じ仕様を下位レイヤーとHTTPレイヤーで検査する場合、下位レイヤーは規則そのもの、HTTPレイヤーは公開形式への写像を担当します。
 同じ入力、同じfixture、同じassertionで同じ不具合を検出するテストは統合します。
@@ -74,8 +75,8 @@ make verify
 `make verify`はGoのformat、shell scriptの構文、`go vet`、race detector付きのテスト、生成OpenAPIと実装の差分を検査します。
 通常のテストは、初期対応規模の受入境界と軽量な病理グラフを件数の合否に使いますが、実行時間やメモリ量の性能閾値を合否に使いません。
 
-local smoke testは、実プロセスを起動した公開フローを確認する役割を持ちます。
-unit testやintegration testの代替にはせず、`make verify`との役割を分けます。
+local smoke testとRelease artifact checkは、実プロセスまたは生成済み成果物を検査するため、通常の`make verify`から分離します。
+それぞれの実行方法は[開発環境](development.md)と[ビルドと公開](build-and-release.md#公開成果物の確認)を参照してください。
 
 ## 性能測定用データ
 
