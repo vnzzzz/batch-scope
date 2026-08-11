@@ -505,8 +505,6 @@ func extendPath(parent *path, edge graphEdge, destination traversal.Node) *path 
 	return candidate
 }
 
-// lessPathは、通過するジョブ数、relation接続数、入力に依存しないID列の順に比較する。
-// confirmedだけの経路を優先する判定は別の探索結果で行い、ここへ確実性の重みを混在させない。
 func lessPath(left, right *path) bool {
 	if left.dependencyDistance != right.dependencyDistance {
 		return left.dependencyDistance < right.dependencyDistance
@@ -649,8 +647,6 @@ func (queue *hopQueue) Pop() any {
 	return value
 }
 
-// oneCycleは全単純閉路を列挙せず、未表示の最小IDを安定した最短区間でつないでSCCの代表経路を一つ作る。
-// SCCの完全な構成はCycle.Nodesが保持するため、表示経路の選択で循環の存在範囲を狭めない。
 func oneCycle(ctx context.Context, current graph, start string, allowed map[string]struct{}) ([]CycleStep, error) {
 	if len(allowed) == 1 {
 		for _, edge := range current.outgoing[start] {
