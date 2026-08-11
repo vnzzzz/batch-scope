@@ -37,6 +37,10 @@ if [[ ! -f "$output_dir/checksums.txt" ]]; then
   echo "先にRelease成果物を作成してください: $output_dir/checksums.txt" >&2
   exit 1
 fi
+if [[ ! -f "$output_dir/batchscope_demo_snapshot.tar.gz" ]]; then
+  echo "デモスナップショットassetがありません: $output_dir/batchscope_demo_snapshot.tar.gz" >&2
+  exit 1
+fi
 
 work_dir="$(mktemp -d)"
 trap 'rm -rf "$work_dir"' EXIT
@@ -57,6 +61,30 @@ if [[ $schema_count -eq 0 ]]; then
   exit 1
 fi
 
+demo_extract="$work_dir/demo"
+mkdir -p "$demo_extract"
+tar -xzf "$output_dir/batchscope_demo_snapshot.tar.gz" -C "$demo_extract"
+for demo_file in manifest.json nodes.ndjson relations.ndjson; do
+  [[ -f "$demo_extract/$demo_file" ]] || {
+    echo "デモスナップショットassetに必要なファイルがありません: $demo_file" >&2
+    exit 1
+  }
+  if ! diff -u "examples/demo/snapshot/$demo_file" "$demo_extract/$demo_file" >/dev/null; then
+    echo "デモスナップショットassetがsourceと一致しません: $demo_file" >&2
+    diff -u "examples/demo/snapshot/$demo_file" "$demo_extract/$demo_file" >&2 || true
+    exit 1
+  fi
+done
+
+demo_files="$work_dir/demo.files"
+find "$demo_extract" -type f -print | sed "s#^$demo_extract/##" | sort > "$demo_files"
+printf '%s\n' manifest.json nodes.ndjson relations.ndjson | sort > "$work_dir/expected-demo.files"
+if ! diff -u "$work_dir/expected-demo.files" "$demo_files" >/dev/null; then
+  echo "デモスナップショットassetのファイル構成が想定と一致しません。" >&2
+  diff -u "$work_dir/expected-demo.files" "$demo_files" >&2 || true
+  exit 1
+fi
+
 targets=(linux_amd64 linux_arm64 darwin_amd64 darwin_arm64)
 first_files=""
 
@@ -70,14 +98,7 @@ for target in "${targets[@]}"; do
   mkdir -p "$extract_dir"
   tar -xzf "$archive" -C "$extract_dir"
 
-  for required in \
-    batchscope \
-    README.md \
-    LICENSE \
-    skills/public/batchscope/SKILL.md \
-    examples/demo/snapshot/manifest.json \
-    examples/demo/snapshot/nodes.ndjson \
-    examples/demo/snapshot/relations.ndjson; do
+  for required in batchscope README.md LICENSE skills/public/batchscope/SKILL.md; do
     [[ -f "$root/$required" ]] || { echo "$name: $required がありません。" >&2; exit 1; }
   done
 
@@ -89,12 +110,6 @@ for target in "${targets[@]}"; do
   if ! diff -r "$expected_skill" "$root/skills/public/batchscope" >/dev/null; then
     echo "$name: Public Skillまたは配布JSON Schemaがsourceと一致しません。" >&2
     diff -r "$expected_skill" "$root/skills/public/batchscope" >&2 || true
-    exit 1
-  fi
-
-  if ! diff -r examples/demo/snapshot "$root/examples/demo/snapshot" >/dev/null; then
-    echo "$name: 配布デモスナップショットがsourceと一致しません。" >&2
-    diff -r examples/demo/snapshot "$root/examples/demo/snapshot" >&2 || true
     exit 1
   fi
 
