@@ -321,6 +321,53 @@ func TestReadNodesStopsAtFirstLimitCapacityExceeded(t *testing.T) {
 	assertValidationError(t, err, ErrorSchemaViolation, nodesName, capacityLine, "/name")
 }
 
+func TestReadNodesAppliesLimitCapacityBeforeDuplicateNode(t *testing.T) {
+	const factsPerNode = 1_000
+	limitFacts := func(prefix string, count int) []any {
+		facts := make([]any, count)
+		for index := range facts {
+			facts[index] = map[string]any{
+				"id": fmt.Sprintf("%s-%d", prefix, index), "kind": "raw", "sourceText": "raw",
+				"origin": "manual", "certainty": "declared",
+			}
+		}
+		return facts
+	}
+
+	nodes := make([]string, 0, 7)
+	nodes = append(nodes, testNode("job", "DUPLICATED", nil, limitFacts("LIMIT-0", factsPerNode)))
+	for nodeIndex := 1; nodeIndex < limits.MaxSnapshotLimits/factsPerNode; nodeIndex++ {
+		nodes = append(nodes, testNode(
+			"job", fmt.Sprintf("JOB-%d", nodeIndex), nil,
+			limitFacts(fmt.Sprintf("LIMIT-%d", nodeIndex), factsPerNode),
+		))
+	}
+	capacityLine := len(nodes) + 1
+	nodes = append(nodes, testNode("job", "DUPLICATED", nil, limitFacts("DUPLICATE-ROW", factsPerNode)))
+	// 重複判定より先に容量超過で停止しなければ、この後続行のinvalid_jsonが返る。
+	nodes = append(nodes, "{")
+
+	extracted := writeExtractedSnapshot(t, nodes, nil)
+	schemas, err := getSchemas()
+	if err != nil {
+		t.Fatal(err)
+	}
+	orderedIDs, byID, nodeCount, limitCount, duplicateErr, err := readNodes(context.Background(), extracted.Nodes, schemas.node)
+	assertValidationError(t, err, ErrorCapacityExceeded, nodesName, capacityLine, "/limitFacts/0")
+	if nodeCount != capacityLine || limitCount != limits.MaxSnapshotLimits+1 {
+		t.Fatalf("readNodes() counts = nodes %d, limits %d; want nodes %d, limits %d", nodeCount, limitCount, capacityLine, limits.MaxSnapshotLimits+1)
+	}
+	if len(orderedIDs) != capacityLine-1 || len(byID) != capacityLine-1 {
+		t.Fatalf("readNodes() retained nodes = ordered %d, map %d; want %d", len(orderedIDs), len(byID), capacityLine-1)
+	}
+	if duplicateErr != nil {
+		t.Fatalf("readNodes() duplicate error = %v, want nil before capacity error", duplicateErr)
+	}
+
+	_, err = Validate(context.Background(), extracted)
+	assertValidationError(t, err, ErrorCapacityExceeded, nodesName, capacityLine, "/limitFacts/0")
+}
+
 func TestValidateAcceptsJSONNumberFormsForManifestCounts(t *testing.T) {
 	extracted := writeExtractedSnapshot(t, []string{testNode("job", "A", nil, nil)}, nil)
 	writeTestFile(t, extracted.Manifest, `{"schemaVersion":"0.5","snapshotId":"s","generatedAt":"2026-08-08T00:00:00Z","nodeCount":1.0,"relationCount":0e0,"producer":{"name":"test","version":"1"}}`)
@@ -870,6 +917,43 @@ func TestValidateMeasuresMaximumSCCSize(t *testing.T) {
 			}
 			if result.MaxSCCNodes != tt.want {
 				t.Fatalf("Validate() MaxSCCNodes = %d, want %d", result.MaxSCCNodes, tt.want)
+			}
+		})
+	}
+}
+
+func TestValidateSCCCapacityMatchesTraversableSources(t *testing.T) {
+	const sccSize = limits.MaxSCCNodes + 1
+	tests := []struct {
+		name     string
+		nodeType string
+		wantMax  int
+		wantErr  bool
+	}{
+		{name: "accepts non-traversable SCC", nodeType: "management_unit", wantMax: 1},
+		{name: "rejects traversable SCC", nodeType: "job", wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			nodes := make([]string, sccSize)
+			relations := make([]string, sccSize)
+			for index := range sccSize {
+				fromID := fmt.Sprintf("NODE-%04d", index)
+				toID := fmt.Sprintf("NODE-%04d", (index+1)%sccSize)
+				nodes[index] = testNode(tt.nodeType, fromID, nil, nil)
+				relations[index] = testRelation(fromID, toID, "precedes", "scheduler", "declared", nil)
+			}
+
+			result, err := Validate(context.Background(), writeExtractedSnapshot(t, nodes, relations))
+			if tt.wantErr {
+				assertValidationError(t, err, ErrorCapacityExceeded, relationsName, 0, "")
+				return
+			}
+			if err != nil {
+				t.Fatalf("Validate() error = %v", err)
+			}
+			if result.MaxSCCNodes != tt.wantMax {
+				t.Fatalf("Validate() MaxSCCNodes = %d, want %d", result.MaxSCCNodes, tt.wantMax)
 			}
 		})
 	}

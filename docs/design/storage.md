@@ -174,6 +174,7 @@ Issue #14で観測された制約はSQLiteの探索性能ではなく、単一�
 | `NodeCount` | ノード数 |
 | `RelationCount` | relation数 |
 | `LimitCount` | リミット設定の総数 |
+| `MaxSCCNodes` | 探索グラフの最大SCCに含まれるノード数 |
 | `MaxJobNetworkDepth` | ジョブネット階層の最大深さ |
 | `Fingerprint` | 展開後の内容フィンガープリント |
 

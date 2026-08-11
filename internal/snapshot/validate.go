@@ -120,7 +120,7 @@ type ValidationResult struct {
 //  2. nodes.ndjsonの各行: JSON、意味、Schema、実件数とリミット総数の容量
 //  3. ノード横断: 件数、行番号順の親参照とノードIDまたはリミットIDの重複または複数の親、親子関係の循環
 //  4. relations.ndjsonの各行: JSON、Schema、参照の存在、実件数の容量、重複
-//  5. 依存関係の件数、relationとscope遷移から成る探索グラフのSCCサイズ
+//  5. 依存関係の件数、検索時に展開するrelationとscope遷移から成る探索グラフのSCCサイズ
 //
 // 行内で完結する検査と、全ノードを読み終えて初めて判定できる検査は別のフェーズで実行する。
 // 容量を超えた有効行では後続行の検査と値の保持を止め、受け入れない入力へ検証資源を費やし続けない。
@@ -325,6 +325,16 @@ func readNodes(ctx context.Context, path string, schema *jsonschema.Schema) ([]s
 		if count > limits.MaxSnapshotNodes {
 			return &Error{Kind: ErrorCapacityExceeded, File: nodesName, Line: line}
 		}
+		remaining := limits.MaxSnapshotLimits - limitCount
+		if len(facts) > remaining {
+			// 重複ノードも行検証でリミットをparseするため、重複判定で破棄する行にも同じ容量上限を適用する。
+			limitCount += remaining + 1
+			return &Error{
+				Kind: ErrorCapacityExceeded, File: nodesName, Line: line,
+				Pointer: jsonPointer([]string{"limitFacts", strconv.Itoa(remaining)}),
+			}
+		}
+		limitCount += len(facts)
 		if previous, exists := byID[id]; exists {
 			// 最初の定義は単体では正しいため、取り除くべき後続の定義側の行を報告する。
 			// 以降の重複は最初の1件より必ず後ろにあり、行番号の比較へ影響しないので保持しない。
@@ -338,13 +348,6 @@ func readNodes(ctx context.Context, path string, schema *jsonschema.Schema) ([]s
 			return nil
 		}
 		for index, fact := range facts {
-			limitCount++
-			if limitCount > limits.MaxSnapshotLimits {
-				return &Error{
-					Kind: ErrorCapacityExceeded, File: nodesName, Line: line,
-					Pointer: jsonPointer([]string{"limitFacts", strconv.Itoa(index)}),
-				}
-			}
 			if _, exists := limitIDs[fact.ID]; exists {
 				if duplicateErr == nil {
 					duplicateErr = &Error{
@@ -431,7 +434,8 @@ func readRelations(ctx context.Context, path string, schema *jsonschema.Schema, 
 		if err := remarshal(value, &current); err != nil {
 			return &Error{Kind: ErrorInvalidJSON, File: relationsName, Line: line, Err: err}
 		}
-		if _, exists := nodes[current.FromID]; !exists {
+		fromNode, exists := nodes[current.FromID]
+		if !exists {
 			return &Error{Kind: ErrorMissingNode, File: relationsName, Line: line, Pointer: "/fromId"}
 		}
 		if _, exists := nodes[current.ToID]; !exists {
@@ -449,7 +453,9 @@ func readRelations(ctx context.Context, path string, schema *jsonschema.Schema, 
 			return &Error{Kind: ErrorDuplicateRelation, File: relationsName, Line: line}
 		}
 		seen[id] = struct{}{}
-		graph.addEdge(current.FromID, current.ToID)
+		if isTraversableNodeKind(fromNode.Type) {
+			graph.addEdge(current.FromID, current.ToID)
+		}
 		return nil
 	})
 	return count, err
@@ -485,7 +491,7 @@ func (graph *sccGraph) addEdge(fromID, toID string) {
 	graph.adjacency[from] = append(graph.adjacency[from], to)
 }
 
-// maxSCCNodesは、relation検証中に完成させた隣接リストをTarjan法で一度だけ走査し、O(V+E)で最大成分を求める。
+// maxSCCNodesは、relation検証中に検索時と同じ条件で完成させた隣接リストをTarjan法で一度だけ走査し、O(V+E)で最大成分を求める。
 // 探索グラフと同じscope辺はnewSCCGraphで追加済みであり、NDJSONを再読込しない。
 func (graph *sccGraph) maxSCCNodes(ctx context.Context) (int, error) {
 	indices := make([]int, len(graph.adjacency))
@@ -719,6 +725,17 @@ func nodeKindOf(kind string) nodeKind {
 		return nodeKindExternalEvent
 	default:
 		return nodeKindUnknown
+	}
+}
+
+// isTraversableNodeKindはtraversal.isTraversableTypeと同じ種別集合を保つ。
+// 取込時のSCCを検索時に実際に展開するグラフと一致させるため、どちらかの種別を変更する場合は両方を同時に更新する。
+func isTraversableNodeKind(kind nodeKind) bool {
+	switch kind {
+	case nodeKindJob, nodeKindJobNetwork, nodeKindFile, nodeKindFilePattern, nodeKindJobStatus, nodeKindExternalEvent:
+		return true
+	default:
+		return false
 	}
 }
 
