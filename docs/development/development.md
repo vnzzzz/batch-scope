@@ -146,10 +146,11 @@ export BATCHSCOPE_CODEX_MODEL=<利用可能なCodexモデル>
 | `GET /readyz` | スナップショット未投入時は503 |
 | `GET /v1/status` | 起動状態とスナップショット状態 |
 | `GET /v1/targets` | ジョブとジョブネットの完全一致検索 |
+| `GET /v1/downstream-limit-analysis` | 後続リミットと依存経路の全件解析 |
 
 このほかに、Humaが`/docs`、`/openapi.json`、`/openapi.yaml`を提供します。
 
-スナップショット取込APIと後続リミット検索は、設計済みで未実装です。
+スナップショット取込APIは設計済みで未実装です。
 デモ用レスポンスの確認方法は[デモ](demo.md)を参照してください。
 
 ## AIエージェントによる開発

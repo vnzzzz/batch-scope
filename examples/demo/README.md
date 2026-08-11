@@ -9,7 +9,9 @@
 - トリガファイルを介した依存関係
 - 外部イベントを介した循環
 - `finish_by`と`max_elapsed`のリミット
-- 循環と合流を含む経路ツリー
+- `raw`のリミットまでの長い直列経路と`hiddenConnections`による圧縮表示
+- 合流参照と循環参照を含む経路ツリー
+- リミットなし終端、リミットなし循環、探索対象外の管理単位へ達する経路
 
 ## レスポンス例の表示
 
@@ -39,5 +41,5 @@ curl -fsS \
   | ./scripts/show-limit-analysis.sh
 ```
 
-現在のサービス骨格は、スナップショット取込と後続リミット検索をまだ実装していません。
-`responses/downstream-limit-analysis.json`は、API実装前にも表示方法とレスポンス形式を確認するための例です。
+`responses/downstream-limit-analysis.json`は、このスナップショットを取り込み、`targetId=JOB-A`で後続リミット取得APIを呼び出して生成しています。
+自動テストでは、固定した`bootId`を除くレスポンス全体が実装の出力と一致することを確認します。

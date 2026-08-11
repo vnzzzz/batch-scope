@@ -140,8 +140,8 @@ func TestValidateAcceptsDemoSnapshot(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Validate() error = %v", err)
 	}
-	if result.NodeCount != 9 || result.RelationCount != 8 {
-		t.Fatalf("Validate() result = %#v, want 9 nodes and 8 relations", result)
+	if result.NodeCount != 19 || result.RelationCount != 19 || result.LimitCount != 5 {
+		t.Fatalf("Validate() result = %#v, want 19 nodes, 19 relations, and 5 limits", result)
 	}
 }
 

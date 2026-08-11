@@ -45,6 +45,10 @@ func TestParseConfigRequiresRepeatedRunsAndExactConcurrencies(t *testing.T) {
 	if err != nil || !reflect.DeepEqual(targetSearch.Concurrencies, []int{2, 3}) {
 		t.Fatalf("parseConfig(target-search explicit concurrencies) = %#v, %v", targetSearch, err)
 	}
+	limitAnalysis, err := parseConfig([]string{"-mode", "limit-analysis", "-runs", "2"})
+	if err != nil || !reflect.DeepEqual(limitAnalysis.Concurrencies, []int{1, 4}) {
+		t.Fatalf("parseConfig(limit-analysis) = %#v, %v", limitAnalysis, err)
+	}
 }
 
 func TestParseConfigValidatesCustomSize(t *testing.T) {

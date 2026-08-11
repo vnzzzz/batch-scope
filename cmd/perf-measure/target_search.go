@@ -197,7 +197,7 @@ func measureTargetSearchCases(handler http.Handler, storage *store.Store, cases 
 			coldLatencies := make([]int64, 0, runs*concurrency)
 			warmLatencies := make([]int64, 0, runs*concurrency)
 			for runNumber := 1; runNumber <= runs; runNumber++ {
-				if err := resetTargetSearchPageCaches(context.Background(), storage); err != nil {
+				if err := resetHTTPPageCaches(context.Background(), storage); err != nil {
 					return nil, fmt.Errorf("reset page caches for %s: %w", searchCase.Name, err)
 				}
 				runtime.GC()
@@ -314,7 +314,7 @@ func validateTargetSearchOutcome(searchCase targetSearchCase, outcome targetSear
 	return hex.EncodeToString(digest[:]), nil
 }
 
-func resetTargetSearchPageCaches(ctx context.Context, storage *store.Store) error {
+func resetHTTPPageCaches(ctx context.Context, storage *store.Store) error {
 	database, _, release, err := storage.Acquire()
 	if err != nil {
 		return err

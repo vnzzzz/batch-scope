@@ -15,7 +15,8 @@ jq -r '
   def limit_label:
     "    \(.limitOwner.id)  \(.limitOwner.name)  \(.fact.sourceText // .fact.duration // .fact.kind)" +
     (if .scopeRoot != null then "  スコープルート=\(.scopeRoot.id)" else "" end) +
-    "  確実性=\(.fact.certainty)";
+    "  確実性=\(.fact.certainty)  経路=\(.treeNodeId)" +
+    (if .alternatePathCount > 0 then "  代替経路=\(.alternatePathCount)" else "" end);
 
   def limit_section($title; $limits):
     $title,
@@ -34,18 +35,41 @@ jq -r '
   def relation_label:
     "\(.kind) / \(.origin) / \(.certainty)";
 
-  def via_relations:
-    if ((.viaRelations // []) | length) == 0 then ""
-    else "  <- " + ([.viaRelations[] | relation_label] | join(", "))
+  def connection_label:
+    "\(.fromId) -> \(.toId): " +
+    (if .viaScope then "scope"
+     else ([.viaRelations[] | relation_label] | join(", ")) end);
+
+  def via_label:
+    if ((.hiddenConnections // []) | length) > 0 then
+      "  <- [圧縮区間: " + ([.hiddenConnections[] | connection_label] | join("; ")) + "]"
+    elif (.viaScope // false) then "  <- scope"
+    elif ((.viaRelations // []) | length) > 0 then
+      "  <- " + ([.viaRelations[] | relation_label] | join(", "))
+    else ""
+    end;
+
+  def reference_label:
+    if .referenceType == "cycle" then "  [循環参照 -> \(.referenceTo), \(.cycleId)]"
+    elif .referenceType == "shared" then "  [合流参照 -> \(.referenceTo)]"
+    else ""
+    end;
+
+  def hidden_label:
+    if ((.hiddenConnections // []) | length) == 0 then ""
+    else "  [ジョブ\(.hiddenJobCount // 0)件省略: " +
+      ((.hiddenNodeIds // []) | join(", ")) +
+      (if .hiddenNodeIdsTruncated then ", 以降省略" else "" end) + "]"
     end;
 
   def tree_lines($indent):
-    ($indent + (.node | node_label) + via_relations +
-      (if .referenceType == "cycle" then "  [循環]"
-       elif .referenceType == "shared" then "  [合流]"
-       else "" end) +
-      (if (.hiddenJobCount // 0) > 0 then "  [\(.hiddenJobCount)件省略]" else "" end)),
+    ($indent + "\(.treeNodeId)  " + (.node | node_label) + via_label + reference_label + hidden_label),
     ((.children // [])[] | tree_lines($indent + "  "));
+
+  def cycle_step:
+    "    \(.fromId) -> \(.toId): " +
+    (if .viaScope then "scope"
+     else ([.viaRelations[] | relation_label] | join(", ")) end);
 
   "対象: \(.target.id)  \(.target.name)",
   "スナップショット: \(.snapshotId)",
@@ -59,10 +83,18 @@ jq -r '
   "経路",
   (.tree | tree_lines("  ")),
   "",
+  "リミット未通過経路",
+  (if (.uncoveredRoutes | length) == 0 then "  なし"
+   else (.uncoveredRoutes[] |
+     "  \(.reason): 境界=\(.boundary.id)  経路=\(.treeNodeId)" +
+     (if .cycleId != null then "  循環=\(.cycleId)" else "" end)) end),
+  "",
   "循環",
   (if (.cycles | length) == 0 then "  なし"
    else (.cycles[] | "  \(.cycleId): " + ([.nodes[].id] | join(", ")) +
      (if .containsImplicitRelation then "  [暗黙的な依存関係を含む]" else "" end) +
-     (if .containsUncertainRelation then "  [未確認の依存関係を含む]" else "" end)) end),
+     (if .containsUncertainRelation then "  [未確認の依存関係を含む]" else "" end),
+     "  一周分の表示経路",
+     (.route[] | cycle_step)) end),
   ""
 ' "$input"

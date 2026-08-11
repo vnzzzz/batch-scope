@@ -85,6 +85,9 @@ func run() error {
 	if configured.Mode == "target-search" {
 		return runTargetSearch(configured, os.Stdout)
 	}
+	if configured.Mode == "limit-analysis" {
+		return runLimitAnalysis(configured, os.Stdout)
+	}
 	specs, err := selectDatasets(configured)
 	if err != nil {
 		return err
@@ -142,7 +145,7 @@ func run() error {
 
 func parseConfig(arguments []string) (config, error) {
 	flags := flag.NewFlagSet("perf-measure", flag.ContinueOnError)
-	mode := flags.String("mode", "pipeline", "measurement mode: pipeline, import, concurrent, connection-comparison, or target-search")
+	mode := flags.String("mode", "pipeline", "measurement mode: pipeline, import, concurrent, connection-comparison, target-search, or limit-analysis")
 	profile := flags.String("profile", "small", "dataset profile: small, medium, scale, pathological, or custom")
 	pathological := flags.String("pathological-cases", "all", "comma-separated pathological cases, or all")
 	nodes := flags.Int("nodes", 0, "custom profile node count")
@@ -155,7 +158,7 @@ func parseConfig(arguments []string) (config, error) {
 	if flags.NArg() != 0 {
 		return config{}, fmt.Errorf("unexpected positional arguments: %s", strings.Join(flags.Args(), " "))
 	}
-	if *mode != "pipeline" && *mode != "import" && *mode != "concurrent" && *mode != "connection-comparison" && *mode != "target-search" {
+	if *mode != "pipeline" && *mode != "import" && *mode != "concurrent" && *mode != "connection-comparison" && *mode != "target-search" && *mode != "limit-analysis" {
 		return config{}, fmt.Errorf("unsupported mode %q", *mode)
 	}
 	if *runs < 2 {
@@ -171,7 +174,7 @@ func parseConfig(arguments []string) (config, error) {
 			concurrencyWasSet = true
 		}
 	})
-	if *mode == "target-search" && !concurrencyWasSet {
+	if (*mode == "target-search" || *mode == "limit-analysis") && !concurrencyWasSet {
 		concurrencyValue = "1,4"
 	}
 	concurrencies, err := parsePositiveInts(concurrencyValue)

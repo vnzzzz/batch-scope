@@ -171,7 +171,7 @@ MVPの観測情報は、Goの`log/slog`による構造化ログを正本とし�
 | 要求の識別 | `request_id`、`operation`、`duration_ms` |
 | プロセスとデータ | `boot_id`、`snapshot_id`、`import_id` |
 | 検索対象 | `target_id` |
-| 処理量 | `reached_nodes`、`returned_tree_nodes`、`returned_limits`、`returned_targets` |
+| 処理量 | `reached_nodes`、`returned_tree_nodes`、`returned_limits`、`returned_targets`、`uncovered_routes` |
 | 完了状態 | `cycles_detected`、`error_type` |
 
 `duration_ms`は正の処理時間がある場合だけ出力します。
@@ -179,6 +179,7 @@ MVPの観測情報は、Goの`log/slog`による構造化ログを正本とし�
 
 ジョブ名、完全パス、検索の`query`、`evidence`、入力資料の内容は、既定ログへ出力しません。
 完全一致検索では`operation`を`target_search`に固定し、`returned_targets`へ返却件数を記録します。
+後続リミット取得では`operation`を`downstream_limit_analysis`に固定し、到達ノード、返却ツリーノード、返却リミット、循環、リミット未通過経路の件数を記録します。
 
 ## メトリクス
 
@@ -190,9 +191,12 @@ MVPは専用のメトリクスexporterと`/metrics`エンドポイントを実�
 | `snapshot_import_duration_seconds` | 取込を表す`operation`の`duration_ms`を1,000で割る |
 | `snapshot_import_failures_total` | 取込を表す`operation`で`error_type`がある完了ログを数える |
 | `target_lookup_duration_seconds` | `operation=target_search`の`duration_ms`を1,000で割る |
-| `limit_analysis_duration_seconds` | 後続分析を表す`operation`の`duration_ms`を1,000で割る |
-| `limit_analysis_reached_nodes` | 後続分析を表す`operation`の`reached_nodes`を集計する |
-| `limit_analysis_cycles_total` | 後続分析を表す`operation`の`cycles_detected`を集計する |
+| `limit_analysis_duration_seconds` | `operation=downstream_limit_analysis`の`duration_ms`を1,000で割る |
+| `limit_analysis_reached_nodes` | `operation=downstream_limit_analysis`の`reached_nodes`を集計する |
+| `limit_analysis_returned_tree_nodes` | `operation=downstream_limit_analysis`の`returned_tree_nodes`を集計する |
+| `limit_analysis_returned_limits` | `operation=downstream_limit_analysis`の`returned_limits`を集計する |
+| `limit_analysis_cycles_total` | `operation=downstream_limit_analysis`の`cycles_detected`を集計する |
+| `limit_analysis_uncovered_routes` | `operation=downstream_limit_analysis`の`uncovered_routes`を集計する |
 
 各APIの実装では、`operation`の値を処理ごとに固定してからログ集計へ使用します。
 専用メトリクスの公開が必要になった場合は、別Issueでexporterまたはエンドポイントを設計します。
@@ -211,6 +215,10 @@ MVPは専用のメトリクスexporterと`/metrics`エンドポイントを実�
 
 単一検索の内部処理（`Traverse`、`Scan`、`Build`）の中央値は対応規模の判断に使い、並行度4における同じ内部処理のp95は想定同時検索数の判断に使いました。
 各測定値と条件は[性能測定結果](development/performance-measurement.md#中間規模)と[SQLite接続方式の比較](development/performance-measurement.md#sqlite接続方式の比較)を参照してください。
-内部処理のp95にはHTTP層のDTO組立てとJSON化を含まないため、後続リミット取得の最終p95はIssue #13で確認します。
+
+後続リミット取得は、初期対応規模のSmallでHTTPハンドラー、公開DTO組立て、JSON化を含めて測定済みです。
+warmかつ並行度4のp95は753.289 msであり、初期目標の1秒を満たしました。
+条件と分布は[後続リミット取得のHTTP性能測定結果](development/limit-analysis-performance.md)を参照してください。
+
 完全一致検索はHTTP層を含めて測定済みであり、条件と結果は[完全一致検索のHTTP性能測定結果](development/target-search-performance.md)を参照してください。
 この結果に基づき、完全一致検索のp95 200 msの目標を維持します。

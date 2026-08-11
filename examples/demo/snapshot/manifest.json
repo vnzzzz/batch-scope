@@ -2,8 +2,8 @@
   "schemaVersion": "0.5",
   "snapshotId": "demo-2026-08-07T00:00:00Z",
   "generatedAt": "2026-08-07T00:00:00Z",
-  "nodeCount": 9,
-  "relationCount": 8,
+  "nodeCount": 19,
+  "relationCount": 19,
   "producer": {
     "name": "batchscope-demo-normalizer",
     "version": "0.5.0"

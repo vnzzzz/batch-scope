@@ -32,3 +32,12 @@ func SnapshotNotLoadedProblem(detail string) *huma.ErrorModel {
 		Detail: detail,
 	}
 }
+
+func TargetNotFoundProblem(detail string) *huma.ErrorModel {
+	return &huma.ErrorModel{
+		Type:   "/problems/target-not-found",
+		Title:  http.StatusText(http.StatusNotFound),
+		Status: http.StatusNotFound,
+		Detail: detail,
+	}
+}
