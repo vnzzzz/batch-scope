@@ -24,10 +24,16 @@ tar -xzf batchscope_*_linux_amd64.tar.gz
 ./batchscope_*_linux_amd64/batchscope version
 ```
 
-試用中のデータが他の実行と混ざらないよう、一時データディレクトリで起動します。
+試用データの保存先を明示的に作成します。
 
 ```bash
-./batchscope_*_linux_amd64/batchscope serve -data-dir "$(mktemp -d)"
+mkdir batchscope-demo-data
+```
+
+作成したディレクトリを指定してBatchScopeを起動します。
+
+```bash
+./batchscope_*_linux_amd64/batchscope serve -data-dir ./batchscope-demo-data
 ```
 
 既定では`0.0.0.0:8080`で待ち受けます。起動後は`http://127.0.0.1:8080/docs`でAPIドキュメントを確認できます。
