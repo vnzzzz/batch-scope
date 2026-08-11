@@ -85,7 +85,7 @@ BatchScope Public Skillを使って、<ジョブ定義のパス> からBatchScop
 
 - **使い方**
   - [デモ](docs/development/demo.md) — デモスナップショットとAPI利用例
-  - `skills/public/batchscope/SKILL.md` — 実際のジョブ定義をスナップショットへ変換して利用する手順
+  - [Public Skill](skills/public/batchscope/SKILL.md) — 実際のジョブ定義をスナップショットへ変換して利用する手順
 - **公開仕様**
   - [API仕様](docs/design/api.md) — APIの意味と利用者へ保証する動作
     - [OpenAPI](docs/api/openapi.yaml) — HTTPのパス、パラメーター、JSON形式
