@@ -112,6 +112,17 @@ func (s *Store) State() State {
 	return s.stateLocked()
 }
 
+// StateAndGenerationは、状態と現在世代を同じロック時点の組合せで返す。
+// 取込完了時の世代切替とimporting解除の途中を状態表示へ混在させない。
+func (s *Store) StateAndGeneration() (State, Generation, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.current == nil {
+		return s.stateLocked(), Generation{}, false
+	}
+	return s.stateLocked(), s.current.generation, true
+}
+
 // Ready は検索可能なSQLiteがあるかを返す。
 // importing中も、切替前のSQLiteがあればtrueを返す。
 func (s *Store) Ready() bool {
@@ -121,7 +132,7 @@ func (s *Store) Ready() bool {
 }
 
 // CurrentGenerationは、検索参照を増やさずに現在の世代メタデータのコピーを返す。
-// 呼出側はSQLiteへ問い合わせず、同一IDの取込判定や状態表示にだけ使用する。
+// 呼出側はSQLiteへ問い合わせず、同一IDの取込判定や現在世代だけの表示に使用する。
 func (s *Store) CurrentGeneration() (Generation, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

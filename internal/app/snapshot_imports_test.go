@@ -9,6 +9,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -16,6 +17,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -181,7 +183,121 @@ func TestSnapshotImportFailureMappingsAreSafe(t *testing.T) {
 		if problem["type"] != "/problems/invalid-request" || problem["title"] == nil || problem["status"] == nil || problem["detail"] == nil {
 			t.Fatalf("problem = %#v", problem)
 		}
+		assertNoImportTemporaryFiles(t, a)
 	})
+}
+
+func TestSnapshotUploadDeadlineInterruptsSocketReadAndReleasesImport(t *testing.T) {
+	a := newTestApp(t)
+	restoreSnapshotUploadDeadline(t, 250*time.Millisecond)
+	server := newTCPTestServer(t, a.Handler())
+	t.Cleanup(server.Close)
+
+	pipeReader, pipeWriter := io.Pipe()
+	t.Cleanup(func() { _ = pipeWriter.Close() })
+	request, err := http.NewRequest(http.MethodPost, server.URL+"/v1/snapshot-imports", pipeReader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Content-Type", snapshotMediaType)
+	result := make(chan httpClientResult, 1)
+	go func() {
+		response, requestErr := server.Client().Do(request)
+		result <- httpClientResult{response: response, err: requestErr}
+	}()
+	if _, err := pipeWriter.Write([]byte("partial archive")); err != nil {
+		t.Fatal(err)
+	}
+	waitForStoreState(t, a.store, store.StateImporting)
+
+	var upload httpClientResult
+	select {
+	case upload = <-result:
+	case <-time.After(2 * time.Second):
+		t.Fatal("snapshot upload handler remained blocked after its deadline")
+	}
+	if upload.err != nil {
+		t.Fatalf("POST error = %v", upload.err)
+	}
+	defer upload.response.Body.Close()
+	if upload.response.StatusCode != http.StatusBadRequest {
+		t.Fatalf("POST status = %d, want %d", upload.response.StatusCode, http.StatusBadRequest)
+	}
+	var problem map[string]any
+	if err := json.NewDecoder(upload.response.Body).Decode(&problem); err != nil {
+		t.Fatal(err)
+	}
+	if problem["type"] != "/problems/invalid-request" || problem["status"] != float64(http.StatusBadRequest) {
+		t.Fatalf("deadline problem = %#v", problem)
+	}
+	assertNoImportTemporaryFiles(t, a)
+
+	nextRequest, err := http.NewRequest(
+		http.MethodPost,
+		server.URL+"/v1/snapshot-imports",
+		bytes.NewReader(demoSnapshotArchive(t)),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	nextRequest.Header.Set("Content-Type", snapshotMediaType)
+	next, err := server.Client().Do(nextRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer next.Body.Close()
+	if next.StatusCode != http.StatusAccepted {
+		t.Fatalf("next POST status = %d, want %d", next.StatusCode, http.StatusAccepted)
+	}
+	waitForImportState(t, a, next.Header.Get("Location"), importStateSucceeded)
+}
+
+func TestSnapshotUploadDeadlineAllowsAppCloseToFinish(t *testing.T) {
+	a, err := New(Config{Version: "test", Commit: "abc", DataDir: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	restoreSnapshotUploadDeadline(t, 250*time.Millisecond)
+	server := newTCPTestServer(t, a.Handler())
+	t.Cleanup(server.Close)
+
+	pipeReader, pipeWriter := io.Pipe()
+	t.Cleanup(func() { _ = pipeWriter.Close() })
+	request, err := http.NewRequest(http.MethodPost, server.URL+"/v1/snapshot-imports", pipeReader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Content-Type", snapshotMediaType)
+	requestResult := make(chan httpClientResult, 1)
+	go func() {
+		response, requestErr := server.Client().Do(request)
+		requestResult <- httpClientResult{response: response, err: requestErr}
+	}()
+	if _, err := pipeWriter.Write([]byte("partial archive")); err != nil {
+		t.Fatal(err)
+	}
+	waitForStoreState(t, a.store, store.StateImporting)
+
+	closeResult := make(chan error, 1)
+	go func() { closeResult <- a.Close() }()
+	select {
+	case err := <-closeResult:
+		if err != nil {
+			t.Fatalf("Close() error = %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Close() remained blocked by the synchronous request body read")
+	}
+	var upload httpClientResult
+	select {
+	case upload = <-requestResult:
+	case <-time.After(time.Second):
+		t.Fatal("POST did not return after Close() completed")
+	}
+	if upload.err != nil {
+		t.Fatalf("POST error = %v", upload.err)
+	}
+	_ = upload.response.Body.Close()
 }
 
 func TestSnapshotImportNotFoundUsesProblemDetails(t *testing.T) {
@@ -321,6 +437,56 @@ func (body *erroringRequestBody) Read(buffer []byte) (int, error) {
 }
 
 func (*erroringRequestBody) Close() error { return nil }
+
+type httpClientResult struct {
+	response *http.Response
+	err      error
+}
+
+func restoreSnapshotUploadDeadline(t *testing.T, deadline time.Duration) {
+	t.Helper()
+	original := snapshotUploadDeadline
+	snapshotUploadDeadline = deadline
+	t.Cleanup(func() { snapshotUploadDeadline = original })
+}
+
+func newTCPTestServer(t *testing.T, handler http.Handler) *httptest.Server {
+	t.Helper()
+	// 制限付きsandboxではlisten自体が拒否されるため、製品と同じTCP検査を実行できる環境だけで開始する。
+	listener, err := net.Listen("tcp4", "127.0.0.1:0")
+	if errors.Is(err, syscall.EPERM) {
+		t.Skip("sandbox does not permit TCP listeners")
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := listener.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return httptest.NewServer(handler)
+}
+
+func waitForStoreState(t *testing.T, storage *store.Store, want store.State) {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if storage.State() == want {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatalf("Store did not reach %s", want)
+}
+
+func assertNoImportTemporaryFiles(t *testing.T, a *App) {
+	t.Helper()
+	for _, pattern := range []string{".batchscope-snapshot-*", "importing.db*"} {
+		files, err := filepath.Glob(filepath.Join(a.config.DataDir, pattern))
+		if err != nil || len(files) != 0 {
+			t.Fatalf("temporary import files matching %s = %v, error = %v", pattern, files, err)
+		}
+	}
+}
 
 func postSnapshot(t *testing.T, a *App, body io.ReadCloser, contentType string) *httptest.ResponseRecorder {
 	t.Helper()

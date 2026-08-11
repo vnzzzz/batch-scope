@@ -62,8 +62,6 @@ type StatusResponse struct {
 }
 
 type SnapshotInfo struct {
-	// Humaへオブジェクト全体がnullになり得ることを伝え、未取込時のStatusResponseとSchemaを一致させる。
-	_             struct{}  `nullable:"true"`
 	SnapshotID    string    `json:"snapshotId"`
 	GeneratedAt   time.Time `json:"generatedAt"`
 	SchemaVersion string    `json:"schemaVersion"`
@@ -238,6 +236,12 @@ func registerRoutes(api huma.API, a *App) {
 		Path:        "/v1/status",
 		Summary:     "Get service status",
 	}, a.status)
+	// SnapshotInfoを使う他の応答は非nullのまま、未取込を表すstatusのプロパティだけnullを許可する。
+	statusSchema := api.OpenAPI().Components.Schemas.Map()["StatusResponse"]
+	statusSchema.Properties["snapshot"] = &huma.Schema{AnyOf: []*huma.Schema{
+		{Ref: "#/components/schemas/SnapshotInfo"},
+		{Type: "null"},
+	}}
 
 	huma.Register(api, huma.Operation{
 		OperationID: "search-targets",
@@ -285,12 +289,13 @@ func (a *App) ready(context.Context, *struct{}) (*readyOutput, error) {
 }
 
 func (a *App) status(context.Context, *struct{}) (*statusOutput, error) {
+	state, generation, ok := a.store.StateAndGeneration()
 	return &statusOutput{
 		Body: StatusResponse{
-			State:     string(a.store.State()),
+			State:     string(state),
 			BootID:    a.bootID,
 			StartedAt: a.started,
-			Snapshot:  a.currentSnapshotInfo(),
+			Snapshot:  snapshotInfo(generation, ok),
 			Build: BuildInfo{
 				Version: a.config.Version,
 				Commit:  a.config.Commit,
@@ -301,6 +306,10 @@ func (a *App) status(context.Context, *struct{}) (*statusOutput, error) {
 
 func (a *App) currentSnapshotInfo() *SnapshotInfo {
 	generation, ok := a.store.CurrentGeneration()
+	return snapshotInfo(generation, ok)
+}
+
+func snapshotInfo(generation store.Generation, ok bool) *SnapshotInfo {
 	if !ok {
 		return nil
 	}

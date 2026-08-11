@@ -30,7 +30,10 @@ const (
 )
 
 // processReceivedは、HTTP層と非同期取込の境界をテストで停止できる注入点である。
-var processReceived = importer.ProcessReceived
+var (
+	processReceived        = importer.ProcessReceived
+	snapshotUploadDeadline = limits.SnapshotUploadDeadline
+)
 
 type importStatusInput struct {
 	ImportID string `path:"importId" doc:"Snapshot import identifier"`
@@ -53,7 +56,10 @@ func registerSnapshotRoutes(api huma.API, a *App) {
 		Path:        "/v1/snapshot-imports/{importId}",
 		Summary:     "Get snapshot import status",
 		Errors:      []int{http.StatusNotFound, http.StatusInternalServerError},
+		// importIdは任意の文字列を受け取り、存在確認はハンドラーで404へ写像する。
+		SkipValidateParams: true,
 	}, a.snapshotImportStatus)
+	delete(api.OpenAPI().Paths["/v1/snapshot-imports/{importId}"].Get.Responses, "422")
 
 	huma.Register(api, huma.Operation{
 		OperationID: "get-current-snapshot",
@@ -146,19 +152,44 @@ func (a *App) receiveSnapshot(api huma.API, ctx huma.Context) {
 		writeProblem(api, ctx, mappedImportProblem(err))
 		return
 	}
-	request, _ := humago.Unwrap(ctx)
+	request, writer := humago.Unwrap(ctx)
 	if request.ContentLength > limits.MaxCompressedArchiveBytes {
 		_ = operation.Abort()
 		writeProblem(api, ctx, problemFromModel(SnapshotTooLargeProblem("snapshot exceeds the supported size")))
 		return
 	}
+	deadline := started.Add(snapshotUploadDeadline)
+	receiveCtx, cancelReceive := context.WithDeadline(ctx.Context(), deadline)
+	defer cancelReceive()
+	controller := http.NewResponseController(writer)
+	readDeadlineSet := true
+	if err := controller.SetReadDeadline(deadline); err != nil {
+		if errors.Is(err, http.ErrNotSupported) {
+			// ResponseRecorderなどsocketを持たない実行環境では設定できないが、
+			// 製品のTCP接続に必要な機能がないことを理由にin-processの取込を拒否しない。
+			readDeadlineSet = false
+		} else {
+			_ = operation.Abort()
+			writeProblem(api, ctx, problemFromModel(InternalErrorProblem("failed to set snapshot upload deadline")))
+			return
+		}
+	}
 	body := &requestBodyTracker{reader: ctx.BodyReader()}
-	archivePath, receiveErr := snapshot.Receive(ctx.Context(), a.config.DataDir, body)
+	archivePath, receiveErr := snapshot.Receive(receiveCtx, a.config.DataDir, body)
+	if readDeadlineSet {
+		// 受信処理後に同じ接続で続く要求へ受信上限を持ち越さない。
+		if err := controller.SetReadDeadline(time.Time{}); err != nil {
+			a.log().Warn("clear snapshot upload deadline", "error", err)
+		}
+	}
 	if receiveErr != nil {
 		receiveErr = errors.Join(receiveErr, operation.Abort())
-		writeProblem(api, ctx, mapReceiveProblem(receiveErr, body, ctx.Context()))
+		problem := mapReceiveProblem(receiveErr, body, receiveCtx)
+		cancelReceive()
+		writeProblem(api, ctx, problem)
 		return
 	}
+	cancelReceive()
 
 	acceptedAt := time.Now().UTC()
 	a.imports.accept(importID, acceptedAt)

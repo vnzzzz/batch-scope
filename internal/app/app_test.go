@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 	"time"
 
@@ -156,8 +158,16 @@ func TestOpenAPISpec(t *testing.T) {
 		}
 	}
 	schemas := spec.Components.Schemas.Map()
-	if schema := schemas["SnapshotInfo"]; schema == nil || !schema.Nullable {
-		t.Errorf("SnapshotInfo schema = %#v, want nullable", schema)
+	if schema := schemas["SnapshotInfo"]; schema == nil || schema.Type != huma.TypeObject || schema.Nullable {
+		t.Errorf("SnapshotInfo schema = %#v, want non-null object", schema)
+	}
+	statusSnapshot := schemas["StatusResponse"].Properties["snapshot"]
+	if !schemaAllowsRefOrNull(statusSnapshot, "#/components/schemas/SnapshotInfo") {
+		t.Errorf("StatusResponse.snapshot schema = %#v, want SnapshotInfo or null", statusSnapshot)
+	}
+	currentSnapshot := spec.Paths["/v1/snapshots/current"].Get.Responses["200"].Content["application/json"].Schema
+	if currentSnapshot.Ref != "#/components/schemas/SnapshotInfo" || currentSnapshot.Nullable || len(currentSnapshot.AnyOf) != 0 {
+		t.Errorf("GET /v1/snapshots/current 200 schema = %#v, want non-null SnapshotInfo reference", currentSnapshot)
 	}
 	if _, ok := schemas["ProblemDetails"]; ok {
 		t.Error("OpenAPI unexpectedly contains ProblemDetails")
@@ -175,10 +185,111 @@ func TestOpenAPISpec(t *testing.T) {
 	if targets.Responses["422"] != nil {
 		t.Error("GET /v1/targets exposes an unmapped 422 response")
 	}
+	if responses := spec.Paths["/v1/snapshot-imports/{importId}"].Get.Responses; responses["422"] != nil {
+		t.Error("GET /v1/snapshot-imports/{importId} exposes an unmapped 422 response")
+	}
 	for _, status := range []string{"200", "503"} {
 		if spec.Paths["/readyz"].Get.Responses[status] == nil {
 			t.Errorf("GET /readyz response %s is missing from OpenAPI", status)
 		}
+	}
+}
+
+func TestStatusReturnsOneStoreStateDuringConcurrentGenerationSwitch(t *testing.T) {
+	a := newTestApp(t)
+	activateStatusGeneration(t, a, "snapshot-0")
+
+	for iteration := 1; iteration <= 10; iteration++ {
+		oldSnapshotID := fmt.Sprintf("snapshot-%d", iteration-1)
+		newSnapshotID := fmt.Sprintf("snapshot-%d", iteration)
+		operation, err := a.store.BeginImport(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		stop := make(chan struct{})
+		badCombination := make(chan string, 1)
+		var readers sync.WaitGroup
+		for range 8 {
+			readers.Add(1)
+			go func() {
+				defer readers.Done()
+				for {
+					select {
+					case <-stop:
+						return
+					default:
+					}
+					response := serveRequest(a, "/v1/status")
+					var body map[string]any
+					if response.Code != http.StatusOK || json.Unmarshal(response.Body.Bytes(), &body) != nil {
+						recordBadCombination(badCombination, "invalid status response")
+						return
+					}
+					snapshot, ok := body["snapshot"].(map[string]any)
+					if !ok {
+						recordBadCombination(badCombination, fmt.Sprintf("%v + null", body["state"]))
+						return
+					}
+					state, snapshotID := body["state"], snapshot["snapshotId"]
+					if (state != "importing" || snapshotID != oldSnapshotID) &&
+						(state != "ready" || snapshotID != newSnapshotID) {
+						recordBadCombination(badCombination, fmt.Sprintf("%v + %v", state, snapshotID))
+						return
+					}
+				}
+			}()
+		}
+
+		if err := operation.Complete(context.Background(), statusGeneration(newSnapshotID)); err != nil {
+			close(stop)
+			readers.Wait()
+			t.Fatal(err)
+		}
+		close(stop)
+		readers.Wait()
+		select {
+		case combination := <-badCombination:
+			t.Fatalf("status returned a Store state that never existed: %s", combination)
+		default:
+		}
+	}
+}
+
+func schemaAllowsRefOrNull(schema *huma.Schema, ref string) bool {
+	if schema == nil || len(schema.AnyOf) != 2 {
+		return false
+	}
+	foundRef, foundNull := false, false
+	for _, alternative := range schema.AnyOf {
+		foundRef = foundRef || alternative.Ref == ref
+		foundNull = foundNull || alternative.Type == "null"
+	}
+	return foundRef && foundNull
+}
+
+func activateStatusGeneration(t *testing.T, a *App, snapshotID string) {
+	t.Helper()
+	operation, err := a.store.BeginImport(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := operation.Complete(context.Background(), statusGeneration(snapshotID)); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func statusGeneration(snapshotID string) store.Generation {
+	return store.Generation{
+		SnapshotID: snapshotID, GeneratedAt: time.Date(2026, 8, 11, 0, 0, 0, 0, time.UTC),
+		SchemaVersion: "0.5", Fingerprint: "status-" + snapshotID,
+	}
+}
+
+func recordBadCombination(results chan<- string, combination string) {
+	select {
+	case results <- combination:
+	default:
 	}
 }
 
