@@ -33,8 +33,12 @@ batchscope_<version>_<os>_<arch>/
 ├── batchscope
 ├── README.md
 ├── LICENSE
+├── examples/demo/snapshot/
 └── skills/public/batchscope/
 ```
+
+`examples/demo/snapshot/`はsourceの同ディレクトリをそのまま取り込み、Quick Startで利用できるデモ入力として配布します。
+`examples/demo/responses/`や開発用のデモ説明はRelease archiveへ含めません。
 
 Public Skillはsourceの`skills/public/batchscope/`をディレクトリ単位で取り込みます。
 配布時だけ、ルート`schema/`配下のJSON Schemaを相対パスを維持してPublic Skillの`references/schema/`へ追加します。
@@ -68,7 +72,7 @@ make release-artifacts-check VERSION=0.1.0
 成果物は`dist/`へ作成します。
 `dist/`はGit管理しません。
 
-`release-artifacts-check`は、全OS/CPUのアーカイブを展開し、公開ファイル構成、Public Skill、配布JSON Schema、READMEリンク、Internal Skill非同梱、チェックサムを検査します。
+`release-artifacts-check`は、全OS/CPUのアーカイブを展開し、公開ファイル構成、デモスナップショット、Public Skill、配布JSON Schema、READMEリンク、Internal Skill非同梱、チェックサムを検査します。
 通常の`make verify`とは分離し、Release成果物を作成した後だけ実行します。
 
 ```text
@@ -128,7 +132,7 @@ flowchart LR
 ```
 
 実行用イメージには、アプリケーションバイナリだけを含めます。
-Release archiveに含めるPublic Skill、JSON Schema、設計文書は追加しません。
+Release archiveに含めるデモスナップショット、Public Skill、JSON Schema、設計文書は追加しません。
 Codex CLI、Claude Code、Node.js、Goコンパイラ、Git、シェルも含めません。
 
 ## ローカルイメージの作成
