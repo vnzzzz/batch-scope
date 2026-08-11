@@ -8,6 +8,9 @@
 成功レスポンスは、受入済みスナップショットに対する全件解析の結果である。
 処理を完了できない場合はProblem Detailsが返るため、成功レスポンスに部分結果、処理上限到達、未解析範囲を表す項目はない。
 
+`analysis-timeout`が返った場合は部分結果を推測で補わない。
+再試行するかは利用者が判断する。
+
 ## リミット
 
 `limits.target`、`limits.contained`、`limits.downstream`を区別する。

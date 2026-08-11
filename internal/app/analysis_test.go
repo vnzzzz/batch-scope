@@ -8,13 +8,20 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"reflect"
 	"sort"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
+	"batchscope/internal/limitscan"
+	"batchscope/internal/snapshot"
 	"batchscope/internal/store"
+
+	"github.com/danielgtaylor/huma/v2"
 )
 
 type analysisTestRelation struct {
@@ -272,6 +279,128 @@ func TestDownstreamLimitAnalysisErrors(t *testing.T) {
 	})
 }
 
+func TestDownstreamLimitAnalysisDeadlineAndCancellation(t *testing.T) {
+	if analysisDeadline != 10*time.Second {
+		t.Fatalf("analysisDeadline = %s, want 10s", analysisDeadline)
+	}
+
+	directory := t.TempDir()
+	a, err := New(Config{Version: "test", Commit: "abc", DataDir: directory})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := a.Close(); err != nil {
+			t.Errorf("Close(): %v", err)
+		}
+	})
+	completeAnalysisGeneration(t, a, "deadline-old", analysisTestData{
+		nodes: []appTestNode{{id: "DEADLINE-TARGET", typeName: "job", name: "Target"}},
+	})
+
+	var logBuffer bytes.Buffer
+	a.logger = slog.New(slog.NewJSONHandler(&logBuffer, nil))
+	deadlineCtx, cancelDeadline := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer cancelDeadline()
+	deadlineResponse := serveAnalysisRequest(a, deadlineCtx, "/v1/downstream-limit-analysis?targetId=DEADLINE-TARGET")
+	assertRecorderProblem(t, deadlineResponse, http.StatusServiceUnavailable, "/problems/analysis-timeout")
+	if deadlineResponse.Code == http.StatusOK {
+		t.Fatal("deadline response returned partial success")
+	}
+	var logEntry map[string]any
+	if err := json.Unmarshal(logBuffer.Bytes(), &logEntry); err != nil {
+		t.Fatal(err)
+	}
+	if logEntry["error_type"] != "analysis-timeout" {
+		t.Fatalf("deadline error_type = %v", logEntry["error_type"])
+	}
+
+	next := beginAnalysisGeneration(t, a, analysisTestData{
+		nodes: []appTestNode{{id: "NEXT-TARGET", typeName: "job", name: "Next"}},
+	})
+	if err := next.Complete(context.Background(), analysisGeneration("deadline-new", 1, 0, 0)); err != nil {
+		t.Fatal(err)
+	}
+	databaseFiles, err := filepath.Glob(filepath.Join(directory, "generation-*.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(databaseFiles) != 1 {
+		t.Fatalf("generation files after deadline = %v, want only active generation", databaseFiles)
+	}
+
+	canceledCtx, cancel := context.WithCancel(context.Background())
+	cancel()
+	canceledResponse := serveAnalysisRequest(a, canceledCtx, "/v1/downstream-limit-analysis?targetId=NEXT-TARGET")
+	assertRecorderProblem(t, canceledResponse, http.StatusServiceUnavailable, "/problems/analysis-timeout")
+
+	normal := serveRequest(a, "/v1/downstream-limit-analysis?targetId=NEXT-TARGET")
+	assertStatus(t, normal, http.StatusOK)
+}
+
+func TestDownstreamLimitAnalysisTargetIDLengthAndLogging(t *testing.T) {
+	a := newTestApp(t)
+	completeAnalysisGeneration(t, a, "target-length", analysisTestData{
+		nodes: []appTestNode{{id: "KNOWN", typeName: "job", name: "Known"}},
+	})
+
+	maximum := strings.Repeat("A", 1_024)
+	assertAnalysisProblem(t, a, "/v1/downstream-limit-analysis?targetId="+maximum, http.StatusNotFound, "/problems/target-not-found")
+
+	var buffer bytes.Buffer
+	a.logger = slog.New(slog.NewJSONHandler(&buffer, nil))
+	overMaximum := strings.Repeat("B", 1_025)
+	assertAnalysisProblem(t, a, "/v1/downstream-limit-analysis?targetId="+overMaximum, http.StatusBadRequest, "/problems/invalid-request")
+	var entry map[string]any
+	if err := json.Unmarshal(buffer.Bytes(), &entry); err != nil {
+		t.Fatal(err)
+	}
+	if entry["error_type"] != "invalid-request" {
+		t.Fatalf("error_type = %v", entry["error_type"])
+	}
+	if _, exists := entry["target_id"]; exists {
+		t.Fatalf("invalid target_id was logged: %v", entry["target_id"])
+	}
+
+	assertAnalysisProblem(t, a, "/v1/downstream-limit-analysis?targetId=", http.StatusBadRequest, "/problems/invalid-request")
+}
+
+func TestDownstreamLimitAnalysisIncludeEvidenceValues(t *testing.T) {
+	a := newTestApp(t)
+	completeAnalysisGeneration(t, a, "include-evidence-values", analysisFixture("VALUES"))
+
+	for _, path := range []string{
+		"/v1/downstream-limit-analysis?targetId=NET-TARGET",
+		"/v1/downstream-limit-analysis?targetId=NET-TARGET&includeEvidence=false",
+		"/v1/downstream-limit-analysis?targetId=NET-TARGET&includeEvidence=true",
+	} {
+		assertStatus(t, serveRequest(a, path), http.StatusOK)
+	}
+	assertAnalysisProblem(
+		t, a,
+		"/v1/downstream-limit-analysis?targetId=NET-TARGET&includeEvidence=",
+		http.StatusBadRequest, "/problems/invalid-request",
+	)
+}
+
+func TestDownstreamLimitAnalysisPreservesArbitraryPrecisionEvidenceLines(t *testing.T) {
+	a := newTestApp(t)
+	const largeLine = "9223372036854775808"
+	completeValidatedEvidenceGeneration(t, a, largeLine)
+
+	withoutEvidence := serveRequest(a, "/v1/downstream-limit-analysis?targetId=EVIDENCE-FROM&includeEvidence=false")
+	assertStatus(t, withoutEvidence, http.StatusOK)
+	if strings.Contains(withoutEvidence.Body.String(), largeLine) {
+		t.Fatalf("includeEvidence=false exposed evidence: %s", withoutEvidence.Body.String())
+	}
+
+	withEvidence := serveRequest(a, "/v1/downstream-limit-analysis?targetId=EVIDENCE-FROM&includeEvidence=true")
+	assertStatus(t, withEvidence, http.StatusOK)
+	if !strings.Contains(withEvidence.Body.String(), `"startLine":`+largeLine) {
+		t.Fatalf("large evidence line was not preserved as a JSON number: %s", withEvidence.Body.String())
+	}
+}
+
 func TestDownstreamLimitAnalysisOpenAPIParameters(t *testing.T) {
 	operation := OpenAPISpec().Paths["/v1/downstream-limit-analysis"].Get
 	queryParameters := make(map[string]bool)
@@ -280,8 +409,14 @@ func TestDownstreamLimitAnalysisOpenAPIParameters(t *testing.T) {
 			continue
 		}
 		queryParameters[parameter.Name] = true
-		if parameter.Name == "targetId" && !parameter.Required {
-			t.Error("targetId is not required")
+		if parameter.Name == "targetId" {
+			if !parameter.Required {
+				t.Error("targetId is not required")
+			}
+			if parameter.Schema.MinLength == nil || *parameter.Schema.MinLength != 1 ||
+				parameter.Schema.MaxLength == nil || *parameter.Schema.MaxLength != 1_024 {
+				t.Errorf("targetId schema = %#v", parameter.Schema)
+			}
 		}
 		if parameter.Name == "includeEvidence" {
 			if parameter.Schema.Type != "boolean" || parameter.Schema.Default != false {
@@ -294,6 +429,77 @@ func TestDownstreamLimitAnalysisOpenAPIParameters(t *testing.T) {
 	}
 	if operation.Responses["422"] != nil {
 		t.Error("analysis endpoint exposes 422")
+	}
+	if operation.Responses["503"] == nil {
+		t.Error("analysis endpoint does not expose 503")
+	}
+}
+
+func TestDownstreamLimitAnalysisOpenAPIFactVariants(t *testing.T) {
+	spec := OpenAPISpec()
+	schemas := spec.Components.Schemas.Map()
+	for name, required := range map[string][]string{
+		"AnalysisFinishByFact":   {"id", "kind", "businessDayOffset", "localTime", "timeZone", "origin", "certainty"},
+		"AnalysisMaxElapsedFact": {"id", "kind", "duration", "origin", "certainty"},
+		"AnalysisRawFact":        {"id", "kind", "sourceText", "origin", "certainty"},
+	} {
+		schema := schemas[name]
+		if schema == nil {
+			t.Fatalf("schema %s is missing", name)
+		}
+		for _, field := range required {
+			if !containsString(schema.Required, field) {
+				t.Errorf("%s required = %v, missing %s", name, schema.Required, field)
+			}
+		}
+	}
+	for _, name := range []string{"AnalysisFinishByFact", "AnalysisMaxElapsedFact"} {
+		if containsString(schemas[name].Required, "sourceText") {
+			t.Errorf("%s unexpectedly requires sourceText", name)
+		}
+	}
+
+	factSchema := schemas["AnalysisLimitItem"].Properties["fact"]
+	if len(factSchema.OneOf) != 3 || factSchema.Discriminator == nil || factSchema.Discriminator.PropertyName != "kind" {
+		t.Fatalf("fact schema = %#v", factSchema)
+	}
+	result := &huma.ValidateResult{}
+	huma.Validate(
+		spec.Components.Schemas,
+		factSchema,
+		huma.NewPathBuffer([]byte("fact"), 0),
+		huma.ModeReadFromServer,
+		map[string]any{"id": "BROKEN", "kind": "max_elapsed", "origin": "scheduler", "certainty": "declared"},
+		result,
+	)
+	if len(result.Errors) == 0 {
+		t.Fatal("max_elapsed without duration is valid against the response schema")
+	}
+
+	location := schemas["AnalysisEvidenceLocation"]
+	for _, field := range []string{"startLine", "endLine"} {
+		line := location.Properties[field]
+		if line.Type != huma.TypeInteger || line.Format != "" || line.Minimum == nil || *line.Minimum != 1 {
+			t.Errorf("%s schema = %#v", field, line)
+		}
+	}
+}
+
+func TestMapAnalysisFactRejectsIncompleteVariants(t *testing.T) {
+	if _, err := mapAnalysisFact(limitscan.Fact{
+		ID: "BROKEN", Kind: limitscan.KindFinishBy, Origin: "scheduler", Certainty: "declared",
+	}); err == nil {
+		t.Fatal("finish_by without kind-specific fields was mapped")
+	}
+	if _, err := mapAnalysisFact(limitscan.Fact{
+		ID: "BROKEN", Kind: limitscan.KindMaxElapsed, Origin: "scheduler", Certainty: "declared",
+	}); err == nil {
+		t.Fatal("max_elapsed without duration was mapped")
+	}
+	if _, err := mapAnalysisFact(limitscan.Fact{
+		ID: "BROKEN", Kind: limitscan.KindRaw, Origin: "scheduler", Certainty: "declared",
+	}); err == nil {
+		t.Fatal("raw without sourceText was mapped")
 	}
 }
 
@@ -768,6 +974,82 @@ func anySlice(value any) []any {
 		return nil
 	}
 	return value.([]any)
+}
+
+func completeValidatedEvidenceGeneration(t *testing.T, a *App, lineNumber string) {
+	t.Helper()
+	directory := t.TempDir()
+	extracted := snapshot.Extracted{
+		Directory: directory,
+		Manifest:  filepath.Join(directory, "manifest.json"),
+		Nodes:     filepath.Join(directory, "nodes.ndjson"),
+		Relations: filepath.Join(directory, "relations.ndjson"),
+	}
+	files := map[string]string{
+		extracted.Manifest: `{"schemaVersion":"0.5","snapshotId":"evidence-boundary","generatedAt":"2026-08-11T00:00:00Z","nodeCount":2,"relationCount":1,"producer":{"name":"test","version":"1"}}`,
+		extracted.Nodes: "{\"type\":\"job\",\"id\":\"EVIDENCE-FROM\",\"name\":\"From\"}\n" +
+			"{\"type\":\"job\",\"id\":\"EVIDENCE-TO\",\"name\":\"To\"}\n",
+		extracted.Relations: fmt.Sprintf(
+			"{\"fromId\":\"EVIDENCE-FROM\",\"toId\":\"EVIDENCE-TO\",\"kind\":\"precedes\",\"origin\":\"scheduler\",\"certainty\":\"declared\",\"evidence\":[{\"source\":\"definition\",\"location\":{\"startLine\":%s}}]}\n",
+			lineNumber,
+		),
+	}
+	for path, contents := range files {
+		if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	validated, err := snapshot.Validate(context.Background(), extracted)
+	if err != nil {
+		t.Fatalf("Validate() error = %v", err)
+	}
+	operation, err := a.store.BeginImport(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := snapshot.Load(context.Background(), operation.DB(), extracted, validated); err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	generation := store.Generation{
+		SnapshotID:         validated.SnapshotID,
+		GeneratedAt:        validated.GeneratedAt,
+		SchemaVersion:      validated.SchemaVersion,
+		NodeCount:          validated.NodeCount,
+		RelationCount:      validated.RelationCount,
+		LimitCount:         validated.LimitCount,
+		MaxSCCNodes:        validated.MaxSCCNodes,
+		MaxJobNetworkDepth: validated.MaxJobNetworkDepth,
+		Fingerprint:        validated.Fingerprint,
+	}
+	if err := operation.Complete(context.Background(), generation); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func serveAnalysisRequest(a *App, ctx context.Context, path string) *httptest.ResponseRecorder {
+	request := httptest.NewRequest(http.MethodGet, path, nil).WithContext(ctx)
+	recorder := httptest.NewRecorder()
+	a.Handler().ServeHTTP(recorder, request)
+	return recorder
+}
+
+func assertRecorderProblem(t *testing.T, recorder *httptest.ResponseRecorder, status int, problemType string) {
+	t.Helper()
+	assertStatus(t, recorder, status)
+	assertContentType(t, recorder, "application/problem+json")
+	body := decodeObject(t, recorder)
+	if body["type"] != problemType || body["status"] != float64(status) {
+		t.Fatalf("problem = %v", body)
+	}
+}
+
+func containsString(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
 }
 
 func assertAnalysisProblem(t *testing.T, a *App, path string, status int, problemType string) {

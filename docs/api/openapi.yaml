@@ -59,15 +59,15 @@ components:
       additionalProperties: false
       properties:
         endLine:
-          format: int64
+          minimum: 1
           type: integer
         jsonPointer:
           type: string
         startLine:
-          format: int64
+          minimum: 1
           type: integer
       type: object
-    AnalysisFact:
+    AnalysisFinishByFact:
       additionalProperties: false
       properties:
         businessDayOffset:
@@ -80,15 +80,11 @@ components:
             - inferred
             - candidate
           type: string
-        duration:
-          type: string
         id:
           type: string
         kind:
           enum:
             - finish_by
-            - max_elapsed
-            - raw
           type: string
         localTime:
           type: string
@@ -106,6 +102,9 @@ components:
       required:
         - id
         - kind
+        - businessDayOffset
+        - localTime
+        - timeZone
         - origin
         - certainty
       type: object
@@ -166,7 +165,16 @@ components:
           format: int64
           type: integer
         fact:
-          $ref: "#/components/schemas/AnalysisFact"
+          discriminator:
+            mapping:
+              finish_by: "#/components/schemas/AnalysisFinishByFact"
+              max_elapsed: "#/components/schemas/AnalysisMaxElapsedFact"
+              raw: "#/components/schemas/AnalysisRawFact"
+            propertyName: kind
+          oneOf:
+            - $ref: "#/components/schemas/AnalysisFinishByFact"
+            - $ref: "#/components/schemas/AnalysisMaxElapsedFact"
+            - $ref: "#/components/schemas/AnalysisRawFact"
         limitOwner:
           $ref: "#/components/schemas/AnalysisNode"
         scopeRoot:
@@ -209,6 +217,40 @@ components:
         - maxElapsed
         - raw
       type: object
+    AnalysisMaxElapsedFact:
+      additionalProperties: false
+      properties:
+        certainty:
+          enum:
+            - declared
+            - confirmed
+            - inferred
+            - candidate
+          type: string
+        duration:
+          type: string
+        id:
+          type: string
+        kind:
+          enum:
+            - max_elapsed
+          type: string
+        origin:
+          enum:
+            - scheduler
+            - deterministic_analysis
+            - ai_analysis
+            - manual
+          type: string
+        sourceText:
+          type: string
+      required:
+        - id
+        - kind
+        - duration
+        - origin
+        - certainty
+      type: object
     AnalysisNode:
       additionalProperties: false
       properties:
@@ -230,6 +272,38 @@ components:
         - id
         - type
         - name
+      type: object
+    AnalysisRawFact:
+      additionalProperties: false
+      properties:
+        certainty:
+          enum:
+            - declared
+            - confirmed
+            - inferred
+            - candidate
+          type: string
+        id:
+          type: string
+        kind:
+          enum:
+            - raw
+          type: string
+        origin:
+          enum:
+            - scheduler
+            - deterministic_analysis
+            - ai_analysis
+            - manual
+          type: string
+        sourceText:
+          type: string
+      required:
+        - id
+        - kind
+        - sourceText
+        - origin
+        - certainty
       type: object
     AnalysisRelation:
       additionalProperties: false
@@ -607,6 +681,8 @@ paths:
           required: true
           schema:
             description: Exact job or job network ID to analyze
+            maxLength: 1024
+            minLength: 1
             type: string
         - description: Include relation evidence in the response
           explode: false

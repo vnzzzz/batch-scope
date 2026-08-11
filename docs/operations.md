@@ -180,6 +180,7 @@ MVPの観測情報は、Goの`log/slog`による構造化ログを正本とし�
 ジョブ名、完全パス、検索の`query`、`evidence`、入力資料の内容は、既定ログへ出力しません。
 完全一致検索では`operation`を`target_search`に固定し、`returned_targets`へ返却件数を記録します。
 後続リミット取得では`operation`を`downstream_limit_analysis`に固定し、到達ノード、返却ツリーノード、返却リミット、循環、リミット未通過経路の件数を記録します。
+`error_type=analysis-timeout`は、後続リミット取得が時間上限を超えた場合または要求がキャンセルされた場合を表し、部分結果が返されたことを意味しません。
 
 ## メトリクス
 
