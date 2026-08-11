@@ -39,7 +39,8 @@ batchscope-snapshot.tar.gz
 ```
 
 `nodeCount`と`relationCount`は、NDJSONの件数と一致させる。
-同じ内容を再送する場合は、同じ`snapshotId`を使う。
+同じ`snapshotId`を再送できるのは、展開後の`manifest.json`、`nodes.ndjson`、`relations.ndjson`のbyte内容がすべて同じ場合だけである。
+JSONとして意味が同じでも、空白、改行、objectのキー順などでbyte内容が変わる場合は同じ`snapshotId`を再利用しない。
 
 ## ノード種別
 
