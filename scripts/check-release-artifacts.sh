@@ -121,12 +121,16 @@ for target in "${targets[@]}"; do
     echo "$name: READMEのrepository内リンクがv${version}へ固定されていません。" >&2
     exit 1
   fi
-  relative_links="$(sed 's#](LICENSE)##g' "$root/README.md" | grep -Eo '\]\(([^#/:][^):]*)\)' || true)"
-  if [[ -n "$relative_links" ]]; then
-    echo "$name: READMEにarchive外を指し得る相対リンクが残っています。" >&2
-    printf '%s\n' "$relative_links" >&2
-    exit 1
-  fi
+
+  while IFS= read -r markdown_link; do
+    target_path="${markdown_link#](}"
+    target_path="${target_path%)}"
+    target_path="${target_path%%#*}"
+    if [[ -z "$target_path" || ! -e "$root/$target_path" ]]; then
+      echo "$name: READMEの相対リンク先がarchive内にありません: $markdown_link" >&2
+      exit 1
+    fi
+  done < <(grep -Eo '\]\(([^#/:][^):]*)\)' "$root/README.md" || true)
 
   files="$work_dir/${target}.files"
   find "$root" -type f -print | sed "s#^$root/##" | sort > "$files"
