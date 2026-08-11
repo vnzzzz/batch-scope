@@ -5,7 +5,7 @@ usage() {
   cat <<'USAGE'
 Usage: scripts/build-release-artifacts.sh <version> <commit> [output-dir]
 
-GitHub Releasesへ登録するOS別アーカイブとチェックサムを作成します。
+GitHub Releasesへ登録するOS別アーカイブ、デモスナップショット、チェックサムを作成します。
 実行環境はLinuxのDev ContainerまたはGitHub Actionsです。
 USAGE
 }
@@ -45,6 +45,13 @@ if [[ ! -d skills/public/batchscope/references ]]; then
   echo "公開アーカイブへ同梱するPublic Skillがありません。" >&2
   exit 1
 fi
+
+for demo_file in manifest.json nodes.ndjson relations.ndjson; do
+  if [[ ! -f "examples/demo/snapshot/$demo_file" ]]; then
+    echo "デモスナップショットに必要なファイルがありません: examples/demo/snapshot/$demo_file" >&2
+    exit 1
+  fi
+done
 
 mapfile -d '' schema_files < <(find schema -type f -name '*.schema.json' -print0)
 if [[ ${#schema_files[@]} -eq 0 ]]; then
@@ -113,6 +120,10 @@ for target in "${targets[@]}"; do
 
   tar -C "$work_dir" -czf "$output_dir/${name}.tar.gz" "$name"
 done
+
+tar -C examples/demo/snapshot \
+  -czf "$output_dir/batchscope_demo_snapshot.tar.gz" \
+  manifest.json nodes.ndjson relations.ndjson
 
 (
   cd "$output_dir"

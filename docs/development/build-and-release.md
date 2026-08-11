@@ -9,9 +9,10 @@
 |---|---|---|
 | ソースコード | GitHubリポジトリ | `main`への通常のpushとPull Request |
 | OS別アーカイブ | GitHub Releases | SemVerタグのpushで自動作成 |
+| デモスナップショット | GitHub Releases | SemVerタグのpushで自動作成 |
 | コンテナイメージ | 公開しない | 利用者がソースコードから作成 |
 
-GitHub Releasesはタグに対応するリリースを作り、OS別アーカイブとSHA-256チェックサムを添付します。
+GitHub Releasesはタグに対応するリリースを作り、OS別アーカイブ、`batchscope_demo_snapshot.tar.gz`、SHA-256チェックサムを添付します。
 GHCRとDocker Hubは、利用要望と運用方法を確認してから追加します。
 
 ## 対応環境とアーカイブ構成
@@ -26,7 +27,7 @@ GHCRとDocker Hubは、利用要望と運用方法を確認してから追加し
 SQLiteの切替は、開いているファイルをrenameできるPOSIXのセマンティクスに依存します。
 そのため、v0.1.0ではWindows向けバイナリを公開しません。
 
-各アーカイブには、次を含めます。
+各OS別アーカイブには、次を含めます。
 
 ```text
 batchscope_<version>_<os>_<arch>/
@@ -41,8 +42,11 @@ Public Skillはsourceの`skills/public/batchscope/`をディレクトリ単位�
 JSON Schemaの正本はルート`schema/`であり、配布コピーは手編集しません。
 Internal Skillは含めません。
 
+`batchscope_demo_snapshot.tar.gz`はsourceの`examples/demo/snapshot/`にある`manifest.json`、`nodes.ndjson`、`relations.ndjson`から機械的に作成します。
+取込APIへそのまま送信できる形式で、OS別アーカイブへ重複して同梱しません。
+
 アーカイブ内の`README.md`は、sourceでは相対リンクを保ったまま、配布時だけリポジトリ内文書へのリンクを対応する`v<version>`タグへ固定します。
-`checksums.txt`には、各アーカイブのSHA-256を記録します。
+`checksums.txt`には、OS別アーカイブとデモスナップショットのSHA-256を記録します。
 
 ## 公開前の準備
 
@@ -68,7 +72,7 @@ make release-artifacts-check VERSION=0.1.0
 成果物は`dist/`へ作成します。
 `dist/`はGit管理しません。
 
-`release-artifacts-check`は、全OS/CPUのアーカイブを展開し、公開ファイル構成、Public Skill、配布JSON Schema、READMEリンク、Internal Skill非同梱、チェックサムを検査します。
+`release-artifacts-check`は、全OS/CPUのアーカイブを展開し、公開ファイル構成、Public Skill、配布JSON Schema、READMEリンク、Internal Skill非同梱、デモスナップショットのsource一致、チェックサムを検査します。
 通常の`make verify`とは分離し、Release成果物を作成した後だけ実行します。
 
 ```text
@@ -77,6 +81,7 @@ dist/
 ├── batchscope_0.1.0_linux_arm64.tar.gz
 ├── batchscope_0.1.0_darwin_amd64.tar.gz
 ├── batchscope_0.1.0_darwin_arm64.tar.gz
+├── batchscope_demo_snapshot.tar.gz
 └── checksums.txt
 ```
 
@@ -108,13 +113,14 @@ Workflowは次の順に処理します。
 flowchart LR
     Tag[SemVerタグをpush] --> Check[タグ、main、LICENSEを確認]
     Check --> Verify[make verify]
-    Verify --> Build[OS別アーカイブを作成]
+    Verify --> Build[Release成果物を作成]
     Build --> ArtifactCheck[Release成果物を検査]
     ArtifactCheck --> Release[GitHub Releaseを作成]
 ```
 
 `v0.1.0-rc.1`のようなタグはプレリリースとして登録します。
-公開済みのタグや成果物を上書きせず、修正が必要な場合は新しいバージョンを作成します。
+公開済みのOS別アーカイブやチェックサムを同じversionで差し替えません。
+既存Releaseへ不足していた補助assetを追加する場合も、既存assetは変更しません。
 
 ## 本番イメージ
 
@@ -128,7 +134,7 @@ flowchart LR
 ```
 
 実行用イメージには、アプリケーションバイナリだけを含めます。
-Release archiveに含めるPublic Skill、JSON Schema、設計文書は追加しません。
+Release向けのPublic Skill、JSON Schema、デモスナップショットや、リポジトリ内の設計文書は追加しません。
 Codex CLI、Claude Code、Node.js、Goコンパイラ、Git、シェルも含めません。
 
 ## ローカルイメージの作成
@@ -154,5 +160,5 @@ flowchart LR
 ```
 
 CIはコンテナイメージを外部へ送信しません。
-Release archiveの生成と検査はタグpush時のRelease workflowだけで行います。
+Release成果物の生成と検査はタグpush時のRelease workflowだけで行います。
 外部Actionはレビュー済みのコミットSHAへ固定し、Dependabotで更新候補を受け取ります。

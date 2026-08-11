@@ -69,9 +69,15 @@ jobs:
         run: |
           set -Eeuo pipefail
 
+          if [[ ! -f dist/batchscope_demo_snapshot.tar.gz ]]; then
+            echo "デモスナップショットassetがありません。" >&2
+            exit 1
+          fi
+
+          mapfile -t assets < <(find dist -maxdepth 1 -type f -print | sort)
           args=(
             "${GITHUB_REF_NAME}"
-            dist/*
+            "${assets[@]}"
             --verify-tag
             --generate-notes
             --title "${GITHUB_REF_NAME}"
