@@ -6,43 +6,60 @@ BatchScopeは、バッチジョブの定義から、指定したジョブまた�
 
 ## Quick Start
 
-### 1. Releaseバイナリを起動する
+まず「1. Releaseバイナリを展開する」「2. BatchScopeを起動する」を順に実行します。
+起動後は、デモで動作を確認する **A** と、Public Skillで実際のジョブ定義を使う **B** のどちらかへ進みます。
 
-[GitHub Releases](https://github.com/vnzzzz/batch-scope/releases)から、利用環境に合うOS別アーカイブと`batchscope_demo_snapshot.tar.gz`を取得します。
-Linuxでは`amd64`と`arm64`のtar.gzを配布しています。
+### 1. Releaseバイナリを展開する
 
-まずOS別アーカイブを展開します。
+[GitHub Releases](https://github.com/vnzzzz/batch-scope/releases)から利用環境に合うOS別アーカイブを取得します。Linuxでは`amd64`と`arm64`を配布しています。
 
 ```bash
 # 例: Linux amd64
 tar -xzf batchscope_*_linux_amd64.tar.gz
 ```
 
-バイナリを確認します。
+展開すると、`batchscope_*_linux_amd64/`配下に`batchscope`、`README.md`、`LICENSE`、Public Skillが配置されます。
+
+### 2. BatchScopeを起動する
+
+データ保存先を作成します。
 
 ```bash
-./batchscope_*_linux_amd64/batchscope version
+mkdir batchscope-data
 ```
 
-試用データの保存先を明示的に作成します。
+BatchScopeを起動します。このターミナルは起動したままにします。
 
 ```bash
-mkdir batchscope-demo-data
+./batchscope_*_linux_amd64/batchscope serve -data-dir ./batchscope-data
 ```
 
-作成したディレクトリを指定してBatchScopeを起動します。
+`BatchScope listening`を含むログが出れば起動しています。既定の待受ポートは`8080`です。
+
+別のターミナルから応答を確認します。
 
 ```bash
-./batchscope_*_linux_amd64/batchscope serve -data-dir ./batchscope-demo-data
+curl -fsS http://127.0.0.1:8080/healthz | jq
 ```
 
-既定では`0.0.0.0:8080`で待ち受けます。起動後は`http://127.0.0.1:8080/docs`でAPIドキュメントを確認できます。
+`status`が`ok`なら準備完了です。
 
-### 2. デモデータで試す
+```json
+{
+  "status": "ok"
+}
+```
 
-BatchScopeを起動したターミナルはそのままにして、Releaseから取得した`batchscope_demo_snapshot.tar.gz`があるディレクトリを別のターミナルで開きます。`curl`と`jq`が必要です。
+起動後は、次のどちらかへ進みます。
 
-まず、デモスナップショットをBatchScopeへ送信します。
+- **A. デモデータで試す** — まずBatchScopeの動作を確認したい場合
+- **B. Public Skillで実データを使う** — 手元のジョブ定義を解析したい場合
+
+### A. デモデータで試す
+
+同じReleaseから`batchscope_demo_snapshot.tar.gz`を取得します。デモでは`curl`と`jq`を使用します。
+
+#### A-1. スナップショットを取り込む
 
 ```bash
 curl -i -X POST \
@@ -51,21 +68,49 @@ curl -i -X POST \
   http://127.0.0.1:8080/v1/snapshot-imports
 ```
 
-取込が完了して検索可能になるまで待ちます。
+取込を受け付けると`202 Accepted`になり、`Location`に取込状況の確認先が返ります。
 
-```bash
-until curl -fsS http://127.0.0.1:8080/readyz >/dev/null 2>&1; do
-  sleep 1
-done
+```text
+HTTP/1.1 202 Accepted
+Location: /v1/snapshot-imports/...
+Retry-After: ...
 ```
 
-デモの`JOB-A`を検索します。
+#### A-2. 検索可能になったことを確認する
 
 ```bash
-curl -fsS 'http://127.0.0.1:8080/v1/targets?query=JOB-A' | jq
+curl -sS http://127.0.0.1:8080/readyz | jq
 ```
 
-`JOB-A`から後続のリミット設定と依存経路を解析します。
+取込中は`not_ready`です。数秒おいて再実行し、次の状態になれば取込完了です。
+
+```json
+{
+  "status": "ready",
+  "reason": "snapshot_loaded"
+}
+```
+
+#### A-3. ジョブを検索する
+
+```bash
+curl -fsS \
+  'http://127.0.0.1:8080/v1/targets?query=JOB-A&type=job' \
+  | jq '.items[] | {id, name, path, type}'
+```
+
+デモの`JOB-A`が1件見つかります。
+
+```json
+{
+  "id": "JOB-A",
+  "name": "売上抽出",
+  "path": "/DAILY/SALES/JOB-A",
+  "type": "job"
+}
+```
+
+#### A-4. 後続リミットを解析する
 
 ```bash
 curl -fsS \
@@ -73,19 +118,22 @@ curl -fsS \
   | jq
 ```
 
-### 3. 実際のジョブ定義をPublic Skillで変換する
+`target.id`が`JOB-A`となり、後続のリミット、依存経路、循環、リミット未通過経路を含むJSONが返ればデモ完了です。
 
-OS別のReleaseアーカイブには`skills/public/batchscope/`を同梱しています。
-Public Skillは、既存のジョブマネージャーの出力やジョブ定義を読み取り、BatchScopeが受け取る共通スナップショットへ変換して、取込・検索するためのエージェント向け手順です。
+### B. Public Skillで実データを使う
 
-Claude CodeやCodexなど、利用するエージェントのSkill配置方法に従って`skills/public/batchscope/`を読み込ませます。ジョブマネージャーから取得した定義ファイルや実行スクリプトを参照できる状態にしたうえで、例えば次のように依頼します。
+OS別アーカイブの`skills/public/batchscope/`は、ジョブマネージャーの出力やジョブ定義から共通スナップショットを作り、BatchScopeへ取り込んで解析するためのエージェント向けSkillです。このルートではデモデータは使用しません。
+
+1. Claude CodeやCodexなど、利用するエージェントの方法に従って`skills/public/batchscope/`を読み込ませます。
+2. ジョブ定義、実行スクリプト、関連資料をエージェントから参照できるようにします。
+3. 例えば次のように依頼します。
 
 ```text
 BatchScope Public Skillを使って、<ジョブ定義のパス> からBatchScope用スナップショットを作成してください。
 起動中の http://127.0.0.1:8080 に取り込み、<調べたいジョブ名またはジョブネット名> の後続リミットと依存経路を調べてください。
 ```
 
-スナップショットのJSON SchemaはPublic Skill内に同梱されています。変換規則や取込・検索の詳細はPublic Skillを参照し、READMEには重複して記載しません。
+スナップショットの生成・検査・取込後、指定した対象の後続リミットと依存経路が得られれば完了です。JSON Schemaと変換手順の詳細はPublic Skillを参照してください。
 
 ## ドキュメント
 
