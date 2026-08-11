@@ -59,6 +59,9 @@ jobs:
             VERSION="${GITHUB_REF_NAME#v}" \
             COMMIT="${GITHUB_SHA}"
 
+      - name: Verify release artifacts
+        run: make release-artifacts-check VERSION="${GITHUB_REF_NAME#v}"
+
       - name: Publish GitHub Release
         shell: bash
         env:
