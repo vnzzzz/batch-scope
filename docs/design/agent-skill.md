@@ -21,7 +21,8 @@ Internal Skillはリポジトリ固有の開発手順と共通規則だけを扱
 
 | 対象 | 正本 | Skillでの扱い |
 |---|---|---|
-| 取込ファイルの制約 | `schema/`配下のJSON Schema | Public Skillには作成時に必要な要点だけを記載する |
+| 取込JSONの機械的制約 | `schema/`配下のJSON Schema | Public Skillへフィールド一覧や境界値を全文転記しない |
+| 取込データの意味とレコード間制約 | `docs/design/canonical-snapshot.md` | Public Skillにはスナップショット作成時に必要な要点だけを記載する |
 | 変換と検索の手順 | `skills/public/batchscope/SKILL.md` | 製品利用時に直接指示する |
 | 変換時の要点 | `skills/public/batchscope/references/` | リポジトリ外でも判断できる範囲へ要約する |
 | バックログ監査 | `skills/internal/batchscope-backlog/SKILL.md` | Claude Codeの監査と登録手順を記載する |
@@ -87,6 +88,7 @@ Plugin、Marketplace、Gist同期、Skill専用リポジトリは、利用上の
 
 - APIまたは取込形式を変更した場合は、実装、JSON Schema、設計文書、Public Skillの参照資料、必要なデモデータを同じ変更で更新する。
 - JSON Schemaの制約をPublic Skillへ全文転記せず、利用時に必要な判断だけを記載する。
+- JSON Schemaで表現しない取込データの意味制約は`docs/design/canonical-snapshot.md`で管理し、Public Skillを意味制約の正本にしない。
 - OpenAPIは手書きで同梱しない。
 - Public SkillとInternal Skillの責務を混在させない。
 - 日本語文書の規則は`docs/development/writing-style.md`だけで更新し、Internal Skillへ全文転記しない。
