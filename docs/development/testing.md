@@ -11,6 +11,23 @@
 - 完全一致検索が最大1,000件を返し、超過時に`truncated=true`となる。
 - 後続検索の公開パラメーターが`targetId`と`includeEvidence`に限定される。
 
+## 対象の完全一致検索
+
+- ID、名前、完全パスの各項目との完全一致を返す。
+- 名前ではUnicode NFKC、前後空白の除去、Unicodeケースフォールディングを適用する。
+- パスではUnicode NFKCと前後空白の除去を適用し、大文字と小文字は区別する。
+- IDでは表記幅と大文字小文字を含めて入力値を変更しない。
+- `query`を省略した場合だけ`invalid-request`を返し、指定された空文字と空白のみの値を検索する。
+- 空文字のパス、空白のみのID、名前、パスが、それぞれの正規化規則に従って一致する。
+- `type`を省略した場合は`job`と`job_network`だけを対象とし、繰り返し指定と不正値を検査する。
+- 同じノードが複数項目で一致した場合も一件だけ返し、`matchedBy`を`id`、`name`、`path`の順にする。
+- 一致項目の優先度、完全パス、IDの順で同じ入力に同じ結果順を返す。
+- `ancestorPath`を`parent_id`だけから最上位の祖先、直近の親の順に組み立て、依存relationを含めない。
+- 1,001件目がある場合は先頭1,000件と`truncated=true`を返す。
+- スナップショット未投入時は`snapshot-not-loaded`を返す。
+- SQLite切替と複数の読み取り接続による並行検索でも、`snapshotId`と検索結果を同じ世代から返す。
+- 構造化ログへ`snapshot_id`、`duration_ms`、`returned_targets`を記録し、ジョブ名、完全パス、`query`を記録しない。
+
 ## 親子関係
 
 次の入力を確認します。
@@ -193,6 +210,7 @@ Issue #14で測定した単一検索の内部処理（`Traverse`、`Scan`、`Bui
 | `PERF_PATHOLOGICAL_RUNS=3 make perf-pathological` | 全Pathologicalケースの取込と解析 |
 | `PERF_CONCURRENT_RUNS=2 make perf-concurrent` | Smallの`NET-TARGET`を並行度1、2、4、8で解析 |
 | `PERF_CONNECTION_COMPARISON_RUNS=5 make perf-connection-comparison` | Smallの`NET-TARGET`について単一接続と複数読み取り接続を並行度1、2、4、8で比較 |
+| `PERF_TARGET_SEARCH_RUNS=20 make perf-target-search` | Smallを使い、公開HTTPの完全一致検索を並行度1、4、cold、warm、検索ケース別に測定 |
 | `PERF_GROWTH_RUNS=2 make perf-growth` | 10k、20k、40k、80kノードを別プロセスで測定し、規模別のJSONを`/tmp/batchscope-perf-growth`へ保存 |
 
 任意規模は`custom`プロファイルへノード数とrelation数を指定します。
@@ -213,16 +231,26 @@ go run ./cmd/perf-measure \
 go run ./cmd/perf-measure -mode import -profile medium -runs 2
 ```
 
-`cold`は各実行前に`PRAGMA shrink_memory`でSQLite接続のページキャッシュを解放した状態です。
-`warm`は直前の`cold`と同じSQLite接続を使い、接続のページキャッシュを解放せずに続けた状態です。
+取込後の静的解析における`cold`は、各実行前に`PRAGMA shrink_memory`でSQLite接続のページキャッシュを解放した状態です。
+同じ測定の`warm`は、直前の`cold`と同じSQLite接続を使い、接続のページキャッシュを解放せずに続けた状態です。
 どちらもOSのページキャッシュを保持するため、ストレージからの完全な初回読込は測っていません。
+
+公開HTTPの完全一致検索では、各coldラウンドの前に検索用接続プールの全接続を同時に保持し、それぞれへ`PRAGMA shrink_memory`を実行します。
+warmラウンドは、直前のcoldラウンドと同じ`http.Handler`と接続プールを使い、ページキャッシュを解放せずに続けます。
 
 検索の`total_ns`は`Traverse`の開始から`Build`の終了までです。
 結果の決まった順序でのJSON化とSHA-256計算は`serialize_digest_ns`へ分けます。
 HeapとLinuxのRSSは5 ms間隔と段階の境界で取得するため、サンプル間の短いピークを捉えない可能性があります。
 
+公開HTTPの完全一致検索の`latency_ns`は、製品の`http.Handler`へ対する`ServeHTTP`呼出しの直前から、レスポンスの書き込みを終えて戻るまでです。
+ルーティング、パラメーター解析、検索、DTO組立て、JSON化、構造化ログ、`httptest.ResponseRecorder`への書き込みを含みます。
+要求とrecorderの準備、応答内容の検査は含みません。
+
 並行負荷測定は、各ラウンドの開始前にSQLite接続のページキャッシュを解放し、すべてのworkerを同時に開始します。
 出力は検索ごとのレイテンシ、ラウンド全体のスループット、`database/sql`の接続待ち回数と待ち時間、HeapとRSSを含みます。
+
+公開HTTPの完全一致検索の並行負荷も、すべてのworkerが開始線へ到達してから同時に`ServeHTTP`を呼び出します。
+出力はケース、coldまたはwarm、並行度ごとに全要求のレイテンシと`min`、`median`、`p95`、`max`を保持し、返却件数と`truncated`も記録します。
 
 接続方式の比較測定は、一回の取込で作成したSQLiteを世代固有のファイルパスへ複製し、製品の`store`を閉じてから測定専用の接続を開きます。
 単一接続と複数読み取り接続は同じSQLiteファイルを使い、最大接続数だけを1または並行度と同じ値へ変更します。
@@ -251,7 +279,7 @@ Scaleの完全な測定に必要なメモリは未測定であり、Mediumを完
 
 - 初期対応規模の入力で、内部の`Traverse`、`Scan`、`Build`を完了できることをIssue #32の性能測定で確認する。
 - 初期対応規模を超えた入力を取込時に拒否し、受入済み入力の検索を処理量によって打ち切らない。
-- 公開HTTPの完全一致検索がp95 200 ms以下であることを、HTTP層を実装するIssue #10で確認する。
+- 公開HTTPの完全一致検索がp95 200 ms以下であることを、[完全一致検索のHTTP性能測定結果](target-search-performance.md)で確認する。
 - 公開HTTPの後続リミット取得がp95 1秒以下であることを、HTTP層を実装するIssue #13で確認する。
 - 循環を含む入力で、処理が終わらなくなったりプロセスが停止したりしない。
 - 各リミットの閲覧順を、レスポンス内の項目から説明できる。

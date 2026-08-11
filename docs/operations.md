@@ -171,13 +171,14 @@ MVPの観測情報は、Goの`log/slog`による構造化ログを正本とし�
 | 要求の識別 | `request_id`、`operation`、`duration_ms` |
 | プロセスとデータ | `boot_id`、`snapshot_id`、`import_id` |
 | 検索対象 | `target_id` |
-| 処理量 | `reached_nodes`、`returned_tree_nodes`、`returned_limits` |
+| 処理量 | `reached_nodes`、`returned_tree_nodes`、`returned_limits`、`returned_targets` |
 | 完了状態 | `cycles_detected`、`error_type` |
 
 `duration_ms`は正の処理時間がある場合だけ出力します。
 件数フィールドは0の場合に省略するため、ログ集計では省略を0として扱います。
 
 ジョブ名、完全パス、検索の`query`、`evidence`、入力資料の内容は、既定ログへ出力しません。
+完全一致検索では`operation`を`target_search`に固定し、`returned_targets`へ返却件数を記録します。
 
 ## メトリクス
 
@@ -188,7 +189,7 @@ MVPは専用のメトリクスexporterと`/metrics`エンドポイントを実�
 |---|---|
 | `snapshot_import_duration_seconds` | 取込を表す`operation`の`duration_ms`を1,000で割る |
 | `snapshot_import_failures_total` | 取込を表す`operation`で`error_type`がある完了ログを数える |
-| `target_lookup_duration_seconds` | 完全一致検索を表す`operation`の`duration_ms`を1,000で割る |
+| `target_lookup_duration_seconds` | `operation=target_search`の`duration_ms`を1,000で割る |
 | `limit_analysis_duration_seconds` | 後続分析を表す`operation`の`duration_ms`を1,000で割る |
 | `limit_analysis_reached_nodes` | 後続分析を表す`operation`の`reached_nodes`を集計する |
 | `limit_analysis_cycles_total` | 後続分析を表す`operation`の`cycles_detected`を集計する |
@@ -211,5 +212,5 @@ MVPは専用のメトリクスexporterと`/metrics`エンドポイントを実�
 単一検索の内部処理（`Traverse`、`Scan`、`Build`）の中央値は対応規模の判断に使い、並行度4における同じ内部処理のp95は想定同時検索数の判断に使いました。
 各測定値と条件は[性能測定結果](development/performance-measurement.md#中間規模)と[SQLite接続方式の比較](development/performance-measurement.md#sqlite接続方式の比較)を参照してください。
 内部処理のp95にはHTTP層のDTO組立てとJSON化を含まないため、後続リミット取得の最終p95はIssue #13で確認します。
-完全一致検索の最終p95は、HTTP層を実装するIssue #10で確認します。
-完全一致検索は索引を使う単一行検索であり、後続解析より軽い処理としてp95 200 msの目標を維持します。
+完全一致検索はHTTP層を含めて測定済みであり、条件と結果は[完全一致検索のHTTP性能測定結果](development/target-search-performance.md)を参照してください。
+この結果に基づき、完全一致検索のp95 200 msの目標を維持します。

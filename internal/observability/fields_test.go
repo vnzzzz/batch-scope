@@ -10,7 +10,7 @@ func TestAttrsUsesOnlyCommonFieldNames(t *testing.T) {
 	attrs := Attrs(Fields{
 		RequestID: "request", Operation: "analysis", Duration: 1500 * time.Microsecond,
 		BootID: "boot", SnapshotID: "snapshot", ImportID: "import", TargetID: "target",
-		ReachedNodes: 1, ReturnedTreeNodes: 2, ReturnedLimits: 3, CyclesDetected: 4,
+		ReachedNodes: 1, ReturnedTreeNodes: 2, ReturnedLimits: 3, ReturnedTargets: 4, CyclesDetected: 5,
 		ErrorType: "none",
 	})
 	names := make([]string, len(attrs))
@@ -19,7 +19,7 @@ func TestAttrsUsesOnlyCommonFieldNames(t *testing.T) {
 	}
 	want := []string{
 		RequestID, Operation, DurationMS, BootID, SnapshotID, ImportID, TargetID,
-		ReachedNodes, ReturnedTreeNodes, ReturnedLimits, CyclesDetected, ErrorType,
+		ReachedNodes, ReturnedTreeNodes, ReturnedLimits, ReturnedTargets, CyclesDetected, ErrorType,
 	}
 	if !reflect.DeepEqual(names, want) {
 		t.Fatalf("attribute names = %v, want %v", names, want)

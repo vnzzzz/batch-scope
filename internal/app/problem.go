@@ -23,3 +23,12 @@ func InternalErrorProblem(detail string) *huma.ErrorModel {
 		Detail: detail,
 	}
 }
+
+func SnapshotNotLoadedProblem(detail string) *huma.ErrorModel {
+	return &huma.ErrorModel{
+		Type:   "/problems/snapshot-not-loaded",
+		Title:  http.StatusText(http.StatusServiceUnavailable),
+		Status: http.StatusServiceUnavailable,
+		Detail: detail,
+	}
+}

@@ -4,11 +4,15 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"time"
 
+	"batchscope/internal/observability"
 	"batchscope/internal/store"
+	"batchscope/internal/target"
 
 	"github.com/danielgtaylor/huma/v2"
 	"github.com/danielgtaylor/huma/v2/adapters/humago"
@@ -30,6 +34,7 @@ type App struct {
 	bootID  string
 	started time.Time
 	store   *store.Store
+	logger  *slog.Logger
 	handler http.Handler
 }
 
@@ -70,15 +75,51 @@ type statusOutput struct {
 	Body StatusResponse
 }
 
+type targetsInput struct {
+	Query         string   `query:"query" doc:"Exact ID, name, or full path to search for"`
+	Types         []string `query:"type,explode" doc:"Target type filter; may be repeated" enum:"job,job_network"`
+	RequestID     string   `header:"X-Request-Id" doc:"Request identifier used in structured logs"`
+	queryProvided bool
+}
+
+// Resolveは、Humaのパラメーター束縛では区別できないqueryの未指定と指定された空文字を区別する。
+func (input *targetsInput) Resolve(ctx huma.Context) []error {
+	requestURL := ctx.URL()
+	input.queryProvided = requestURL.Query().Has("query")
+	return nil
+}
+
+type targetsResponse struct {
+	SnapshotID string              `json:"snapshotId"`
+	Items      []target.SearchItem `json:"items" nullable:"false"`
+	Truncated  bool                `json:"truncated"`
+}
+
+type targetsOutput struct {
+	Body targetsResponse
+}
+
 func New(config Config) (*App, error) {
 	storage, err := store.New(config.DataDir)
 	if err != nil {
 		return nil, fmt.Errorf("open SQLite store: %w", err)
 	}
-
-	bootID, err := newBootID()
+	a, err := NewWithStore(config, storage)
 	if err != nil {
 		_ = storage.Close()
+		return nil, err
+	}
+	return a, nil
+}
+
+// NewWithStoreは、準備済みのStoreを使って製品と同じHTTPルートを組み立てる。
+// 返したAppがStoreを所有するため、呼出側はApp.Closeで両方を閉じる。
+func NewWithStore(config Config, storage *store.Store) (*App, error) {
+	if storage == nil {
+		return nil, errors.New("store is nil")
+	}
+	bootID, err := newBootID()
+	if err != nil {
 		return nil, fmt.Errorf("generate boot ID: %w", err)
 	}
 
@@ -87,6 +128,7 @@ func New(config Config) (*App, error) {
 		bootID:  bootID,
 		started: time.Now().UTC(),
 		store:   storage,
+		logger:  slog.Default(),
 	}
 
 	mux := http.NewServeMux()
@@ -176,6 +218,22 @@ func registerRoutes(api huma.API, a *App) {
 		Path:        "/v1/status",
 		Summary:     "Get service status",
 	}, a.status)
+
+	huma.Register(api, huma.Operation{
+		OperationID: "search-targets",
+		Method:      http.MethodGet,
+		Path:        "/v1/targets",
+		Summary:     "Search jobs and job networks by exact match",
+		Errors:      []int{http.StatusBadRequest, http.StatusInternalServerError, http.StatusServiceUnavailable},
+		// パラメーター不正はAPI固有のinvalid-requestへ写像するため、Humaの422検査を使わない。
+		SkipValidateParams: true,
+	}, a.targets)
+	for _, parameter := range api.OpenAPI().Paths["/v1/targets"].Get.Parameters {
+		if parameter.Name == "query" {
+			parameter.Required = true
+		}
+	}
+	delete(api.OpenAPI().Paths["/v1/targets"].Get.Responses, "422")
 }
 
 func (a *App) health(context.Context, *struct{}) (*healthOutput, error) {
@@ -216,6 +274,90 @@ func (a *App) status(context.Context, *struct{}) (*statusOutput, error) {
 			},
 		},
 	}, nil
+}
+
+func (a *App) targets(ctx context.Context, input *targetsInput) (*targetsOutput, error) {
+	started := time.Now()
+	requestID := input.RequestID
+	var snapshotID, errorType string
+	returnedTargets := 0
+	defer func() {
+		attrs := observability.Attrs(observability.Fields{
+			RequestID: requestID, Operation: "target_search", Duration: time.Since(started),
+			BootID: a.bootID, SnapshotID: snapshotID, ReturnedTargets: returnedTargets,
+			ErrorType: errorType,
+		})
+		a.log().LogAttrs(ctx, slog.LevelInfo, "target search completed", attrs...)
+	}()
+	if requestID == "" {
+		var err error
+		requestID, err = newBootID()
+		if err != nil {
+			errorType = "internal-error"
+			return nil, InternalErrorProblem("failed to generate request ID")
+		}
+	}
+
+	if !input.queryProvided {
+		errorType = "invalid-request"
+		return nil, InvalidRequestProblem("query is required")
+	}
+
+	types, problem := targetTypes(input.Types)
+	if problem != nil {
+		errorType = "invalid-request"
+		return nil, problem
+	}
+
+	db, generation, release, err := a.store.Acquire()
+	if errors.Is(err, store.ErrNoDatabase) {
+		errorType = "snapshot-not-loaded"
+		return nil, SnapshotNotLoadedProblem("searchable snapshot is not loaded")
+	}
+	if err != nil {
+		errorType = "internal-error"
+		return nil, InternalErrorProblem("failed to acquire search snapshot")
+	}
+	defer release()
+	snapshotID = generation.SnapshotID
+
+	result, err := target.Search(ctx, db, input.Query, types)
+	if err != nil {
+		errorType = "internal-error"
+		return nil, InternalErrorProblem("target search failed")
+	}
+	returnedTargets = len(result.Items)
+	return &targetsOutput{Body: targetsResponse{
+		SnapshotID: snapshotID,
+		Items:      result.Items,
+		Truncated:  result.Truncated,
+	}}, nil
+}
+
+func targetTypes(requested []string) ([]string, *huma.ErrorModel) {
+	if len(requested) == 0 {
+		return []string{"job", "job_network"}, nil
+	}
+
+	seen := make(map[string]bool, len(requested))
+	types := make([]string, 0, len(requested))
+	for _, nodeType := range requested {
+		if nodeType != "job" && nodeType != "job_network" {
+			return nil, InvalidRequestProblem("type must be job or job_network")
+		}
+		if !seen[nodeType] {
+			seen[nodeType] = true
+			types = append(types, nodeType)
+		}
+	}
+	return types, nil
+}
+
+func (a *App) log() *slog.Logger {
+	if a.logger != nil {
+		return a.logger
+	}
+	return slog.Default()
 }
 
 func newBootID() (string, error) {

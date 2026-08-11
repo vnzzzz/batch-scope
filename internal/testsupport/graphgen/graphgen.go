@@ -74,6 +74,7 @@ type Node struct {
 	Type       string  `json:"type"`
 	ID         string  `json:"id"`
 	Name       string  `json:"name"`
+	Path       *string `json:"path,omitempty"`
 	ParentID   *string `json:"parentId,omitempty"`
 	LimitFacts []Limit `json:"limitFacts"`
 }
