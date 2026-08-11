@@ -46,8 +46,7 @@ if [[ ! -d skills/public/batchscope/references ]]; then
   exit 1
 fi
 
-shopt -s nullglob
-schema_files=(schema/*.schema.json)
+mapfile -d '' schema_files < <(find schema -type f -name '*.schema.json' -print0)
 if [[ ${#schema_files[@]} -eq 0 ]]; then
   echo "公開アーカイブへ同梱するJSON Schemaがありません。" >&2
   exit 1
@@ -59,23 +58,33 @@ output_dir="$(cd "$output_dir" && pwd)"
 work_dir="$(mktemp -d)"
 trap 'rm -rf "$work_dir"' EXIT
 
+render_release_readme() {
+  local destination="$1"
+
+  # checkoutでは相対リンクを維持し、配布版だけ対応するタグの文書へ固定する。
+  sed -E \
+    -e "s#\]\((docs/[^)]*)\)#](https://github.com/vnzzzz/batch-scope/blob/v${version}/\1)#g" \
+    -e "s#\]\((CONTRIBUTING\\.md[^)]*)\)#](https://github.com/vnzzzz/batch-scope/blob/v${version}/\1)#g" \
+    README.md > "$destination"
+}
+
 stage_public_files() {
   local stage="$1"
+  local schema_file relative destination
 
   cp LICENSE "$stage/"
-
-  # checkoutのREADMEはmain上の最新文書を案内し、配布版だけは対応するタグの文書へ固定する。
-  sed \
-    "s#https://github.com/vnzzzz/batch-scope/blob/main/#https://github.com/vnzzzz/batch-scope/blob/v${version}/#g" \
-    README.md > "$stage/README.md"
+  render_release_readme "$stage/README.md"
 
   mkdir -p "$stage/skills/public"
   cp -R skills/public/batchscope "$stage/skills/public/"
 
   rm -rf "$stage/skills/public/batchscope/references/schema"
-  mkdir -p "$stage/skills/public/batchscope/references/schema"
-  # schema/はGoの埋込コードも持つため、配布対象を命名規則に合うJSON Schemaへ限定する。
-  cp "${schema_files[@]}" "$stage/skills/public/batchscope/references/schema/"
+  for schema_file in "${schema_files[@]}"; do
+    relative="${schema_file#schema/}"
+    destination="$stage/skills/public/batchscope/references/schema/$relative"
+    mkdir -p "$(dirname "$destination")"
+    cp "$schema_file" "$destination"
+  done
 }
 
 targets=(
@@ -103,7 +112,6 @@ for target in "${targets[@]}"; do
   stage_public_files "$stage"
 
   tar -C "$work_dir" -czf "$output_dir/${name}.tar.gz" "$name"
-
 done
 
 (
