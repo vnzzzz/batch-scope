@@ -10,9 +10,12 @@ const (
 	MaxManifestBytes int64 = 1 << 20
 	// MaxNDJSONLineBytes は、一件の検査で保持するメモリ量を制限する。
 	MaxNDJSONLineBytes int64 = 16 << 20
+	// MaxNodeIDLengthはcanonical node IDのJSON SchemaとHTTP検索境界を一致させる。
+	// 受入済みスナップショットに存在し得ない長さのIDをSQLiteへ渡さない。
+	MaxNodeIDLength = 1_024
 
 	// MaxSnapshotNodesは、単一検索の内部処理（Traverse、Scan、Build）の中央値が396.929 msだった測定規模を採用する。
-	// 同じ規模における並行度4の内部処理のp95は839.499 msであり、HTTP層を含む最終p95はIssue #13で確認する。
+	// 同じ規模におけるHTTP層とJSON化を含むwarmかつ並行度4のp95は753.289 msであり、1秒の初期目標を満たす。
 	MaxSnapshotNodes = 10_000
 	// MaxSnapshotRelationsは、MaxSnapshotNodesと組み合わせた単一検索の内部処理中央値を測定した条件に合わせる。
 	// relationを50,000件へ増やした条件は、HTTP層の処理前に内部処理の中央値が1秒を超えた。

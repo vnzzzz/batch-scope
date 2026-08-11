@@ -255,4 +255,5 @@ Issue #32では、この測定結果に基づき、初期対応規模を10,000�
 
 公開HTTPの完全一致検索はIssue #10で測定済みです。
 条件と結果は[完全一致検索のHTTP性能測定結果](target-search-performance.md)を参照してください。
-後続リミット解析の公開HTTPは未測定であり、Issue #13で確認します。
+後続リミット解析の公開HTTPは測定済みです。
+条件と結果は[後続リミット取得のHTTP性能測定結果](limit-analysis-performance.md)を参照してください。

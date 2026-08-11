@@ -1,311 +1,751 @@
 {
   "bootId": "demo-boot-01",
-  "snapshotId": "demo-2026-08-07T00:00:00Z",
-  "target": {
-    "id": "JOB-A",
-    "type": "job",
-    "name": "売上抽出",
-    "path": "/DAILY/SALES/JOB-A",
-    "ancestorPath": [
-      {
-        "id": "UNIT-OPS",
-        "type": "management_unit",
-        "name": "運用管理"
-      },
-      {
-        "id": "NET-DAILY",
-        "type": "job_network",
-        "name": "日次処理"
-      },
-      {
-        "id": "NET-SALES",
-        "type": "job_network",
-        "name": "売上処理"
-      }
-    ]
-  },
-  "limits": {
-    "target": {
-      "finishByGroups": [],
-      "maxElapsed": {
-        "total": 0,
-        "items": []
-      },
-      "raw": {
-        "total": 0,
-        "items": []
-      }
+  "cycles": [
+    {
+      "containsImplicitRelation": true,
+      "containsUncertainRelation": true,
+      "cycleId": "cycle-1",
+      "nodes": [
+        {
+          "id": "JOB-A",
+          "name": "売上抽出",
+          "type": "job"
+        },
+        {
+          "id": "JOB-B",
+          "name": "売上集計",
+          "type": "job"
+        },
+        {
+          "id": "JOB-C",
+          "name": "会計連携ファイル作成",
+          "type": "job"
+        },
+        {
+          "id": "NET-CLOSE",
+          "name": "会計締め処理",
+          "type": "job_network"
+        },
+        {
+          "id": "event:vendor:ack",
+          "name": "外部ベンダー受信完了",
+          "type": "external_event"
+        },
+        {
+          "id": "file:nfs-prod:sales.done",
+          "name": "sales.done",
+          "type": "file"
+        }
+      ],
+      "route": [
+        {
+          "fromId": "JOB-A",
+          "toId": "file:nfs-prod:sales.done",
+          "viaRelations": [
+            {
+              "certainty": "confirmed",
+              "kind": "produces",
+              "origin": "ai_analysis"
+            }
+          ],
+          "viaScope": false
+        },
+        {
+          "fromId": "file:nfs-prod:sales.done",
+          "toId": "JOB-B",
+          "viaRelations": [
+            {
+              "certainty": "confirmed",
+              "kind": "triggers",
+              "origin": "ai_analysis"
+            }
+          ],
+          "viaScope": false
+        },
+        {
+          "fromId": "JOB-B",
+          "toId": "JOB-C",
+          "viaRelations": [
+            {
+              "certainty": "declared",
+              "kind": "precedes",
+              "origin": "scheduler"
+            }
+          ],
+          "viaScope": false
+        },
+        {
+          "fromId": "JOB-C",
+          "toId": "event:vendor:ack",
+          "viaRelations": [
+            {
+              "certainty": "inferred",
+              "kind": "produces",
+              "origin": "ai_analysis"
+            }
+          ],
+          "viaScope": false
+        },
+        {
+          "fromId": "event:vendor:ack",
+          "toId": "JOB-A",
+          "viaRelations": [
+            {
+              "certainty": "candidate",
+              "kind": "triggers",
+              "origin": "ai_analysis"
+            }
+          ],
+          "viaScope": false
+        },
+        {
+          "fromId": "JOB-A",
+          "toId": "NET-CLOSE",
+          "viaRelations": [
+            {
+              "certainty": "declared",
+              "kind": "precedes",
+              "origin": "scheduler"
+            }
+          ],
+          "viaScope": false
+        },
+        {
+          "fromId": "NET-CLOSE",
+          "toId": "JOB-C",
+          "viaRelations": [],
+          "viaScope": true
+        },
+        {
+          "fromId": "JOB-C",
+          "toId": "event:vendor:ack",
+          "viaRelations": [
+            {
+              "certainty": "inferred",
+              "kind": "produces",
+              "origin": "ai_analysis"
+            }
+          ],
+          "viaScope": false
+        },
+        {
+          "fromId": "event:vendor:ack",
+          "toId": "JOB-A",
+          "viaRelations": [
+            {
+              "certainty": "candidate",
+              "kind": "triggers",
+              "origin": "ai_analysis"
+            }
+          ],
+          "viaScope": false
+        }
+      ]
     },
+    {
+      "containsImplicitRelation": true,
+      "containsUncertainRelation": true,
+      "cycleId": "cycle-2",
+      "nodes": [
+        {
+          "id": "JOB-CYCLE-A",
+          "name": "リミットなし循環A",
+          "type": "job"
+        },
+        {
+          "id": "JOB-CYCLE-B",
+          "name": "リミットなし循環B",
+          "type": "job"
+        }
+      ],
+      "route": [
+        {
+          "fromId": "JOB-CYCLE-A",
+          "toId": "JOB-CYCLE-B",
+          "viaRelations": [
+            {
+              "certainty": "inferred",
+              "kind": "triggers",
+              "origin": "ai_analysis"
+            }
+          ],
+          "viaScope": false
+        },
+        {
+          "fromId": "JOB-CYCLE-B",
+          "toId": "JOB-CYCLE-A",
+          "viaRelations": [
+            {
+              "certainty": "declared",
+              "kind": "triggers",
+              "origin": "scheduler"
+            }
+          ],
+          "viaScope": false
+        }
+      ]
+    }
+  ],
+  "limits": {
     "contained": {
       "finishByGroups": [],
       "maxElapsed": {
-        "total": 0,
-        "items": []
+        "items": [],
+        "total": 0
       },
       "raw": {
-        "total": 0,
-        "items": []
+        "items": [],
+        "total": 0
       }
     },
     "downstream": {
       "finishByGroups": [
         {
-          "timeZone": "Asia/Tokyo",
-          "total": 2,
           "items": [
             {
+              "alternatePathCount": 0,
+              "fact": {
+                "businessDayOffset": 1,
+                "certainty": "declared",
+                "id": "LIMIT-JOB-C-FINISH",
+                "kind": "finish_by",
+                "localTime": "05:30:00",
+                "origin": "scheduler",
+                "sourceText": "翌日05:30までに終了",
+                "timeZone": "Asia/Tokyo"
+              },
               "limitOwner": {
                 "id": "JOB-C",
-                "type": "job",
-                "name": "会計連携ファイル作成"
+                "name": "会計連携ファイル作成",
+                "type": "job"
               },
               "scopeRoot": {
                 "id": "NET-CLOSE",
-                "type": "job_network",
-                "name": "会計締め処理"
+                "name": "会計締め処理",
+                "type": "job_network"
               },
-              "fact": {
-                "id": "LIMIT-JOB-C-FINISH",
-                "kind": "finish_by",
-                "businessDayOffset": 1,
-                "localTime": "05:30:00",
-                "timeZone": "Asia/Tokyo",
-                "sourceText": "翌日05:30までに終了",
-                "origin": "scheduler",
-                "certainty": "declared"
-              },
-              "treeNodeId": "tree-3",
-              "alternatePathCount": 1
+              "treeNodeId": "tree-10"
             },
             {
-              "limitOwner": {
-                "id": "JOB-B",
-                "type": "job",
-                "name": "売上集計"
-              },
+              "alternatePathCount": 0,
               "fact": {
+                "businessDayOffset": 1,
+                "certainty": "declared",
                 "id": "LIMIT-JOB-B-FINISH",
                 "kind": "finish_by",
-                "businessDayOffset": 1,
                 "localTime": "06:00:00",
-                "timeZone": "Asia/Tokyo",
-                "sourceText": "翌日06:00までに終了",
                 "origin": "scheduler",
-                "certainty": "declared"
+                "sourceText": "翌日06:00までに終了",
+                "timeZone": "Asia/Tokyo"
               },
-              "treeNodeId": "tree-7",
-              "alternatePathCount": 0
+              "limitOwner": {
+                "id": "JOB-B",
+                "name": "売上集計",
+                "type": "job"
+              },
+              "treeNodeId": "tree-15"
             }
-          ]
+          ],
+          "timeZone": "Asia/Tokyo",
+          "total": 2
+        },
+        {
+          "items": [
+            {
+              "alternatePathCount": 1,
+              "fact": {
+                "businessDayOffset": 0,
+                "certainty": "declared",
+                "id": "LIMIT-SHARED-FINISH",
+                "kind": "finish_by",
+                "localTime": "23:00:00",
+                "origin": "scheduler",
+                "sourceText": "当日23:00までに終了",
+                "timeZone": "UTC"
+              },
+              "limitOwner": {
+                "id": "JOB-SHARED-LIMIT",
+                "name": "合流後のリミット設定先",
+                "type": "job"
+              },
+              "treeNodeId": "tree-6"
+            }
+          ],
+          "timeZone": "UTC",
+          "total": 1
         }
       ],
       "maxElapsed": {
-        "total": 1,
         "items": [
           {
-            "limitOwner": {
-              "id": "JOB-B",
-              "type": "job",
-              "name": "売上集計"
-            },
+            "alternatePathCount": 0,
             "fact": {
+              "certainty": "declared",
+              "duration": "PT30M",
               "id": "LIMIT-JOB-B-ELAPSED",
               "kind": "max_elapsed",
-              "duration": "PT30M",
-              "sourceText": "開始から30分以内",
               "origin": "scheduler",
-              "certainty": "declared"
+              "sourceText": "開始から30分以内"
             },
-            "treeNodeId": "tree-7",
-            "alternatePathCount": 0
+            "limitOwner": {
+              "id": "JOB-B",
+              "name": "売上集計",
+              "type": "job"
+            },
+            "treeNodeId": "tree-15"
           }
-        ]
+        ],
+        "total": 1
       },
       "raw": {
-        "total": 0,
-        "items": []
+        "items": [
+          {
+            "alternatePathCount": 0,
+            "fact": {
+              "certainty": "declared",
+              "id": "LIMIT-HIDDEN-RAW",
+              "kind": "raw",
+              "origin": "manual",
+              "sourceText": "翌営業日の開始前"
+            },
+            "limitOwner": {
+              "id": "JOB-HIDDEN-LIMIT",
+              "name": "圧縮経路のリミット設定先",
+              "type": "job"
+            },
+            "treeNodeId": "tree-5"
+          }
+        ],
+        "total": 1
+      }
+    },
+    "target": {
+      "finishByGroups": [],
+      "maxElapsed": {
+        "items": [],
+        "total": 0
+      },
+      "raw": {
+        "items": [],
+        "total": 0
       }
     }
   },
+  "snapshotId": "demo-2026-08-07T00:00:00Z",
+  "target": {
+    "ancestorPath": [
+      {
+        "id": "UNIT-OPS",
+        "name": "運用管理",
+        "type": "management_unit"
+      },
+      {
+        "id": "NET-DAILY",
+        "name": "日次処理",
+        "type": "job_network"
+      },
+      {
+        "id": "NET-SALES",
+        "name": "売上処理",
+        "type": "job_network"
+      }
+    ],
+    "id": "JOB-A",
+    "name": "売上抽出",
+    "path": "/DAILY/SALES/JOB-A",
+    "type": "job"
+  },
   "tree": {
-    "node": {
-      "id": "JOB-A",
-      "type": "job",
-      "name": "売上抽出"
-    },
     "children": [
       {
-        "node": {
-          "id": "NET-CLOSE",
-          "type": "job_network",
-          "name": "会計締め処理"
-        },
         "children": [
           {
-            "node": {
-              "id": "JOB-C",
-              "type": "job",
-              "name": "会計連携ファイル作成"
-            },
             "children": [
               {
+                "children": [],
+                "cycleId": "cycle-2",
                 "node": {
-                  "id": "event:vendor:ack",
-                  "type": "external_event",
-                  "name": "外部ベンダー受信完了"
+                  "id": "JOB-CYCLE-A",
+                  "name": "リミットなし循環A",
+                  "type": "job"
                 },
+                "referenceTo": "tree-2",
+                "referenceType": "cycle",
+                "treeNodeId": "tree-4",
+                "viaRelations": [
+                  {
+                    "certainty": "declared",
+                    "kind": "triggers",
+                    "origin": "scheduler"
+                  }
+                ]
+              }
+            ],
+            "node": {
+              "id": "JOB-CYCLE-B",
+              "name": "リミットなし循環B",
+              "type": "job"
+            },
+            "treeNodeId": "tree-3",
+            "viaRelations": [
+              {
+                "certainty": "inferred",
+                "kind": "triggers",
+                "origin": "ai_analysis"
+              }
+            ]
+          }
+        ],
+        "node": {
+          "id": "JOB-CYCLE-A",
+          "name": "リミットなし循環A",
+          "type": "job"
+        },
+        "treeNodeId": "tree-2",
+        "viaRelations": [
+          {
+            "certainty": "declared",
+            "kind": "precedes",
+            "origin": "scheduler"
+          }
+        ]
+      },
+      {
+        "children": [],
+        "hiddenConnections": [
+          {
+            "fromId": "JOB-A",
+            "toId": "JOB-HIDDEN-1",
+            "viaRelations": [
+              {
+                "certainty": "declared",
+                "kind": "precedes",
+                "origin": "scheduler"
+              }
+            ],
+            "viaScope": false
+          },
+          {
+            "fromId": "JOB-HIDDEN-1",
+            "toId": "JOB-HIDDEN-2",
+            "viaRelations": [
+              {
+                "certainty": "declared",
+                "kind": "precedes",
+                "origin": "scheduler"
+              }
+            ],
+            "viaScope": false
+          },
+          {
+            "fromId": "JOB-HIDDEN-2",
+            "toId": "JOB-HIDDEN-LIMIT",
+            "viaRelations": [
+              {
+                "certainty": "declared",
+                "kind": "precedes",
+                "origin": "scheduler"
+              }
+            ],
+            "viaScope": false
+          }
+        ],
+        "hiddenJobCount": 2,
+        "hiddenNodeIds": [
+          "JOB-HIDDEN-1",
+          "JOB-HIDDEN-2"
+        ],
+        "node": {
+          "id": "JOB-HIDDEN-LIMIT",
+          "name": "圧縮経路のリミット設定先",
+          "type": "job"
+        },
+        "treeNodeId": "tree-5"
+      },
+      {
+        "children": [],
+        "hiddenConnections": [
+          {
+            "fromId": "JOB-A",
+            "toId": "JOB-SHARED-A",
+            "viaRelations": [
+              {
+                "certainty": "declared",
+                "kind": "precedes",
+                "origin": "scheduler"
+              }
+            ],
+            "viaScope": false
+          },
+          {
+            "fromId": "JOB-SHARED-A",
+            "toId": "JOB-SHARED-LIMIT",
+            "viaRelations": [
+              {
+                "certainty": "declared",
+                "kind": "precedes",
+                "origin": "scheduler"
+              }
+            ],
+            "viaScope": false
+          }
+        ],
+        "hiddenJobCount": 1,
+        "hiddenNodeIds": [
+          "JOB-SHARED-A"
+        ],
+        "node": {
+          "id": "JOB-SHARED-LIMIT",
+          "name": "合流後のリミット設定先",
+          "type": "job"
+        },
+        "treeNodeId": "tree-6"
+      },
+      {
+        "children": [],
+        "hiddenConnections": [
+          {
+            "fromId": "JOB-A",
+            "toId": "JOB-SHARED-B",
+            "viaRelations": [
+              {
+                "certainty": "declared",
+                "kind": "precedes",
+                "origin": "scheduler"
+              }
+            ],
+            "viaScope": false
+          },
+          {
+            "fromId": "JOB-SHARED-B",
+            "toId": "JOB-SHARED-LIMIT",
+            "viaRelations": [
+              {
+                "certainty": "declared",
+                "kind": "precedes",
+                "origin": "scheduler"
+              }
+            ],
+            "viaScope": false
+          }
+        ],
+        "hiddenJobCount": 1,
+        "hiddenNodeIds": [
+          "JOB-SHARED-B"
+        ],
+        "node": {
+          "id": "JOB-SHARED-LIMIT",
+          "name": "合流後のリミット設定先",
+          "type": "job"
+        },
+        "referenceTo": "tree-6",
+        "referenceType": "shared",
+        "treeNodeId": "tree-7"
+      },
+      {
+        "children": [],
+        "node": {
+          "id": "JOB-TERMINAL",
+          "name": "リミットなし終端",
+          "type": "job"
+        },
+        "treeNodeId": "tree-8",
+        "viaRelations": [
+          {
+            "certainty": "declared",
+            "kind": "precedes",
+            "origin": "scheduler"
+          }
+        ]
+      },
+      {
+        "children": [
+          {
+            "children": [
+              {
                 "children": [
                   {
+                    "children": [],
+                    "cycleId": "cycle-1",
                     "node": {
                       "id": "JOB-A",
-                      "type": "job",
-                      "name": "売上抽出"
+                      "name": "売上抽出",
+                      "type": "job"
                     },
-                    "referenceType": "cycle",
                     "referenceTo": "tree-1",
-                    "cycleId": "cycle-1",
-                    "children": [],
-                    "treeNodeId": "tree-5",
+                    "referenceType": "cycle",
+                    "treeNodeId": "tree-12",
                     "viaRelations": [
                       {
+                        "certainty": "candidate",
                         "kind": "triggers",
-                        "origin": "ai_analysis",
-                        "certainty": "candidate"
+                        "origin": "ai_analysis"
                       }
                     ]
                   }
                 ],
-                "treeNodeId": "tree-4",
+                "node": {
+                  "id": "event:vendor:ack",
+                  "name": "外部ベンダー受信完了",
+                  "type": "external_event"
+                },
+                "treeNodeId": "tree-11",
                 "viaRelations": [
                   {
+                    "certainty": "inferred",
                     "kind": "produces",
-                    "origin": "ai_analysis",
-                    "certainty": "inferred"
+                    "origin": "ai_analysis"
                   }
                 ]
               }
             ],
-            "treeNodeId": "tree-3",
-            "viaRelations": [
-              {
-                "kind": "precedes",
-                "origin": "scheduler",
-                "certainty": "declared"
-              }
-            ]
+            "node": {
+              "id": "JOB-C",
+              "name": "会計連携ファイル作成",
+              "type": "job"
+            },
+            "treeNodeId": "tree-10",
+            "viaScope": true
           }
         ],
-        "treeNodeId": "tree-2",
+        "node": {
+          "id": "NET-CLOSE",
+          "name": "会計締め処理",
+          "type": "job_network"
+        },
+        "treeNodeId": "tree-9",
         "viaRelations": [
           {
+            "certainty": "declared",
             "kind": "precedes",
-            "origin": "scheduler",
-            "certainty": "declared"
+            "origin": "scheduler"
           }
         ]
       },
       {
+        "children": [],
         "node": {
-          "id": "file:nfs-prod:sales.done",
-          "type": "file",
-          "name": "sales.done"
+          "id": "UNIT-BOUNDARY",
+          "name": "探索対象外の管理単位",
+          "type": "management_unit"
         },
+        "treeNodeId": "tree-13",
+        "viaRelations": [
+          {
+            "certainty": "confirmed",
+            "kind": "observed_by",
+            "origin": "deterministic_analysis"
+          }
+        ]
+      },
+      {
         "children": [
           {
-            "node": {
-              "id": "JOB-B",
-              "type": "job",
-              "name": "売上集計"
-            },
             "children": [
               {
-                "node": {
-                  "id": "NET-CLOSE",
-                  "type": "job_network",
-                  "name": "会計締め処理"
-                },
-                "referenceType": "shared",
-                "referenceTo": "tree-2",
                 "children": [],
-                "treeNodeId": "tree-8",
+                "cycleId": "cycle-1",
+                "node": {
+                  "id": "JOB-C",
+                  "name": "会計連携ファイル作成",
+                  "type": "job"
+                },
+                "referenceTo": "tree-10",
+                "referenceType": "cycle",
+                "treeNodeId": "tree-16",
                 "viaRelations": [
                   {
+                    "certainty": "declared",
                     "kind": "precedes",
-                    "origin": "scheduler",
-                    "certainty": "declared"
+                    "origin": "scheduler"
+                  }
+                ]
+              },
+              {
+                "children": [],
+                "cycleId": "cycle-1",
+                "node": {
+                  "id": "NET-CLOSE",
+                  "name": "会計締め処理",
+                  "type": "job_network"
+                },
+                "referenceTo": "tree-9",
+                "referenceType": "cycle",
+                "treeNodeId": "tree-17",
+                "viaRelations": [
+                  {
+                    "certainty": "declared",
+                    "kind": "precedes",
+                    "origin": "scheduler"
                   }
                 ]
               }
             ],
-            "treeNodeId": "tree-7",
+            "node": {
+              "id": "JOB-B",
+              "name": "売上集計",
+              "type": "job"
+            },
+            "treeNodeId": "tree-15",
             "viaRelations": [
               {
+                "certainty": "confirmed",
                 "kind": "triggers",
-                "origin": "ai_analysis",
-                "certainty": "confirmed"
+                "origin": "ai_analysis"
               }
             ]
           }
         ],
-        "treeNodeId": "tree-6",
+        "node": {
+          "id": "file:nfs-prod:sales.done",
+          "name": "sales.done",
+          "type": "file"
+        },
+        "treeNodeId": "tree-14",
         "viaRelations": [
           {
+            "certainty": "confirmed",
             "kind": "produces",
-            "origin": "ai_analysis",
-            "certainty": "confirmed"
+            "origin": "ai_analysis"
           }
         ]
       }
     ],
+    "node": {
+      "id": "JOB-A",
+      "name": "売上抽出",
+      "type": "job"
+    },
     "treeNodeId": "tree-1"
   },
   "uncoveredRoutes": [
     {
       "boundary": {
-        "id": "JOB-A",
-        "type": "job",
-        "name": "売上抽出"
+        "id": "JOB-CYCLE-A",
+        "name": "リミットなし循環A",
+        "type": "job"
       },
-      "reason": "cycle_without_limit"
-    }
-  ],
-  "cycles": [
+      "cycleId": "cycle-2",
+      "reason": "cycle_without_limit",
+      "treeNodeId": "tree-2"
+    },
     {
-      "cycleId": "cycle-1",
-      "nodes": [
-        {
-          "id": "JOB-A",
-          "type": "job",
-          "name": "売上抽出"
-        },
-        {
-          "id": "JOB-B",
-          "type": "job",
-          "name": "売上集計"
-        },
-        {
-          "id": "JOB-C",
-          "type": "job",
-          "name": "会計連携ファイル作成"
-        },
-        {
-          "id": "NET-CLOSE",
-          "type": "job_network",
-          "name": "会計締め処理"
-        },
-        {
-          "id": "event:vendor:ack",
-          "type": "external_event",
-          "name": "外部ベンダー受信完了"
-        },
-        {
-          "id": "file:nfs-prod:sales.done",
-          "type": "file",
-          "name": "sales.done"
-        }
-      ],
-      "containsImplicitRelation": true,
-      "containsUncertainRelation": true
+      "boundary": {
+        "id": "JOB-TERMINAL",
+        "name": "リミットなし終端",
+        "type": "job"
+      },
+      "reason": "terminal_without_limit",
+      "treeNodeId": "tree-8"
+    },
+    {
+      "boundary": {
+        "id": "UNIT-BOUNDARY",
+        "name": "探索対象外の管理単位",
+        "type": "management_unit"
+      },
+      "reason": "non_traversable_node_type",
+      "treeNodeId": "tree-13"
     }
   ]
 }

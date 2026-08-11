@@ -234,6 +234,8 @@ func registerRoutes(api huma.API, a *App) {
 		}
 	}
 	delete(api.OpenAPI().Paths["/v1/targets"].Get.Responses, "422")
+
+	registerAnalysisRoute(api, a)
 }
 
 func (a *App) health(context.Context, *struct{}) (*healthOutput, error) {

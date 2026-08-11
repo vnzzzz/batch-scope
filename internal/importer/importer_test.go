@@ -42,11 +42,11 @@ func TestRunImportsDemoSnapshotWithIndexes(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer release()
-	assertCount(t, db, "node", 9)
-	assertCount(t, db, "limit_fact", 3)
-	assertCount(t, db, "relation", 8)
+	assertCount(t, db, "node", 19)
+	assertCount(t, db, "limit_fact", 5)
+	assertCount(t, db, "relation", 19)
 	if generation.SnapshotID == "" || generation.SchemaVersion != "0.5" || generation.GeneratedAt.IsZero() ||
-		generation.NodeCount != 9 || generation.RelationCount != 8 || generation.LimitCount != 3 || generation.MaxSCCNodes != 6 ||
+		generation.NodeCount != 19 || generation.RelationCount != 19 || generation.LimitCount != 5 || generation.MaxSCCNodes != 6 ||
 		len(generation.Fingerprint) != 64 {
 		t.Fatalf("generation metadata = %#v", generation)
 	}
@@ -97,8 +97,8 @@ func TestRunDemoSnapshotSupportsDownstreamLimitScan(t *testing.T) {
 		t.Fatalf("Scan() error = %v", err)
 	}
 
-	if len(got.Downstream.FinishByGroups) != 1 {
-		t.Fatalf("finish_by groups = %#v, want one group", got.Downstream.FinishByGroups)
+	if len(got.Downstream.FinishByGroups) != 2 {
+		t.Fatalf("finish_by groups = %#v, want two groups", got.Downstream.FinishByGroups)
 	}
 	finishGroup := got.Downstream.FinishByGroups[0]
 	finishItems := finishGroup.Items
@@ -114,8 +114,11 @@ func TestRunDemoSnapshotSupportsDownstreamLimitScan(t *testing.T) {
 	if got.Downstream.MaxElapsed.Total != 1 || got.Downstream.MaxElapsed.Items[0].Fact.ID != "LIMIT-JOB-B-ELAPSED" {
 		t.Errorf("max_elapsed = %#v, want LIMIT-JOB-B-ELAPSED", got.Downstream.MaxElapsed)
 	}
-	if total := len(finishItems) + got.Downstream.MaxElapsed.Total + got.Downstream.Raw.Total; total != 3 {
-		t.Errorf("downstream limit total = %d, want 3", total)
+	if total := finishGroup.Total + got.Downstream.FinishByGroups[1].Total + got.Downstream.MaxElapsed.Total + got.Downstream.Raw.Total; total != 5 {
+		t.Errorf("downstream limit total = %d, want 5", total)
+	}
+	if got.Downstream.Raw.Total != 1 || got.Downstream.Raw.Items[0].Fact.ID != "LIMIT-HIDDEN-RAW" {
+		t.Errorf("raw = %#v, want LIMIT-HIDDEN-RAW", got.Downstream.Raw)
 	}
 	if finishItems[0].ScopeRoot == nil || finishItems[0].ScopeRoot.ID != "NET-CLOSE" {
 		t.Errorf("JOB-C ScopeRoot = %#v, want NET-CLOSE", finishItems[0].ScopeRoot)
@@ -267,7 +270,7 @@ func TestRunFailureKeepsCurrentAndRemovesImportingDatabase(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	assertCount(t, db, "node", 9)
+	assertCount(t, db, "node", 19)
 	release()
 	generations, err := filepath.Glob(filepath.Join(dataDirectory, "generation-*.db"))
 	if err != nil || len(generations) != 1 {

@@ -7,3 +7,13 @@
 {"type":"job","id":"JOB-C","name":"会計連携ファイル作成","path":"/DAILY/CLOSE/JOB-C","parentId":"NET-CLOSE","limitFacts":[{"id":"LIMIT-JOB-C-FINISH","kind":"finish_by","businessDayOffset":1,"localTime":"05:30:00","timeZone":"Asia/Tokyo","sourceText":"翌日05:30までに終了","origin":"scheduler","certainty":"declared"}]}
 {"type":"file","id":"file:nfs-prod:sales.done","name":"sales.done","parentId":null,"limitFacts":[],"locator":{"namespace":"nfs-prod","path":"/trigger/sales.done"}}
 {"type":"external_event","id":"event:vendor:ack","name":"外部ベンダー受信完了","parentId":null,"limitFacts":[],"locator":{"provider":"vendor-a","event":"acknowledged"}}
+{"type":"job","id":"JOB-HIDDEN-1","name":"中間処理1","parentId":"NET-SALES","limitFacts":[]}
+{"type":"job","id":"JOB-HIDDEN-2","name":"中間処理2","parentId":"NET-SALES","limitFacts":[]}
+{"type":"job","id":"JOB-HIDDEN-LIMIT","name":"圧縮経路のリミット設定先","parentId":"NET-SALES","limitFacts":[{"id":"LIMIT-HIDDEN-RAW","kind":"raw","sourceText":"翌営業日の開始前","origin":"manual","certainty":"declared"}]}
+{"type":"job","id":"JOB-TERMINAL","name":"リミットなし終端","parentId":"NET-SALES","limitFacts":[]}
+{"type":"management_unit","id":"UNIT-BOUNDARY","name":"探索対象外の管理単位","parentId":null,"limitFacts":[]}
+{"type":"job","id":"JOB-CYCLE-A","name":"リミットなし循環A","parentId":"NET-SALES","limitFacts":[]}
+{"type":"job","id":"JOB-CYCLE-B","name":"リミットなし循環B","parentId":"NET-SALES","limitFacts":[]}
+{"type":"job","id":"JOB-SHARED-A","name":"合流経路A","parentId":"NET-SALES","limitFacts":[]}
+{"type":"job","id":"JOB-SHARED-B","name":"合流経路B","parentId":"NET-SALES","limitFacts":[]}
+{"type":"job","id":"JOB-SHARED-LIMIT","name":"合流後のリミット設定先","parentId":"NET-SALES","limitFacts":[{"id":"LIMIT-SHARED-FINISH","kind":"finish_by","businessDayOffset":0,"localTime":"23:00:00","timeZone":"UTC","sourceText":"当日23:00までに終了","origin":"scheduler","certainty":"declared"}]}

@@ -129,7 +129,7 @@ func TestOpenAPISpec(t *testing.T) {
 	if spec.Info.Version != "v1" {
 		t.Fatalf("info.version = %q, want v1", spec.Info.Version)
 	}
-	for _, path := range []string{"/healthz", "/readyz", "/v1/status", "/v1/targets"} {
+	for _, path := range []string{"/healthz", "/readyz", "/v1/status", "/v1/targets", "/v1/downstream-limit-analysis"} {
 		item := spec.Paths[path]
 		if item == nil || item.Get == nil {
 			t.Errorf("GET %s is missing from OpenAPI", path)
@@ -167,6 +167,12 @@ func TestProblemDetails(t *testing.T) {
 			problem:    InvalidRequestProblem("invalid input"),
 			wantType:   "/problems/invalid-request",
 			wantStatus: http.StatusBadRequest,
+		},
+		{
+			name:       "target not found",
+			problem:    TargetNotFoundProblem("target does not exist"),
+			wantType:   "/problems/target-not-found",
+			wantStatus: http.StatusNotFound,
 		},
 		{
 			name:       "internal error",

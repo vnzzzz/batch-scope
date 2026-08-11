@@ -28,6 +28,18 @@
 - SQLite切替と複数の読み取り接続による並行検索でも、`snapshotId`と検索結果を同じ世代から返す。
 - 構造化ログへ`snapshot_id`、`duration_ms`、`returned_targets`を記録し、ジョブ名、完全パス、`query`を記録しない。
 
+## 後続リミット取得API
+
+- トップレベルの公開項目と各DTOの必須項目を[API仕様](../design/api.md#後続リミットの取得)と一致させ、内部距離や部分成功用の項目を公開しない。
+- `includeEvidence`の切替を、treeの通常接続、`hiddenConnections`、cycleの`route`にあるrelationで一貫して適用し、limit factへ適用しない。
+- `max_elapsed`の整数秒を同じISO 8601 Durationへ正規化する。
+- デモスナップショットを実際に取り込み、固定した`bootId`以外の成功レスポンス全体を`examples/demo/responses/downstream-limit-analysis.json`と比較する。
+- 同じ世代と検索条件では、JSON化後のレスポンスを含めて同じ順序と内容を返す。
+- SQLite切替と並行検索でも、`snapshotId`と対象、リミット、経路を同じ世代から返す。
+- スナップショット未投入、対象なし、不正な要求、内部エラーをProblem Detailsへ写像し、部分成功を返さない。
+- 10秒のdeadline超過と要求のキャンセルを`analysis-timeout`へ写像し、蓄積済みの結果を200で返さない。
+- deadlineによる終了後に検索世代の参照を解放し、正常な要求は同じ全件解析結果を返す。
+
 ## 親子関係
 
 次の入力を確認します。
@@ -190,7 +202,7 @@ Issue #14で測定した単一検索の内部処理（`Traverse`、`Scan`、`Bui
 
 複数読み取り接続における内部処理のp95に基づき、検索用SQLiteの最大接続数と想定同時検索数を4にします。
 並行度別のp95は[性能測定結果](performance-measurement.md#sqlite接続方式の比較)を参照してください。
-単一検索の中央値と並行度4の内部処理のp95にはHTTP層を含まないため、DTO組立てとJSON化を含む後続リミット取得の最終p95はIssue #13で確認します。
+DTO組立てとJSON化を含む後続リミット取得の最終p95は[後続リミット取得のHTTP性能測定結果](limit-analysis-performance.md)で確認します。
 リミット設定の総数5,000件、SCCサイズ3,000ノード、ジョブネット階層深さ64階層も取込時に検査し、測定した入力から一つの要素だけが無制限に増える条件を受け入れません。
 リミット設定数とSCCサイズの測定結果は[Issue #32の対応規模境界](#issue-32の対応規模境界)を参照してください。
 
@@ -211,6 +223,7 @@ Issue #14で測定した単一検索の内部処理（`Traverse`、`Scan`、`Bui
 | `PERF_CONCURRENT_RUNS=2 make perf-concurrent` | Smallの`NET-TARGET`を並行度1、2、4、8で解析 |
 | `PERF_CONNECTION_COMPARISON_RUNS=5 make perf-connection-comparison` | Smallの`NET-TARGET`について単一接続と複数読み取り接続を並行度1、2、4、8で比較 |
 | `PERF_TARGET_SEARCH_RUNS=20 make perf-target-search` | Smallを使い、公開HTTPの完全一致検索を並行度1、4、cold、warm、検索ケース別に測定 |
+| `PERF_LIMIT_ANALYSIS_RUNS=20 make perf-limit-analysis` | Smallを使い、公開HTTPの後続リミット取得を並行度1、4、cold、warmで測定 |
 | `PERF_GROWTH_RUNS=2 make perf-growth` | 10k、20k、40k、80kノードを別プロセスで測定し、規模別のJSONを`/tmp/batchscope-perf-growth`へ保存 |
 
 任意規模は`custom`プロファイルへノード数とrelation数を指定します。
@@ -252,6 +265,10 @@ HeapとLinuxのRSSは5 ms間隔と段階の境界で取得するため、サン�
 公開HTTPの完全一致検索の並行負荷も、すべてのworkerが開始線へ到達してから同時に`ServeHTTP`を呼び出します。
 出力はケース、coldまたはwarm、並行度ごとに全要求のレイテンシと`min`、`median`、`p95`、`max`を保持し、返却件数と`truncated`も記録します。
 
+公開HTTPの後続リミット取得も、完全一致検索と同じ測定境界と開始線を使います。
+測定区間には検索世代の取得、`Traverse`、`Scan`、`Build`、公開DTOへの写像、JSON化、構造化ログ、レスポンス書き込みを含めます。
+プロファイルを変更する場合は`PERF_LIMIT_ANALYSIS_PROFILE`、並行度を変更する場合は`PERF_LIMIT_ANALYSIS_CONCURRENCIES`を指定します。
+
 接続方式の比較測定は、一回の取込で作成したSQLiteを世代固有のファイルパスへ複製し、製品の`store`を閉じてから測定専用の接続を開きます。
 単一接続と複数読み取り接続は同じSQLiteファイルを使い、最大接続数だけを1または並行度と同じ値へ変更します。
 どちらも読み取り専用かつ不変ファイルとして開き、DSNにより`foreign_keys`と`query_only`をすべての接続へ適用します。
@@ -280,7 +297,7 @@ Scaleの完全な測定に必要なメモリは未測定であり、Mediumを完
 - 初期対応規模の入力で、内部の`Traverse`、`Scan`、`Build`を完了できることをIssue #32の性能測定で確認する。
 - 初期対応規模を超えた入力を取込時に拒否し、受入済み入力の検索を処理量によって打ち切らない。
 - 公開HTTPの完全一致検索がp95 200 ms以下であることを、[完全一致検索のHTTP性能測定結果](target-search-performance.md)で確認する。
-- 公開HTTPの後続リミット取得がp95 1秒以下であることを、HTTP層を実装するIssue #13で確認する。
+- 公開HTTPの後続リミット取得がp95 1秒以下であることを、[後続リミット取得のHTTP性能測定結果](limit-analysis-performance.md)で確認する。
 - 循環を含む入力で、処理が終わらなくなったりプロセスが停止したりしない。
 - 各リミットの閲覧順を、レスポンス内の項目から説明できる。
 - 取込失敗によって、現在使用中のSQLiteが破損または置換されない。

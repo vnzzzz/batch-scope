@@ -32,3 +32,21 @@ func SnapshotNotLoadedProblem(detail string) *huma.ErrorModel {
 		Detail: detail,
 	}
 }
+
+func AnalysisTimeoutProblem(detail string) *huma.ErrorModel {
+	return &huma.ErrorModel{
+		Type:   "/problems/analysis-timeout",
+		Title:  http.StatusText(http.StatusServiceUnavailable),
+		Status: http.StatusServiceUnavailable,
+		Detail: detail,
+	}
+}
+
+func TargetNotFoundProblem(detail string) *huma.ErrorModel {
+	return &huma.ErrorModel{
+		Type:   "/problems/target-not-found",
+		Title:  http.StatusText(http.StatusNotFound),
+		Status: http.StatusNotFound,
+		Detail: detail,
+	}
+}

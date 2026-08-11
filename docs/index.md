@@ -34,4 +34,5 @@ BatchScopeは、障害発生時に巨大なジョブ定義を手作業でたど�
 | [テスト](development/testing.md) | テスト範囲と評価データ |
 | [性能測定結果](development/performance-measurement.md) | Issue #14の測定環境、条件、結果 |
 | [完全一致検索のHTTP性能測定結果](development/target-search-performance.md) | Issue #10の測定環境、条件、結果 |
+| [後続リミット取得のHTTP性能測定結果](development/limit-analysis-performance.md) | Issue #13の測定環境、条件、結果 |
 | [技術文書の書き方](development/writing-style.md) | 日本語表記、図表、重複を避ける規則 |
