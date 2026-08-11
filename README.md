@@ -1,31 +1,46 @@
 # BatchScope
 
-BatchScopeは、指定したジョブまたはジョブネットから影響を受けるリミット設定箇所を全件洗い出す静的解析サービスです。
+BatchScopeは、バッチジョブの定義を静的に解析し、指定したジョブまたはジョブネットから後続の依存関係をたどって、リミット設定とそこまでの経路を確認するためのサービスです。
 
-ジョブマネージャーへ直接接続せず、製品固有の定義を共通スナップショットへ変換して取り込みます。
-返すのは定義に保存されたリミットであり、現在時刻、実行状態、業務日を使った対応期限の計算は行いません。
+ジョブマネージャーへ直接接続するのではなく、製品固有の定義を共通スナップショットへ変換して取り込みます。現在時刻や実行状態、業務日から「いつまでに対応すべきか」を計算するサービスではありません。
 
-## 利用
+## Quick Start
 
-GitHub Releaseのアーカイブを展開し、単体バイナリを起動します。
+最短で一連の動作を確認するには、リポジトリをcloneしてデモスナップショットを使います。
+Go、`curl`、`jq`、`tar`が必要です。
+
+```bash
+git clone https://github.com/vnzzzz/batch-scope.git
+cd batch-scope
+make smoke
+```
+
+`make smoke`は一時的にBatchScopeを起動し、`examples/demo/snapshot`を取り込んで、`JOB-A`の検索と後続リミット解析まで実行します。結果は人が確認しやすい形で表示されます。
+
+GitHub Releaseの単体バイナリを使う場合は、アーカイブを展開して次のように起動します。
 
 ```bash
 ./batchscope serve
 ```
 
-スナップショット取込から対象検索、後続リミット解析までの一連の利用方法は[デモ](docs/development/demo.md)を参照してください。
-APIの意味と保証は[API仕様](docs/design/api.md)、機械的なHTTP形式は[生成OpenAPI](docs/api/openapi.yaml)、取込データの形式は[スナップショット仕様](docs/design/canonical-snapshot.md)を正本とします。
+起動後は `http://127.0.0.1:8080/docs` でAPIドキュメントを確認できます。実際のスナップショットとAPI利用例は[デモ](docs/development/demo.md)を参照してください。
 
-Release archiveには、スナップショットの作成、取込、検索を支援するPublic SkillをJSON Schemaとともに同梱します。
-ソースコードからの実行は[開発環境](docs/development/development.md)、公開成果物とコンテナイメージは[ビルドと公開](docs/development/build-and-release.md)を参照してください。
+## Public Skill
+
+GitHub Releaseのアーカイブには、スナップショットの作成、取込、検索を支援するPublic SkillをJSON Schemaとともに同梱します。
 
 ## ドキュメント
 
-- [設計文書](docs/index.md)
-- [デモ](docs/development/demo.md)
-- [開発環境](docs/development/development.md)
-- [ビルドと公開](docs/development/build-and-release.md)
-- [コントリビューションガイド](CONTRIBUTING.md)
+| 文書 | 確認できること |
+|---|---|
+| [デモ](docs/development/demo.md) | デモスナップショットとAPI利用例 |
+| [API仕様](docs/design/api.md) | APIの意味と利用者へ保証する動作 |
+| [OpenAPI](docs/api/openapi.yaml) | HTTPのパス、パラメーター、JSON形式 |
+| [スナップショット仕様](docs/design/canonical-snapshot.md) | 取込データの意味とレコード間制約 |
+| [設計文書](docs/index.md) | システム全体の設計文書への入口 |
+| [開発環境](docs/development/development.md) | ソースコードからの開発と実行 |
+| [ビルドと公開](docs/development/build-and-release.md) | Release成果物とコンテナイメージの扱い |
+| [コントリビューションガイド](CONTRIBUTING.md) | 開発への参加方法とブランチ運用 |
 
 ## ライセンス
 
