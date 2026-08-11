@@ -58,6 +58,9 @@ SQLiteは、検査済みスナップショットを検索しやすい形で保�
 
 ## 同一内容の判定
 
-同じ`snapshotId`を再送した場合の同一性は、展開後の`manifest.json`、`nodes.ndjson`、`relations.ndjson`の内容で判定します。
-アーカイブのファイル順、権限、更新日時、gzipの圧縮方法は判定に含めません。
+同じ`snapshotId`を再送した場合の同一性は、展開後の`manifest.json`、`nodes.ndjson`、`relations.ndjson`をこの固定順で見たbyte内容で判定します。
+JSONとして意味が同じでも、空白、改行、objectのキー順などで展開後ファイルのbyte内容が変われば別の内容として扱います。
+
+アーカイブのファイル順、権限、更新日時、gzipの圧縮方法は展開後三ファイルのbyte内容ではないため判定に含めません。
+内部で使うfingerprintのhash形式やbyte列の境界付けは公開契約に含めません。
 利用者へ公開する再送時の動作は[同時取込と再送](api.md#同時取込と再送)で定めます。
