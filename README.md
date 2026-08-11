@@ -8,39 +8,40 @@ BatchScopeは、バッチジョブの定義から、指定したジョブまた�
 
 ### 1. Releaseバイナリを起動する
 
-[GitHub Releases](https://github.com/vnzzzz/batch-scope/releases)から利用環境に合うアーカイブを取得します。
+[GitHub Releases](https://github.com/vnzzzz/batch-scope/releases)から、利用環境に合うOS別アーカイブと`batchscope_demo_snapshot.tar.gz`を取得します。
 Linuxでは`amd64`と`arm64`のtar.gzを配布しています。
+
+まずOS別アーカイブを展開します。
 
 ```bash
 # 例: Linux amd64
 tar -xzf batchscope_*_linux_amd64.tar.gz
-cd batchscope_*_linux_amd64
-./batchscope version
-./batchscope serve -data-dir "$(mktemp -d)"
 ```
 
-既定では`0.0.0.0:8080`で待ち受けます。
-上の例では試用のため空の一時データディレクトリを使っています。起動後は`http://127.0.0.1:8080/docs`でAPIドキュメントを確認できます。
+バイナリを確認します。
+
+```bash
+./batchscope_*_linux_amd64/batchscope version
+```
+
+試用中のデータが他の実行と混ざらないよう、一時データディレクトリで起動します。
+
+```bash
+./batchscope_*_linux_amd64/batchscope serve -data-dir "$(mktemp -d)"
+```
+
+既定では`0.0.0.0:8080`で待ち受けます。起動後は`http://127.0.0.1:8080/docs`でAPIドキュメントを確認できます。
 
 ### 2. デモデータで試す
 
-Releaseアーカイブにはデモスナップショットも同梱されています。
-BatchScopeを起動したターミナルはそのままにして、同じ展開ディレクトリを別のターミナルで開きます。`curl`、`jq`、`tar`が必要です。
+BatchScopeを起動したターミナルはそのままにして、Releaseから取得した`batchscope_demo_snapshot.tar.gz`があるディレクトリを別のターミナルで開きます。`curl`と`jq`が必要です。
 
-まず、同梱されたデモスナップショットを取込用のtar.gzにまとめます。
-
-```bash
-DEMO_ARCHIVE="$(mktemp)"
-tar -C examples/demo/snapshot -czf "$DEMO_ARCHIVE" \
-  manifest.json nodes.ndjson relations.ndjson
-```
-
-スナップショットをBatchScopeへ送信します。
+まず、デモスナップショットをBatchScopeへ送信します。
 
 ```bash
 curl -i -X POST \
   -H 'Content-Type: application/vnd.batchscope.snapshot+gzip' \
-  --data-binary "@$DEMO_ARCHIVE" \
+  --data-binary @batchscope_demo_snapshot.tar.gz \
   http://127.0.0.1:8080/v1/snapshot-imports
 ```
 
@@ -68,7 +69,7 @@ curl -fsS \
 
 ### 3. 実際のジョブ定義をPublic Skillで変換する
 
-Releaseアーカイブには`skills/public/batchscope/`も同梱されています。
+OS別のReleaseアーカイブには`skills/public/batchscope/`を同梱しています。
 Public Skillは、既存のジョブマネージャーの出力やジョブ定義を読み取り、BatchScopeが受け取る共通スナップショットへ変換して、取込・検索するためのエージェント向け手順です。
 
 Claude CodeやCodexなど、利用するエージェントのSkill配置方法に従って`skills/public/batchscope/`を読み込ませます。ジョブマネージャーから取得した定義ファイルや実行スクリプトを参照できる状態にしたうえで、例えば次のように依頼します。
