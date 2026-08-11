@@ -6,18 +6,21 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 
+	"batchscope/internal/limits"
 	"batchscope/internal/normalize"
 
 	_ "modernc.org/sqlite"
 )
 
 const (
-	currentDatabaseName   = "current.db"
-	importingDatabaseName = "importing.db"
+	importingDatabaseName     = "importing.db"
+	generationDatabasePattern = "generation-*.db*"
 )
 
 // State は、検索用SQLiteと取込処理の状態を表す。
@@ -34,32 +37,50 @@ var (
 	ErrImportInProgress = errors.New("snapshot import is already in progress")
 	ErrImportFinished   = errors.New("snapshot import is already finished")
 	ErrClosed           = errors.New("store is closed")
+	// ErrGenerationCapacityは、検証結果が対応規模を超えたまま切替へ渡されたことを示す。
+	ErrGenerationCapacity = errors.New("generation exceeds supported capacity")
 	// ErrRetiredCleanup は、検索先の切替成功後に退避済みSQLiteの後始末が失敗したことを示す。
 	ErrRetiredCleanup = errors.New("retired database cleanup failed")
 
 	// renameFileは、SQLite切替時のrename失敗をテストから再現するため差し替え可能にする。
 	renameFile = os.Rename
-	// openSQLiteは、有効化後のSQLiteを開けない場合をテストから再現するため差し替え可能にする。
-	openSQLite = openDatabase
+	// openSQLiteは、取込用SQLiteを開けない場合をテストから再現するため差し替え可能にする。
+	openSQLite = openImportDatabase
+	// openSearchSQLiteは、有効化後の検索用SQLiteを開けない場合をテストから再現するため差し替え可能にする。
+	openSearchSQLite = openSearchDatabase
 	// cleanupRetiredDatabaseは、退避済みSQLiteの後始末失敗を再現するテスト専用注入点である。
 	cleanupRetiredDatabase = closeAndRemove
 )
 
 // Store は、現在の検索先と進行中の取込を所有する。
 type Store struct {
-	mu        sync.Mutex
-	directory string
-	current   *database
-	importing *Import
-	retiredID uint64
-	closed    bool
+	mu             sync.Mutex
+	directory      string
+	current        *database
+	importing      *Import
+	nextGeneration uint64
+	closed         bool
 }
 
 type database struct {
-	db      *sql.DB
-	path    string
-	refs    int
-	retired bool
+	db         *sql.DB
+	path       string
+	generation Generation
+	refs       int
+	retired    bool
+}
+
+// Generationは、検索用SQLiteと同じ参照寿命で扱うスナップショット情報を保持する。
+type Generation struct {
+	SnapshotID         string
+	GeneratedAt        time.Time
+	SchemaVersion      string
+	NodeCount          int
+	RelationCount      int
+	LimitCount         int
+	MaxSCCNodes        int
+	MaxJobNetworkDepth int
+	Fingerprint        string
 }
 
 // Import は、一件のimporting.db作成処理を表す。
@@ -132,18 +153,18 @@ func (s *Store) BeginImport(ctx context.Context) (*Import, error) {
 	return operation, nil
 }
 
-// Acquire は呼出時点の検索用SQLiteと、冪等な解放関数を返す。
-// 切替後も、解放されるまでは返したDBを閉じない。
-func (s *Store) Acquire() (*sql.DB, func(), error) {
+// Acquire は呼出時点の検索用SQLite、同じ世代のメタデータ、冪等な解放関数を返す。
+// 切替後も、解放されるまでは返したDBとメタデータの世代を保持する。
+func (s *Store) Acquire() (*sql.DB, Generation, func(), error) {
 	s.mu.Lock()
 	if s.closed {
 		s.mu.Unlock()
-		return nil, nil, ErrClosed
+		return nil, Generation{}, nil, ErrClosed
 	}
 	active := s.current
 	if active == nil {
 		s.mu.Unlock()
-		return nil, nil, ErrNoDatabase
+		return nil, Generation{}, nil, ErrNoDatabase
 	}
 	active.refs++
 	s.mu.Unlock()
@@ -154,7 +175,7 @@ func (s *Store) Acquire() (*sql.DB, func(), error) {
 			s.release(active)
 		})
 	}
-	return active.db, release, nil
+	return active.db, active.generation, release, nil
 }
 
 // Close は新しい処理の開始を拒否し、未使用のSQLiteを閉じる。
@@ -203,10 +224,10 @@ func (i *Import) DB() *sql.DB {
 	return i.db
 }
 
-// Complete は索引とSQLiteの整合性を検査し、成功したDBだけを検索先へ切り替える。
+// Complete は索引、SQLiteの整合性、検証済み世代情報を確認し、成功したDBだけを検索先へ切り替える。
 // errors.Is(err, ErrRetiredCleanup)が真の場合、検索先の切替は成功しているため、
 // 呼出側は取込失敗として扱ってはならない。
-func (i *Import) Complete(ctx context.Context) error {
+func (i *Import) Complete(ctx context.Context, generation Generation) error {
 	s := i.store
 	s.mu.Lock()
 	if i.finished || s.importing != i {
@@ -218,6 +239,9 @@ func (i *Import) Complete(ctx context.Context) error {
 		return ErrClosed
 	}
 	s.mu.Unlock()
+	if err := validateGeneration(generation); err != nil {
+		return i.fail(err)
+	}
 
 	if err := createIndexes(ctx, i.db); err != nil {
 		return i.fail(fmt.Errorf("create search indexes: %w", err))
@@ -242,45 +266,29 @@ func (i *Import) Complete(ctx context.Context) error {
 	}
 
 	old := s.current
-	var retiredPath string
-	if old != nil {
-		s.retiredID++
-		retiredPath = filepath.Join(s.directory, fmt.Sprintf(".retired-%d.db", s.retiredID))
-		if err := renameFile(old.path, retiredPath); err != nil {
-			return i.failAfterCloseLocked(fmt.Errorf("retire current database: %w", err))
-		}
-	}
-
+	s.nextGeneration++
 	importingPath := filepath.Join(s.directory, importingDatabaseName)
-	currentPath := filepath.Join(s.directory, currentDatabaseName)
-	if err := renameFile(importingPath, currentPath); err != nil {
-		cause := fmt.Errorf("activate importing database: %w", err)
-		if old != nil {
-			cause = errors.Join(cause, i.restoreCurrentLocked(old, retiredPath))
-		}
-		return i.failAfterCloseLocked(cause)
+	generationPath := filepath.Join(s.directory, fmt.Sprintf("generation-%020d.db", s.nextGeneration))
+	if err := renameFile(importingPath, generationPath); err != nil {
+		return i.failAfterCloseLocked(fmt.Errorf("activate importing database: %w", err))
 	}
 
-	newDB, err := openSQLite(ctx, currentPath)
+	newDB, err := openSearchSQLite(ctx, generationPath)
 	if err != nil {
 		cause := errors.Join(
 			fmt.Errorf("open activated database: %w", err),
-			removeDatabaseFiles(currentPath),
+			removeDatabaseFiles(generationPath),
 		)
-		if old != nil {
-			cause = errors.Join(cause, i.restoreCurrentLocked(old, retiredPath))
-		}
 		return i.failAfterCloseLocked(cause)
 	}
 
-	next := &database{db: newDB, path: currentPath}
+	next := &database{db: newDB, path: generationPath, generation: generation}
 	s.current = next
 	s.importing = nil
 	i.finished = true
 
 	var result error
 	if old != nil {
-		old.path = retiredPath
 		old.retired = true
 		if old.refs == 0 {
 			result = errors.Join(result, cleanupRetiredDatabase(old))
@@ -331,21 +339,6 @@ func (i *Import) failAfterCloseLocked(cause error) error {
 	return errors.Join(cause, removeErr)
 }
 
-func (i *Import) restoreCurrentLocked(old *database, retiredPath string) error {
-	if err := renameFile(retiredPath, old.path); err != nil {
-		// 復元失敗後は内部のpathと実際の配置が一致しないため、旧DBを検索先として公開しない。
-		i.store.current = nil
-		old.path = retiredPath
-		old.retired = true
-		var cleanupErr error
-		if old.refs == 0 {
-			cleanupErr = closeAndRemove(old)
-		}
-		return errors.Join(fmt.Errorf("restore current database: %w", err), cleanupErr)
-	}
-	return nil
-}
-
 func (s *Store) release(active *database) {
 	s.mu.Lock()
 	active.refs--
@@ -366,22 +359,67 @@ func (s *Store) stateLocked() State {
 	return StateEmpty
 }
 
-func openDatabase(ctx context.Context, path string) (*sql.DB, error) {
-	db, err := sql.Open("sqlite", path)
+func openImportDatabase(ctx context.Context, path string) (*sql.DB, error) {
+	dsn := sqliteDSN(path, false)
+	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, err
 	}
-	// foreign_keysは接続単位であり、current.dbのパスは切替後に次のスナップショットへ再利用される。
-	// 退避済みハンドルが同じDSNへ再接続して別データを読まないよう、単一の接続を期限なしで保持する。
 	db.SetMaxOpenConns(1)
 	db.SetMaxIdleConns(1)
 	db.SetConnMaxLifetime(0)
 	db.SetConnMaxIdleTime(0)
-	if _, err := db.ExecContext(ctx, "PRAGMA foreign_keys = ON"); err != nil {
+	if err := db.PingContext(ctx); err != nil {
 		_ = db.Close()
 		return nil, err
 	}
 	return db, nil
+}
+
+func openSearchDatabase(ctx context.Context, path string) (*sql.DB, error) {
+	dsn := sqliteDSN(path, true)
+	db, err := sql.Open("sqlite", dsn)
+	if err != nil {
+		return nil, err
+	}
+	db.SetMaxOpenConns(limits.MaxSearchConnections)
+	db.SetMaxIdleConns(limits.MaxSearchConnections)
+	db.SetConnMaxLifetime(0)
+	db.SetConnMaxIdleTime(0)
+	if err := db.PingContext(ctx); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	return db, nil
+}
+
+func sqliteDSN(path string, search bool) string {
+	dsn := url.URL{Scheme: "file", Path: path}
+	query := url.Values{}
+	query.Set("_foreign_keys", "on")
+	if search {
+		// 検索世代のファイルは参照がなくなるまで置換も削除もしないため、immutableで開ける。
+		query.Set("mode", "ro")
+		query.Set("immutable", "1")
+		query.Set("_query_only", "1")
+	}
+	dsn.RawQuery = query.Encode()
+	return dsn.String()
+}
+
+func validateGeneration(generation Generation) error {
+	if generation.SnapshotID == "" || generation.SchemaVersion == "" || generation.GeneratedAt.IsZero() || generation.Fingerprint == "" {
+		return errors.New("generation metadata is incomplete")
+	}
+	if generation.NodeCount < 0 || generation.RelationCount < 0 || generation.LimitCount < 0 || generation.MaxSCCNodes < 0 {
+		return errors.New("generation counts must not be negative")
+	}
+	if generation.NodeCount > limits.MaxSnapshotNodes || generation.RelationCount > limits.MaxSnapshotRelations ||
+		generation.LimitCount > limits.MaxSnapshotLimits || generation.MaxSCCNodes > limits.MaxSCCNodes ||
+		generation.MaxJobNetworkDepth > limits.MaxJobNetworkDepth {
+		return ErrGenerationCapacity
+	}
+	return nil
 }
 
 func createTables(ctx context.Context, db *sql.DB) error {
@@ -578,18 +616,23 @@ func searchIncludesNode(ctx context.Context, db *sql.DB, query, representativeID
 }
 
 func removeStartupDatabases(directory string) error {
-	for _, name := range []string{currentDatabaseName, importingDatabaseName} {
+	for _, name := range []string{"current.db", importingDatabaseName} {
 		if err := removeDatabaseFiles(filepath.Join(directory, name)); err != nil {
 			return fmt.Errorf("remove stale %s: %w", name, err)
 		}
 	}
-	retired, err := filepath.Glob(filepath.Join(directory, ".retired-*.db*"))
+	stale, err := filepath.Glob(filepath.Join(directory, generationDatabasePattern))
+	if err != nil {
+		return fmt.Errorf("find stale generation databases: %w", err)
+	}
+	legacyRetired, err := filepath.Glob(filepath.Join(directory, ".retired-*.db*"))
 	if err != nil {
 		return fmt.Errorf("find stale retired databases: %w", err)
 	}
-	for _, path := range retired {
+	stale = append(stale, legacyRetired...)
+	for _, path := range stale {
 		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
-			return fmt.Errorf("remove stale retired database: %w", err)
+			return fmt.Errorf("remove stale generation database: %w", err)
 		}
 	}
 	return nil

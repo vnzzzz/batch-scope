@@ -10,11 +10,14 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
+
+	"batchscope/internal/limits"
 )
 
 func TestNewStartsEmptyAndRemovesStaleDatabases(t *testing.T) {
 	directory := t.TempDir()
-	for _, name := range []string{currentDatabaseName, importingDatabaseName, ".retired-9.db"} {
+	for _, name := range []string{"current.db", importingDatabaseName, ".retired-9.db", "generation-00000000000000000009.db"} {
 		if err := os.WriteFile(filepath.Join(directory, name), []byte("stale"), 0o600); err != nil {
 			t.Fatal(err)
 		}
@@ -27,12 +30,12 @@ func TestNewStartsEmptyAndRemovesStaleDatabases(t *testing.T) {
 	if storage.Ready() {
 		t.Fatal("Ready() = true, want false")
 	}
-	for _, name := range []string{currentDatabaseName, importingDatabaseName, ".retired-9.db"} {
+	for _, name := range []string{"current.db", importingDatabaseName, ".retired-9.db", "generation-00000000000000000009.db"} {
 		if _, err := os.Stat(filepath.Join(directory, name)); !errors.Is(err, os.ErrNotExist) {
 			t.Fatalf("%s still exists: %v", name, err)
 		}
 	}
-	if _, _, err := storage.Acquire(); !errors.Is(err, ErrNoDatabase) {
+	if _, _, _, err := storage.Acquire(); !errors.Is(err, ErrNoDatabase) {
 		t.Fatalf("Acquire() error = %v, want %v", err, ErrNoDatabase)
 	}
 }
@@ -60,10 +63,10 @@ func TestImportCreatesDocumentedTablesAndIndexes(t *testing.T) {
 		}
 	}
 
-	if err := operation.Complete(context.Background()); err != nil {
+	if err := operation.Complete(context.Background(), testGeneration("indexes")); err != nil {
 		t.Fatal(err)
 	}
-	db, release, err := storage.Acquire()
+	db, _, release, err := storage.Acquire()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -131,7 +134,7 @@ func TestAcquireKeepsOldDatabaseUntilReleaseAfterSwitch(t *testing.T) {
 	storage := newTestStore(t, directory)
 	activateValue(t, storage, "old")
 
-	oldDB, releaseOld, err := storage.Acquire()
+	oldDB, _, releaseOld, err := storage.Acquire()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -143,12 +146,12 @@ func TestAcquireKeepsOldDatabaseUntilReleaseAfterSwitch(t *testing.T) {
 	if got := activeValue(t, storage); got != "new" {
 		t.Fatalf("new database value = %q, want new", got)
 	}
-	retired, err := filepath.Glob(filepath.Join(directory, ".retired-*.db"))
+	generations, err := filepath.Glob(filepath.Join(directory, "generation-*.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(retired) != 1 {
-		t.Fatalf("retired databases before release = %v, want one", retired)
+	if len(generations) != 2 {
+		t.Fatalf("generation databases before release = %v, want two", generations)
 	}
 
 	releaseOld()
@@ -156,12 +159,12 @@ func TestAcquireKeepsOldDatabaseUntilReleaseAfterSwitch(t *testing.T) {
 	if err := oldDB.Ping(); err == nil {
 		t.Fatal("old database is still open after release")
 	}
-	retired, err = filepath.Glob(filepath.Join(directory, ".retired-*.db"))
+	generations, err = filepath.Glob(filepath.Join(directory, "generation-*.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(retired) != 0 {
-		t.Fatalf("retired databases after release = %v, want none", retired)
+	if len(generations) != 1 {
+		t.Fatalf("generation databases after release = %v, want one", generations)
 	}
 }
 
@@ -169,7 +172,7 @@ func TestAcquiredDatabaseKeepsSnapshotAcrossRepeatedQueriesAfterSwitch(t *testin
 	storage := newTestStore(t, t.TempDir())
 	activateValue(t, storage, "old")
 
-	oldDB, releaseOld, err := storage.Acquire()
+	oldDB, _, releaseOld, err := storage.Acquire()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -180,6 +183,70 @@ func TestAcquiredDatabaseKeepsSnapshotAcrossRepeatedQueriesAfterSwitch(t *testin
 		if got := queryValue(t, oldDB); got != "old" {
 			t.Fatalf("old database value after switch on query %d = %q, want old", queryNumber, got)
 		}
+	}
+}
+
+func TestRetiredHandleReconnectsToItsOwnGenerationPath(t *testing.T) {
+	storage := newTestStore(t, t.TempDir())
+	activateValue(t, storage, "old")
+	oldDB, oldGeneration, releaseOld, err := storage.Acquire()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer releaseOld()
+
+	activateValue(t, storage, "new")
+	// アイドル接続を破棄し、退役済みsql.DBがDSNから新しい接続を作る経路を必ず通す。
+	oldDB.SetMaxIdleConns(0)
+	if got := queryValue(t, oldDB); got != "old" {
+		t.Fatalf("reconnected old database value = %q, want old", got)
+	}
+	if oldGeneration.SnapshotID != "old" {
+		t.Fatalf("old generation metadata = %#v", oldGeneration)
+	}
+}
+
+func TestEverySQLiteConnectionHasRequiredPragmas(t *testing.T) {
+	storage := newTestStore(t, t.TempDir())
+	operation := beginTestImport(t, storage)
+	assertPragma(t, operation.DB(), "foreign_keys", 1)
+	assertPragma(t, operation.DB(), "query_only", 0)
+	insertValue(t, operation.DB(), "value")
+	if err := operation.Complete(context.Background(), testGeneration("pragmas")); err != nil {
+		t.Fatal(err)
+	}
+
+	db, _, release, err := storage.Acquire()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+	connections := make([]*sql.Conn, 0, limits.MaxSearchConnections)
+	defer func() {
+		for _, connection := range connections {
+			_ = connection.Close()
+		}
+	}()
+	for range limits.MaxSearchConnections {
+		connection, err := db.Conn(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		connections = append(connections, connection)
+	}
+	for index, connection := range connections {
+		for _, pragma := range []string{"foreign_keys", "query_only"} {
+			var enabled int
+			if err := connection.QueryRowContext(context.Background(), "PRAGMA "+pragma).Scan(&enabled); err != nil {
+				t.Fatalf("connection %d PRAGMA %s: %v", index, pragma, err)
+			}
+			if enabled != 1 {
+				t.Fatalf("connection %d PRAGMA %s = %d, want 1", index, pragma, enabled)
+			}
+		}
+	}
+	if _, err := connections[0].ExecContext(context.Background(), "CREATE TABLE forbidden(value TEXT)"); err == nil {
+		t.Fatal("search connection accepted a write")
 	}
 }
 
@@ -202,7 +269,7 @@ func TestSearchesCanRunWhileDatabaseSwitches(t *testing.T) {
 		go func() {
 			defer searches.Done()
 			for !stop.Load() {
-				db, release, err := storage.Acquire()
+				db, _, release, err := storage.Acquire()
 				if err != nil {
 					errorsFromSearches <- err
 					return
@@ -222,7 +289,7 @@ func TestSearchesCanRunWhileDatabaseSwitches(t *testing.T) {
 		}()
 	}
 
-	if err := operation.Complete(context.Background()); err != nil {
+	if err := operation.Complete(context.Background(), testGeneration("concurrent")); err != nil {
 		t.Fatal(err)
 	}
 	stop.Store(true)
@@ -240,7 +307,7 @@ func TestFailedUpdateDoesNotReplaceCurrentDatabase(t *testing.T) {
 	directory := t.TempDir()
 	storage := newTestStore(t, directory)
 	activateValue(t, storage, "current")
-	currentPath := filepath.Join(directory, currentDatabaseName)
+	currentPath := activeGenerationPath(t, directory)
 	before, err := os.ReadFile(currentPath)
 	if err != nil {
 		t.Fatal(err)
@@ -250,7 +317,7 @@ func TestFailedUpdateDoesNotReplaceCurrentDatabase(t *testing.T) {
 	if _, err := operation.DB().Exec("DROP TABLE node"); err != nil {
 		t.Fatal(err)
 	}
-	if err := operation.Complete(context.Background()); err == nil {
+	if err := operation.Complete(context.Background(), testGeneration("invalid")); err == nil {
 		t.Fatal("Complete() succeeded for an invalid importing database")
 	}
 	if got := storage.State(); got != StateReady {
@@ -264,10 +331,23 @@ func TestFailedUpdateDoesNotReplaceCurrentDatabase(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !reflect.DeepEqual(after, before) {
-		t.Fatal("current.db changed after failed update")
+		t.Fatal("active generation changed after failed update")
 	}
 	if _, err := os.Stat(filepath.Join(directory, importingDatabaseName)); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("importing.db remains after failure: %v", err)
+	}
+}
+
+func TestValidateGenerationRejectsSCCCapacity(t *testing.T) {
+	generation := testGeneration("scc-boundary")
+	generation.MaxSCCNodes = limits.MaxSCCNodes
+	if err := validateGeneration(generation); err != nil {
+		t.Fatalf("validateGeneration() boundary error = %v", err)
+	}
+
+	generation.MaxSCCNodes++
+	if err := validateGeneration(generation); !errors.Is(err, ErrGenerationCapacity) {
+		t.Fatalf("validateGeneration() error = %v, want %v", err, ErrGenerationCapacity)
 	}
 }
 
@@ -294,7 +374,7 @@ func TestCompleteRejectsParentCycleAndKeepsCurrentDatabase(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := operation.Complete(context.Background()); err == nil {
+	if err := operation.Complete(context.Background(), testGeneration("cycle")); err == nil {
 		t.Fatal("Complete() succeeded with a parent hierarchy cycle")
 	}
 	assertFailedUpdateKeepsCurrent(t, storage, directory, "current")
@@ -309,7 +389,7 @@ func TestCompleteRepresentativeNameSearchAllowsDuplicateNames(t *testing.T) {
                ('B', 'job', 'Same', 'same', '/a', '/a')`); err != nil {
 		t.Fatal(err)
 	}
-	if err := operation.Complete(context.Background()); err != nil {
+	if err := operation.Complete(context.Background(), testGeneration("duplicate-name")); err != nil {
 		t.Fatalf("Complete() error = %v", err)
 	}
 	if got := storage.State(); got != StateReady {
@@ -325,11 +405,10 @@ func TestCompleteKeepsCurrentDatabaseWhenActivationRenameFails(t *testing.T) {
 	insertValue(t, operation.DB(), "replacement")
 
 	activationErr := errors.New("activation rename failed")
-	currentPath := filepath.Join(directory, currentDatabaseName)
 	importingPath := filepath.Join(directory, importingDatabaseName)
 	originalRename := renameFile
 	renameFile = func(oldPath, newPath string) error {
-		if oldPath == importingPath && newPath == currentPath {
+		if oldPath == importingPath && filepath.Base(newPath) == "generation-00000000000000000002.db" {
 			return activationErr
 		}
 		return originalRename(oldPath, newPath)
@@ -338,7 +417,7 @@ func TestCompleteKeepsCurrentDatabaseWhenActivationRenameFails(t *testing.T) {
 		renameFile = originalRename
 	})
 
-	err := operation.Complete(context.Background())
+	err := operation.Complete(context.Background(), testGeneration("rename-failure"))
 	if !errors.Is(err, activationErr) {
 		t.Fatalf("Complete() error = %v, want %v", err, activationErr)
 	}
@@ -353,30 +432,29 @@ func TestCompleteKeepsCurrentDatabaseWhenActivatedDatabaseCannotOpen(t *testing.
 	insertValue(t, operation.DB(), "replacement")
 
 	openErr := errors.New("open activated database failed")
-	currentPath := filepath.Join(directory, currentDatabaseName)
-	originalOpen := openSQLite
-	openSQLite = func(ctx context.Context, path string) (*sql.DB, error) {
-		if path == currentPath {
+	originalOpen := openSearchSQLite
+	openSearchSQLite = func(ctx context.Context, path string) (*sql.DB, error) {
+		if filepath.Base(path) == "generation-00000000000000000002.db" {
 			return nil, openErr
 		}
 		return originalOpen(ctx, path)
 	}
 	t.Cleanup(func() {
-		openSQLite = originalOpen
+		openSearchSQLite = originalOpen
 	})
 
-	err := operation.Complete(context.Background())
+	err := operation.Complete(context.Background(), testGeneration("open-failure"))
 	if !errors.Is(err, openErr) {
 		t.Fatalf("Complete() error = %v, want %v", err, openErr)
 	}
 	assertFailedUpdateKeepsCurrent(t, storage, directory, "current")
 }
 
-func TestCompleteBecomesEmptyWhenCurrentDatabaseCannotBeRestored(t *testing.T) {
+func TestFailedActivationKeepsCurrentDatabaseAndAcquiredReference(t *testing.T) {
 	directory := t.TempDir()
 	storage := newTestStore(t, directory)
 	activateValue(t, storage, "current")
-	oldDB, releaseOld, err := storage.Acquire()
+	oldDB, _, releaseOld, err := storage.Acquire()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -384,42 +462,27 @@ func TestCompleteBecomesEmptyWhenCurrentDatabaseCannotBeRestored(t *testing.T) {
 	operation := beginTestImport(t, storage)
 	insertValue(t, operation.DB(), "replacement")
 	activationErr := errors.New("activation rename failed")
-	restoreErr := errors.New("restore rename failed")
-	currentPath := filepath.Join(directory, currentDatabaseName)
 	importingPath := filepath.Join(directory, importingDatabaseName)
 	originalRename := renameFile
 	renameFile = func(oldPath, newPath string) error {
-		switch {
-		case oldPath == importingPath && newPath == currentPath:
+		if oldPath == importingPath {
 			return activationErr
-		case filepath.Base(oldPath) == ".retired-1.db" && newPath == currentPath:
-			return restoreErr
-		default:
-			return originalRename(oldPath, newPath)
 		}
+		return originalRename(oldPath, newPath)
 	}
 	t.Cleanup(func() {
 		renameFile = originalRename
 	})
 
-	err = operation.Complete(context.Background())
+	err = operation.Complete(context.Background(), testGeneration("restore-failure"))
 	if !errors.Is(err, activationErr) {
 		t.Errorf("Complete() error = %v, want activation error %v", err, activationErr)
 	}
-	if !errors.Is(err, restoreErr) {
-		t.Errorf("Complete() error = %v, want restore error %v", err, restoreErr)
+	if got := storage.State(); got != StateReady {
+		t.Fatalf("state = %q, want %q", got, StateReady)
 	}
-	if got := storage.State(); got != StateEmpty {
-		t.Fatalf("state = %q, want %q", got, StateEmpty)
-	}
-	if storage.Ready() {
-		t.Fatal("Ready() = true, want false")
-	}
-	if _, _, err := storage.Acquire(); !errors.Is(err, ErrNoDatabase) {
-		t.Fatalf("Acquire() error = %v, want %v", err, ErrNoDatabase)
-	}
-	if _, err := os.Stat(currentPath); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("current.db exists after failed restore: %v", err)
+	if !storage.Ready() {
+		t.Fatal("Ready() = false, want true")
 	}
 	if got := queryValue(t, oldDB); got != "current" {
 		t.Fatalf("acquired database value = %q, want current", got)
@@ -427,17 +490,9 @@ func TestCompleteBecomesEmptyWhenCurrentDatabaseCannotBeRestored(t *testing.T) {
 	if _, err := os.Stat(importingPath); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("importing.db remains after failure: %v", err)
 	}
-	retiredPath := filepath.Join(directory, ".retired-1.db")
-	if _, err := os.Stat(retiredPath); err != nil {
-		t.Fatalf("retired database before release: %v", err)
-	}
-
 	releaseOld()
-	if err := oldDB.Ping(); err == nil {
-		t.Fatal("old database is still open after release")
-	}
-	if _, err := os.Stat(retiredPath); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("retired database remains after release: %v", err)
+	if got := activeValue(t, storage); got != "current" {
+		t.Fatalf("active value after release = %q, want current", got)
 	}
 }
 
@@ -457,7 +512,7 @@ func TestCompleteReportsRetiredCleanupAfterSuccessfulSwitch(t *testing.T) {
 		cleanupRetiredDatabase = originalCleanup
 	})
 
-	err := operation.Complete(context.Background())
+	err := operation.Complete(context.Background(), testGeneration("cleanup-warning"))
 	if !errors.Is(err, ErrRetiredCleanup) {
 		t.Fatalf("Complete() error = %v, want %v", err, ErrRetiredCleanup)
 	}
@@ -496,8 +551,15 @@ func activateValue(t *testing.T, storage *Store, value string) {
 	t.Helper()
 	operation := beginTestImport(t, storage)
 	insertValue(t, operation.DB(), value)
-	if err := operation.Complete(context.Background()); err != nil {
+	if err := operation.Complete(context.Background(), testGeneration(value)); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func testGeneration(snapshotID string) Generation {
+	return Generation{
+		SnapshotID: snapshotID, GeneratedAt: time.Date(2026, 8, 10, 0, 0, 0, 0, time.UTC),
+		SchemaVersion: "0.5", NodeCount: 1, Fingerprint: "test-" + snapshotID,
 	}
 }
 
@@ -521,17 +583,29 @@ func assertFailedUpdateKeepsCurrent(t *testing.T, storage *Store, directory, wan
 	if got := activeValue(t, storage); got != wantValue {
 		t.Fatalf("active value = %q, want %q", got, wantValue)
 	}
-	if _, err := os.Stat(filepath.Join(directory, currentDatabaseName)); err != nil {
-		t.Fatalf("current.db after failure: %v", err)
+	if _, err := os.Stat(activeGenerationPath(t, directory)); err != nil {
+		t.Fatalf("active generation after failure: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(directory, importingDatabaseName)); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("importing.db remains after failure: %v", err)
 	}
 }
 
+func activeGenerationPath(t *testing.T, directory string) string {
+	t.Helper()
+	paths, err := filepath.Glob(filepath.Join(directory, "generation-*.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(paths) != 1 {
+		t.Fatalf("generation databases = %v, want one", paths)
+	}
+	return paths[0]
+}
+
 func activeValue(t *testing.T, storage *Store) string {
 	t.Helper()
-	db, release, err := storage.Acquire()
+	db, _, release, err := storage.Acquire()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -546,6 +620,17 @@ func queryValue(t *testing.T, db *sql.DB) string {
 		t.Fatal(err)
 	}
 	return value
+}
+
+func assertPragma(t *testing.T, db *sql.DB, name string, want int) {
+	t.Helper()
+	var got int
+	if err := db.QueryRow("PRAGMA " + name).Scan(&got); err != nil {
+		t.Fatal(err)
+	}
+	if got != want {
+		t.Fatalf("PRAGMA %s = %d, want %d", name, got, want)
+	}
 }
 
 func tableColumns(t *testing.T, db *sql.DB, table string) []string {

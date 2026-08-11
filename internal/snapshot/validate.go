@@ -16,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 	"unicode/utf8"
 
 	"batchscope/internal/limits"
@@ -40,6 +41,9 @@ type snapshotSchemas struct {
 }
 
 type manifest struct {
+	SchemaVersion string      `json:"schemaVersion"`
+	SnapshotID    string      `json:"snapshotId"`
+	GeneratedAt   time.Time   `json:"generatedAt"`
 	NodeCount     json.Number `json:"nodeCount"`
 	RelationCount json.Number `json:"relationCount"`
 }
@@ -99,19 +103,27 @@ type nodeRecord struct {
 // ValidationResult は、検査後のSQLite作成で再利用する値を保持する。
 // SQLite登録はNDJSONを再読込し、relation_idもその時点で再生成するため、検査中の行データやIDは保持しない。
 type ValidationResult struct {
-	NodeCount     int
-	RelationCount int
+	SchemaVersion      string
+	SnapshotID         string
+	GeneratedAt        time.Time
+	NodeCount          int
+	RelationCount      int
+	LimitCount         int
+	MaxSCCNodes        int
+	MaxJobNetworkDepth int
+	Fingerprint        string
 }
 
 // Validate は、展開済みスナップショットの形式と参照整合性を検査する。
 // 検査フェーズは次の順序に固定し、同じ入力には同じエラーを返す。
 //  1. manifest.json: サイズ、UTF-8、JSON、Schema、件数の整数性
-//  2. nodes.ndjsonの各行: JSON、意味、Schema
+//  2. nodes.ndjsonの各行: JSON、意味、Schema、実件数とリミット総数の容量
 //  3. ノード横断: 件数、行番号順の親参照とノードIDまたはリミットIDの重複または複数の親、親子関係の循環
-//  4. relations.ndjsonの各行: JSON、Schema、参照の存在、重複
-//  5. 依存関係の件数
+//  4. relations.ndjsonの各行: JSON、Schema、参照の存在、実件数の容量、重複
+//  5. 依存関係の件数、検索時に展開するrelationとscope遷移から成る探索グラフのSCCサイズ
 //
 // 行内で完結する検査と、全ノードを読み終えて初めて判定できる検査は別のフェーズで実行する。
+// 容量を超えた有効行では後続行の検査と値の保持を止め、受け入れない入力へ検証資源を費やし続けない。
 // ノードIDとリミットIDの重複は行の読み込み中に記録するが、より前の行にある親の問題を優先するため報告はノード横断で行う。
 // ノード横断では各ノードの親の存在と種別を調べ、ID重複または複数の親と行番号を比較する。
 // 検査種別より行番号を優先し、循環内でも最小行を返すことで、取込元が先に直すべき箇所を示す。
@@ -130,7 +142,7 @@ func Validate(ctx context.Context, extracted Extracted) (ValidationResult, error
 		return ValidationResult{}, err
 	}
 
-	orderedNodeIDs, nodeByID, nodeCount, duplicateErr, err := readNodes(ctx, extracted.Nodes, schemas.node)
+	orderedNodeIDs, nodeByID, nodeCount, limitCount, duplicateErr, err := readNodes(ctx, extracted.Nodes, schemas.node)
 	if err != nil {
 		return ValidationResult{}, err
 	}
@@ -140,22 +152,51 @@ func Validate(ctx context.Context, extracted Extracted) (ValidationResult, error
 	if err := validateNodeReferences(orderedNodeIDs, nodeByID, duplicateErr); err != nil {
 		return ValidationResult{}, err
 	}
-	if err := validateParentCycles(ctx, orderedNodeIDs, nodeByID); err != nil {
+	jobNetworkDepth, err := validateParentHierarchy(ctx, orderedNodeIDs, nodeByID)
+	if err != nil {
 		return ValidationResult{}, err
 	}
+	if jobNetworkDepth > limits.MaxJobNetworkDepth {
+		return ValidationResult{}, &Error{Kind: ErrorCapacityExceeded, File: nodesName, Pointer: "/parentId"}
+	}
 
-	relationCount, err := readRelations(ctx, extracted.Relations, schemas.relation, nodeByID)
+	graph := newSCCGraph(orderedNodeIDs, nodeByID)
+	relationCount, err := readRelations(ctx, extracted.Relations, schemas.relation, nodeByID, graph)
 	if err != nil {
 		return ValidationResult{}, err
 	}
 	if metadata.relationCount != relationCount {
 		return ValidationResult{}, &Error{Kind: ErrorRelationCountMismatch, File: manifestName, Pointer: "/relationCount"}
 	}
+	maxSCCNodes, err := graph.maxSCCNodes(ctx)
+	if err != nil {
+		return ValidationResult{}, &Error{Kind: ErrorIO, File: relationsName, Err: err}
+	}
+	if maxSCCNodes > limits.MaxSCCNodes {
+		return ValidationResult{}, &Error{Kind: ErrorCapacityExceeded, File: relationsName}
+	}
 
-	return ValidationResult{NodeCount: nodeCount, RelationCount: relationCount}, nil
+	fingerprint, err := Fingerprint(ctx, extracted)
+	if err != nil {
+		return ValidationResult{}, err
+	}
+	return ValidationResult{
+		SchemaVersion:      metadata.schemaVersion,
+		SnapshotID:         metadata.snapshotID,
+		GeneratedAt:        metadata.generatedAt,
+		NodeCount:          nodeCount,
+		RelationCount:      relationCount,
+		LimitCount:         limitCount,
+		MaxSCCNodes:        maxSCCNodes,
+		MaxJobNetworkDepth: jobNetworkDepth,
+		Fingerprint:        fingerprint,
+	}, nil
 }
 
 type validatedManifest struct {
+	schemaVersion string
+	snapshotID    string
+	generatedAt   time.Time
 	nodeCount     int
 	relationCount int
 }
@@ -234,7 +275,20 @@ func readManifest(ctx context.Context, path string, schema *jsonschema.Schema) (
 	if !ok {
 		return validatedManifest{}, &Error{Kind: ErrorSchemaViolation, File: manifestName, Pointer: "/relationCount"}
 	}
-	return validatedManifest{nodeCount: nodeCount, relationCount: relationCount}, nil
+	// manifestで確定する件数はNDJSONを走査する前に拒否し、受け入れない規模へ検証資源を費やさない。
+	if nodeCount > limits.MaxSnapshotNodes {
+		return validatedManifest{}, &Error{Kind: ErrorCapacityExceeded, File: manifestName, Pointer: "/nodeCount"}
+	}
+	if relationCount > limits.MaxSnapshotRelations {
+		return validatedManifest{}, &Error{Kind: ErrorCapacityExceeded, File: manifestName, Pointer: "/relationCount"}
+	}
+	return validatedManifest{
+		schemaVersion: decoded.SchemaVersion,
+		snapshotID:    decoded.SnapshotID,
+		generatedAt:   decoded.GeneratedAt,
+		nodeCount:     nodeCount,
+		relationCount: relationCount,
+	}, nil
 }
 
 func jsonIntegerAsInt(number json.Number) (int, bool) {
@@ -255,11 +309,12 @@ func jsonIntegerAsInt64(number json.Number) (int64, bool) {
 	return value.Num().Int64(), true
 }
 
-func readNodes(ctx context.Context, path string, schema *jsonschema.Schema) ([]string, map[string]nodeRecord, int, *Error, error) {
+func readNodes(ctx context.Context, path string, schema *jsonschema.Schema) ([]string, map[string]nodeRecord, int, int, *Error, error) {
 	orderedIDs := make([]string, 0)
 	byID := make(map[string]nodeRecord)
 	limitIDs := make(map[string]struct{})
 	count := 0
+	limitCount := 0
 	var duplicateErr *Error
 	err := readNDJSON(ctx, path, nodesName, func(line int, contents []byte) error {
 		count++
@@ -267,6 +322,19 @@ func readNodes(ctx context.Context, path string, schema *jsonschema.Schema) ([]s
 		if err != nil {
 			return err
 		}
+		if count > limits.MaxSnapshotNodes {
+			return &Error{Kind: ErrorCapacityExceeded, File: nodesName, Line: line}
+		}
+		remaining := limits.MaxSnapshotLimits - limitCount
+		if len(facts) > remaining {
+			// 重複ノードも行検証でリミットをparseするため、重複判定で破棄する行にも同じ容量上限を適用する。
+			limitCount += remaining + 1
+			return &Error{
+				Kind: ErrorCapacityExceeded, File: nodesName, Line: line,
+				Pointer: jsonPointer([]string{"limitFacts", strconv.Itoa(remaining)}),
+			}
+		}
+		limitCount += len(facts)
 		if previous, exists := byID[id]; exists {
 			// 最初の定義は単体では正しいため、取り除くべき後続の定義側の行を報告する。
 			// 以降の重複は最初の1件より必ず後ろにあり、行番号の比較へ影響しないので保持しない。
@@ -295,7 +363,7 @@ func readNodes(ctx context.Context, path string, schema *jsonschema.Schema) ([]s
 		orderedIDs = append(orderedIDs, id)
 		return nil
 	})
-	return orderedIDs, byID, count, duplicateErr, err
+	return orderedIDs, byID, count, limitCount, duplicateErr, err
 }
 
 func validateNodeLine(schema *jsonschema.Schema, line int, contents []byte) (string, nodeRecord, []limitFact, error) {
@@ -350,7 +418,7 @@ func validateNodeLine(schema *jsonschema.Schema, line int, contents []byte) (str
 	return current.ID, record, current.LimitFacts, nil
 }
 
-func readRelations(ctx context.Context, path string, schema *jsonschema.Schema, nodes map[string]nodeRecord) (int, error) {
+func readRelations(ctx context.Context, path string, schema *jsonschema.Schema, nodes map[string]nodeRecord, graph *sccGraph) (int, error) {
 	count := 0
 	seen := make(map[[sha256.Size]byte]struct{})
 	err := readNDJSON(ctx, path, relationsName, func(line int, contents []byte) error {
@@ -366,11 +434,15 @@ func readRelations(ctx context.Context, path string, schema *jsonschema.Schema, 
 		if err := remarshal(value, &current); err != nil {
 			return &Error{Kind: ErrorInvalidJSON, File: relationsName, Line: line, Err: err}
 		}
-		if _, exists := nodes[current.FromID]; !exists {
+		fromNode, exists := nodes[current.FromID]
+		if !exists {
 			return &Error{Kind: ErrorMissingNode, File: relationsName, Line: line, Pointer: "/fromId"}
 		}
 		if _, exists := nodes[current.ToID]; !exists {
 			return &Error{Kind: ErrorMissingNode, File: relationsName, Line: line, Pointer: "/toId"}
+		}
+		if count > limits.MaxSnapshotRelations {
+			return &Error{Kind: ErrorCapacityExceeded, File: relationsName, Line: line}
 		}
 
 		id, err := relationID(current)
@@ -381,9 +453,106 @@ func readRelations(ctx context.Context, path string, schema *jsonschema.Schema, 
 			return &Error{Kind: ErrorDuplicateRelation, File: relationsName, Line: line}
 		}
 		seen[id] = struct{}{}
+		if isTraversableNodeKind(fromNode.Type) {
+			graph.addEdge(current.FromID, current.ToID)
+		}
 		return nil
 	})
 	return count, err
+}
+
+type sccGraph struct {
+	indexByID map[string]int
+	adjacency [][]int
+}
+
+func newSCCGraph(orderedNodeIDs []string, nodes map[string]nodeRecord) *sccGraph {
+	graph := &sccGraph{
+		indexByID: make(map[string]int, len(orderedNodeIDs)),
+		adjacency: make([][]int, len(orderedNodeIDs)),
+	}
+	for index, id := range orderedNodeIDs {
+		graph.indexByID[id] = index
+	}
+	// scope辺は、探索がjob_networkへ到達したときだけ直接の論理子へ展開する経路と一致させる。
+	// management_unitを親とする辺は探索が展開しないため、ここでも辺にしない。
+	for _, id := range orderedNodeIDs {
+		node := nodes[id]
+		if node.HasParent && nodes[node.ParentID].Type == nodeKindJobNetwork {
+			graph.addEdge(node.ParentID, id)
+		}
+	}
+	return graph
+}
+
+func (graph *sccGraph) addEdge(fromID, toID string) {
+	from := graph.indexByID[fromID]
+	to := graph.indexByID[toID]
+	graph.adjacency[from] = append(graph.adjacency[from], to)
+}
+
+// maxSCCNodesは、relation検証中に検索時と同じ条件で完成させた隣接リストをTarjan法で一度だけ走査し、O(V+E)で最大成分を求める。
+// 探索グラフと同じscope辺はnewSCCGraphで追加済みであり、NDJSONを再読込しない。
+func (graph *sccGraph) maxSCCNodes(ctx context.Context) (int, error) {
+	indices := make([]int, len(graph.adjacency))
+	for index := range indices {
+		indices[index] = -1
+	}
+	lowlinks := make([]int, len(graph.adjacency))
+	onStack := make([]bool, len(graph.adjacency))
+	stack := make([]int, 0, len(graph.adjacency))
+	nextIndex := 0
+	maximum := 0
+
+	var visit func(int) error
+	visit = func(vertex int) error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		indices[vertex] = nextIndex
+		lowlinks[vertex] = nextIndex
+		nextIndex++
+		stack = append(stack, vertex)
+		onStack[vertex] = true
+
+		for _, neighbor := range graph.adjacency[vertex] {
+			if indices[neighbor] == -1 {
+				if err := visit(neighbor); err != nil {
+					return err
+				}
+				lowlinks[vertex] = min(lowlinks[vertex], lowlinks[neighbor])
+			} else if onStack[neighbor] {
+				lowlinks[vertex] = min(lowlinks[vertex], indices[neighbor])
+			}
+		}
+
+		if lowlinks[vertex] != indices[vertex] {
+			return nil
+		}
+		componentSize := 0
+		for {
+			last := len(stack) - 1
+			member := stack[last]
+			stack = stack[:last]
+			onStack[member] = false
+			componentSize++
+			if member == vertex {
+				break
+			}
+		}
+		maximum = max(maximum, componentSize)
+		return nil
+	}
+
+	for vertex := range graph.adjacency {
+		if indices[vertex] != -1 {
+			continue
+		}
+		if err := visit(vertex); err != nil {
+			return 0, err
+		}
+	}
+	return maximum, ctx.Err()
 }
 
 func readNDJSON(ctx context.Context, path, name string, consume func(int, []byte) error) error {
@@ -559,6 +728,17 @@ func nodeKindOf(kind string) nodeKind {
 	}
 }
 
+// isTraversableNodeKindはtraversal.isTraversableTypeと同じ種別集合を保つ。
+// 取込時のSCCを検索時に実際に展開するグラフと一致させるため、どちらかの種別を変更する場合は両方を同時に更新する。
+func isTraversableNodeKind(kind nodeKind) bool {
+	switch kind {
+	case nodeKindJob, nodeKindJobNetwork, nodeKindFile, nodeKindFilePattern, nodeKindJobStatus, nodeKindExternalEvent:
+		return true
+	default:
+		return false
+	}
+}
+
 func isParentlessType(kind string) bool {
 	switch nodeKindOf(kind) {
 	case nodeKindFile, nodeKindFilePattern, nodeKindJobStatus, nodeKindExternalEvent:
@@ -598,11 +778,13 @@ func validateNodeReferences(orderedIDs []string, nodes map[string]nodeRecord, du
 	return nil
 }
 
-func validateParentCycles(ctx context.Context, orderedIDs []string, nodes map[string]nodeRecord) error {
+func validateParentHierarchy(ctx context.Context, orderedIDs []string, nodes map[string]nodeRecord) (int, error) {
 	state := make(map[string]uint8, len(nodes))
+	depthByID := make(map[string]int, len(nodes))
+	maxJobNetworkDepth := 0
 	for _, startID := range orderedIDs {
 		if err := ctx.Err(); err != nil {
-			return &Error{Kind: ErrorIO, File: nodesName, Err: err}
+			return 0, &Error{Kind: ErrorIO, File: nodesName, Err: err}
 		}
 		if state[startID] == 2 {
 			continue
@@ -611,7 +793,7 @@ func validateParentCycles(ctx context.Context, orderedIDs []string, nodes map[st
 		currentID := startID
 		for {
 			if err := ctx.Err(); err != nil {
-				return &Error{Kind: ErrorIO, File: nodesName, Err: err}
+				return 0, &Error{Kind: ErrorIO, File: nodesName, Err: err}
 			}
 			current := nodes[currentID]
 			if state[currentID] == 1 {
@@ -620,7 +802,7 @@ func validateParentCycles(ctx context.Context, orderedIDs []string, nodes map[st
 				for _, id := range path[firstCycleIndex+1:] {
 					cycleLine = min(cycleLine, nodes[id].Line)
 				}
-				return &Error{Kind: ErrorParentCycle, File: nodesName, Line: cycleLine, Pointer: "/parentId"}
+				return 0, &Error{Kind: ErrorParentCycle, File: nodesName, Line: cycleLine, Pointer: "/parentId"}
 			}
 			if state[currentID] == 2 {
 				break
@@ -632,11 +814,23 @@ func validateParentCycles(ctx context.Context, orderedIDs []string, nodes map[st
 			}
 			currentID = current.ParentID
 		}
-		for _, id := range path {
+		// 親から子の順に確定済みの深さを再利用し、循環検査と同じ親参照走査で最大階層も求める。
+		for index := len(path) - 1; index >= 0; index-- {
+			id := path[index]
+			current := nodes[id]
+			depth := 0
+			if current.HasParent {
+				depth = depthByID[current.ParentID]
+			}
+			if current.Type == nodeKindJobNetwork {
+				depth++
+				maxJobNetworkDepth = max(maxJobNetworkDepth, depth)
+			}
+			depthByID[id] = depth
 			state[id] = 2
 		}
 	}
-	return nil
+	return maxJobNetworkDepth, nil
 }
 
 func allowedParent(child, parent nodeKind) bool {

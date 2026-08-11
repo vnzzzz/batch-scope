@@ -395,7 +395,13 @@ func importOnce(fixture *fixture, runNumber int) (result importedRun, err error)
 
 	phaseStart = time.Now()
 	abort = false
-	err = operation.Complete(context.Background())
+	err = operation.Complete(context.Background(), store.Generation{
+		SnapshotID: validated.SnapshotID, GeneratedAt: validated.GeneratedAt,
+		SchemaVersion: validated.SchemaVersion, NodeCount: validated.NodeCount,
+		RelationCount: validated.RelationCount, LimitCount: validated.LimitCount,
+		MaxJobNetworkDepth: validated.MaxJobNetworkDepth,
+		Fingerprint:        validated.Fingerprint,
+	})
 	result.measurement.CompleteNS = time.Since(phaseStart).Nanoseconds()
 	result.measurement.TotalNS = time.Since(totalStart).Nanoseconds()
 	monitor.mark()
@@ -411,7 +417,11 @@ func importOnce(fixture *fixture, runNumber int) (result importedRun, err error)
 	result.measurement.PeakRSSBytes = peaks.PeakRSS
 	result.measurement.PeakRSSDeltaBytes = nonNegativeDelta(peaks.PeakRSS, peaks.BaselineRSS)
 	result.measurement.PeakTemporaryDiskBytes = peaks.PeakDisk
-	info, err := os.Stat(filepath.Join(dataDirectory, "current.db"))
+	generationPath, err := activeGenerationFile(dataDirectory)
+	if err != nil {
+		return importedRun{}, err
+	}
+	info, err := os.Stat(generationPath)
 	if err != nil {
 		return importedRun{}, err
 	}
@@ -421,8 +431,19 @@ func importOnce(fixture *fixture, runNumber int) (result importedRun, err error)
 	return result, nil
 }
 
+func activeGenerationFile(directory string) (string, error) {
+	paths, err := filepath.Glob(filepath.Join(directory, "generation-*.db"))
+	if err != nil {
+		return "", err
+	}
+	if len(paths) != 1 {
+		return "", fmt.Errorf("generation database count = %d, want 1", len(paths))
+	}
+	return paths[0], nil
+}
+
 func measureSearches(storage *store.Store, targetIDs []string, runs int) ([]searchReport, error) {
-	db, release, err := storage.Acquire()
+	db, _, release, err := storage.Acquire()
 	if err != nil {
 		return nil, err
 	}
@@ -531,7 +552,7 @@ func pipelineDigest(reached traversal.Result, limits limitscan.Result, tree path
 }
 
 func measureConcurrency(storage *store.Store, targetID string, concurrencies []int, rounds int) ([]concurrencyReport, error) {
-	db, release, err := storage.Acquire()
+	db, _, release, err := storage.Acquire()
 	if err != nil {
 		return nil, err
 	}

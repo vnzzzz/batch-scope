@@ -21,6 +21,7 @@ import (
 
 	"batchscope/internal/limitscan"
 	"batchscope/internal/pathtree"
+	"batchscope/internal/snapshot"
 	"batchscope/internal/store"
 	"batchscope/internal/traversal"
 )
@@ -36,7 +37,7 @@ func TestRunImportsDemoSnapshotWithIndexes(t *testing.T) {
 		t.Fatalf("state = %q, want %q", got, store.StateReady)
 	}
 
-	db, release, err := storage.Acquire()
+	db, generation, release, err := storage.Acquire()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -44,6 +45,11 @@ func TestRunImportsDemoSnapshotWithIndexes(t *testing.T) {
 	assertCount(t, db, "node", 9)
 	assertCount(t, db, "limit_fact", 3)
 	assertCount(t, db, "relation", 8)
+	if generation.SnapshotID == "" || generation.SchemaVersion != "0.5" || generation.GeneratedAt.IsZero() ||
+		generation.NodeCount != 9 || generation.RelationCount != 8 || generation.LimitCount != 3 || generation.MaxSCCNodes != 6 ||
+		len(generation.Fingerprint) != 64 {
+		t.Fatalf("generation metadata = %#v", generation)
+	}
 
 	rows, err := db.Query(`SELECT name FROM sqlite_master
         WHERE type = 'index' AND name NOT LIKE 'sqlite_%' ORDER BY name`)
@@ -77,7 +83,7 @@ func TestRunDemoSnapshotSupportsDownstreamLimitScan(t *testing.T) {
 		t.Fatalf("Run() error = %v", err)
 	}
 
-	db, release, err := storage.Acquire()
+	db, _, release, err := storage.Acquire()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -128,7 +134,7 @@ func TestSearchKeepsOneSnapshotGenerationAcrossConcurrentSwitch(t *testing.T) {
 		t.Fatalf("initial Run() error = %v", err)
 	}
 
-	oldDB, releaseOld, err := storage.Acquire()
+	oldDB, oldGeneration, releaseOld, err := storage.Acquire()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -172,7 +178,7 @@ func TestSearchKeepsOneSnapshotGenerationAcrossConcurrentSwitch(t *testing.T) {
 	if _, err := Run(ctx, workspace, bytes.NewReader(generationArchive(t, "NEW")), storage); err != nil {
 		t.Fatalf("replacement Run() error = %v", err)
 	}
-	newDB, releaseNew, err := storage.Acquire()
+	newDB, newGeneration, releaseNew, err := storage.Acquire()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -191,6 +197,9 @@ func TestSearchKeepsOneSnapshotGenerationAcrossConcurrentSwitch(t *testing.T) {
 		assertSearchGeneration(t, oldSearch, "OLD", "NEW")
 	}
 	assertSearchGeneration(t, newSearch, "NEW", "OLD")
+	if oldGeneration.SnapshotID != "OLD" || newGeneration.SnapshotID != "NEW" {
+		t.Fatalf("generation metadata mixed across switch: old=%q new=%q", oldGeneration.SnapshotID, newGeneration.SnapshotID)
+	}
 	t.Logf("concurrent snapshot generation switch runtime: %s", time.Since(startedAt))
 }
 
@@ -254,17 +263,48 @@ func TestRunFailureKeepsCurrentAndRemovesImportingDatabase(t *testing.T) {
 	if got := storage.State(); got != store.StateReady {
 		t.Fatalf("state after failure = %q, want %q", got, store.StateReady)
 	}
-	db, release, err := storage.Acquire()
+	db, _, release, err := storage.Acquire()
 	if err != nil {
 		t.Fatal(err)
 	}
 	assertCount(t, db, "node", 9)
 	release()
-	if _, err := os.Stat(filepath.Join(dataDirectory, "current.db")); err != nil {
-		t.Fatalf("current.db after failure: %v", err)
+	generations, err := filepath.Glob(filepath.Join(dataDirectory, "generation-*.db"))
+	if err != nil || len(generations) != 1 {
+		t.Fatalf("generation databases after failure = %v, error %v", generations, err)
 	}
 	if _, err := os.Stat(filepath.Join(dataDirectory, "importing.db")); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("importing.db after failure: %v", err)
+	}
+}
+
+func TestCapacityFailureKeepsCurrentGeneration(t *testing.T) {
+	workspace := t.TempDir()
+	dataDirectory := filepath.Join(workspace, "data")
+	storage := newImporterTestStore(t, dataDirectory)
+	if _, err := Run(context.Background(), workspace, bytes.NewReader(singleNodeArchive(t, "CURRENT")), storage); err != nil {
+		t.Fatal(err)
+	}
+
+	manifest := `{"schemaVersion":"0.5","snapshotId":"too-large","generatedAt":"2026-08-10T00:00:00Z","nodeCount":10001,"relationCount":0,"producer":{"name":"test","version":"1"}}`
+	overCapacity := makeArchive(t, map[string]string{
+		"manifest.json": manifest, "nodes.ndjson": "not-json\n", "relations.ndjson": "",
+	})
+	_, err := Run(context.Background(), workspace, bytes.NewReader(overCapacity), storage)
+	var snapshotErr *snapshot.Error
+	if !errors.As(err, &snapshotErr) || snapshotErr.Kind != snapshot.ErrorCapacityExceeded {
+		t.Fatalf("Run() error = %v, want capacity error", err)
+	}
+	db, generation, release, err := storage.Acquire()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+	if got := queryValueForImporterTest(t, db); got != "CURRENT" || generation.SnapshotID != "CURRENT" {
+		t.Fatalf("active generation after capacity failure: value=%q metadata=%#v", got, generation)
+	}
+	if _, err := os.Stat(filepath.Join(dataDirectory, "importing.db")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("importing.db after capacity failure: %v", err)
 	}
 }
 
@@ -335,8 +375,8 @@ func TestRunReportsRetiredCleanupAsSuccessfulWarning(t *testing.T) {
 
 	cleanupErr := errors.New("cleanup failed")
 	originalComplete := completeImport
-	completeImport = func(ctx context.Context, operation *store.Import) error {
-		if err := originalComplete(ctx, operation); err != nil {
+	completeImport = func(ctx context.Context, operation *store.Import, generation store.Generation) error {
+		if err := originalComplete(ctx, operation, generation); err != nil {
 			return err
 		}
 		return errors.Join(store.ErrRetiredCleanup, cleanupErr)
@@ -353,7 +393,7 @@ func TestRunReportsRetiredCleanupAsSuccessfulWarning(t *testing.T) {
 	if got := storage.State(); got != store.StateReady {
 		t.Fatalf("state = %q, want %q", got, store.StateReady)
 	}
-	db, release, err := storage.Acquire()
+	db, _, release, err := storage.Acquire()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -410,7 +450,7 @@ func importAndDump(t *testing.T, archive []byte) map[string][][]any {
 	if _, err := Run(context.Background(), workspace, bytes.NewReader(archive), storage); err != nil {
 		t.Fatal(err)
 	}
-	db, release, err := storage.Acquire()
+	db, _, release, err := storage.Acquire()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -567,6 +607,15 @@ func assertCount(t *testing.T, db *sql.DB, table string, want int) {
 	if got != want {
 		t.Errorf("%s rows = %d, want %d", table, got, want)
 	}
+}
+
+func queryValueForImporterTest(t *testing.T, db *sql.DB) string {
+	t.Helper()
+	var value string
+	if err := db.QueryRow("SELECT node_id FROM node").Scan(&value); err != nil {
+		t.Fatal(err)
+	}
+	return value
 }
 
 func limitFactIDs(items []limitscan.Item) []string {

@@ -924,7 +924,8 @@ func cycleWithExitDataset() Dataset {
 
 func nestedNetworksDataset() Dataset {
 	b := newBuilder(string(DeepNestedNetworks), "NEST-NET-000")
-	for index := 0; index < 128; index++ {
+	const networkDepth = 64
+	for index := 0; index < networkDepth; index++ {
 		id := fmt.Sprintf("NEST-NET-%03d", index)
 		parent := ""
 		membership := "contained"
@@ -935,8 +936,8 @@ func nestedNetworksDataset() Dataset {
 		}
 		b.node("job_network", id, parent, membership)
 	}
-	b.node("job", "NEST-JOB", "NEST-NET-127", "contained", rawLimit("LIMIT-NEST"))
-	b.treeNodes = 129
+	b.node("job", "NEST-JOB", fmt.Sprintf("NEST-NET-%03d", networkDepth-1), "contained", rawLimit("LIMIT-NEST"))
+	b.treeNodes = networkDepth + 1
 	return b.finish()
 }
 

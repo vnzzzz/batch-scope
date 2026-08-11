@@ -72,6 +72,8 @@ const (
 	ErrorInvalidDuration ErrorKind = "invalid_duration"
 	// ErrorDuplicateRelation は、内容が同じ依存関係の重複を表す。
 	ErrorDuplicateRelation ErrorKind = "duplicate_relation"
+	// ErrorCapacityExceededは、形式上は正しくても検索完遂を保証する対応規模を超えた入力を表す。
+	ErrorCapacityExceeded ErrorKind = "capacity_exceeded"
 )
 
 // Error は、失敗理由と該当するアーカイブ内ファイルを保持する。
