@@ -17,6 +17,7 @@ const (
 	ReachedNodes      = "reached_nodes"
 	ReturnedTreeNodes = "returned_tree_nodes"
 	ReturnedLimits    = "returned_limits"
+	ReturnedTargets   = "returned_targets"
 	CyclesDetected    = "cycles_detected"
 	ErrorType         = "error_type"
 )
@@ -34,13 +35,14 @@ type Fields struct {
 	ReachedNodes      int
 	ReturnedTreeNodes int
 	ReturnedLimits    int
+	ReturnedTargets   int
 	CyclesDetected    int
 	ErrorType         string
 }
 
 // Attrsは、設定された共通フィールドをsnake_caseの安定した名前で返す。
 func Attrs(fields Fields) []slog.Attr {
-	attrs := make([]slog.Attr, 0, 12)
+	attrs := make([]slog.Attr, 0, 13)
 	attrs = appendString(attrs, RequestID, fields.RequestID)
 	attrs = appendString(attrs, Operation, fields.Operation)
 	if fields.Duration > 0 {
@@ -53,6 +55,7 @@ func Attrs(fields Fields) []slog.Attr {
 	attrs = appendCount(attrs, ReachedNodes, fields.ReachedNodes)
 	attrs = appendCount(attrs, ReturnedTreeNodes, fields.ReturnedTreeNodes)
 	attrs = appendCount(attrs, ReturnedLimits, fields.ReturnedLimits)
+	attrs = appendCount(attrs, ReturnedTargets, fields.ReturnedTargets)
 	attrs = appendCount(attrs, CyclesDetected, fields.CyclesDetected)
 	attrs = appendString(attrs, ErrorType, fields.ErrorType)
 	return attrs

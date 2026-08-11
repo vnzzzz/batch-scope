@@ -88,13 +88,8 @@ CREATE INDEX idx_limit_elapsed ON limit_fact(kind, duration_seconds);
 
 ## 完全一致検索の前処理
 
-検索対象ごとに、比較前の処理を次のように定めます。
-
-- ID：入力された文字列を変更せずに比較する。
-- 名前：Unicode NFKC、前後空白の除去、Unicodeケースフォールディングを適用する。
-- パス：Unicode NFKCと前後空白の除去を適用し、大文字と小文字は区別する。
-
-MVPでは、前方一致、部分一致、曖昧検索、ベクトル検索を行いません。
+ID、名前、パスの比較前の処理と検索方式は[API仕様の対象検索](api.md#対象の検索)で定めます。
+SQLiteには、同じ処理を取込時に適用した`name_normalized`と`path_normalized`を保存します。
 
 ## 依存関係の重複判定
 

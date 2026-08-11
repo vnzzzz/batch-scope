@@ -171,13 +171,14 @@ MVPの観測情報は、Goの`log/slog`による構造化ログを正本とし�
 | 要求の識別 | `request_id`、`operation`、`duration_ms` |
 | プロセスとデータ | `boot_id`、`snapshot_id`、`import_id` |
 | 検索対象 | `target_id` |
-| 処理量 | `reached_nodes`、`returned_tree_nodes`、`returned_limits` |
+| 処理量 | `reached_nodes`、`returned_tree_nodes`、`returned_limits`、`returned_targets` |
 | 完了状態 | `cycles_detected`、`error_type` |
 
 `duration_ms`は正の処理時間がある場合だけ出力します。
 件数フィールドは0の場合に省略するため、ログ集計では省略を0として扱います。
 
 ジョブ名、完全パス、検索の`query`、`evidence`、入力資料の内容は、既定ログへ出力しません。
+完全一致検索では`operation`を`target_search`に固定し、`returned_targets`へ返却件数を記録します。
 
 ## メトリクス
 
@@ -188,7 +189,7 @@ MVPは専用のメトリクスexporterと`/metrics`エンドポイントを実�
 |---|---|
 | `snapshot_import_duration_seconds` | 取込を表す`operation`の`duration_ms`を1,000で割る |
 | `snapshot_import_failures_total` | 取込を表す`operation`で`error_type`がある完了ログを数える |
-| `target_lookup_duration_seconds` | 完全一致検索を表す`operation`の`duration_ms`を1,000で割る |
+| `target_lookup_duration_seconds` | `operation=target_search`の`duration_ms`を1,000で割る |
 | `limit_analysis_duration_seconds` | 後続分析を表す`operation`の`duration_ms`を1,000で割る |
 | `limit_analysis_reached_nodes` | 後続分析を表す`operation`の`reached_nodes`を集計する |
 | `limit_analysis_cycles_total` | 後続分析を表す`operation`の`cycles_detected`を集計する |

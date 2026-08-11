@@ -129,11 +129,24 @@ func TestOpenAPISpec(t *testing.T) {
 	if spec.Info.Version != "v1" {
 		t.Fatalf("info.version = %q, want v1", spec.Info.Version)
 	}
-	for _, path := range []string{"/healthz", "/readyz", "/v1/status"} {
+	for _, path := range []string{"/healthz", "/readyz", "/v1/status", "/v1/targets"} {
 		item := spec.Paths[path]
 		if item == nil || item.Get == nil {
 			t.Errorf("GET %s is missing from OpenAPI", path)
 		}
+	}
+	targets := spec.Paths["/v1/targets"].Get
+	queryRequired := false
+	for _, parameter := range targets.Parameters {
+		if parameter.Name == "query" {
+			queryRequired = parameter.Required
+		}
+	}
+	if !queryRequired {
+		t.Error("GET /v1/targets query parameter is not required")
+	}
+	if targets.Responses["422"] != nil {
+		t.Error("GET /v1/targets exposes an unmapped 422 response")
 	}
 	for _, status := range []string{"200", "503"} {
 		if spec.Paths["/readyz"].Get.Responses[status] == nil {
@@ -160,6 +173,12 @@ func TestProblemDetails(t *testing.T) {
 			problem:    InternalErrorProblem("operation failed"),
 			wantType:   "/problems/internal-error",
 			wantStatus: http.StatusInternalServerError,
+		},
+		{
+			name:       "snapshot not loaded",
+			problem:    SnapshotNotLoadedProblem("snapshot is not loaded"),
+			wantType:   "/problems/snapshot-not-loaded",
+			wantStatus: http.StatusServiceUnavailable,
 		},
 	}
 
