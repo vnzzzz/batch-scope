@@ -74,7 +74,7 @@ for target in "${targets[@]}"; do
     [[ -f "$root/$required" ]] || { echo "$name: $required がありません。" >&2; exit 1; }
   done
 
-  if find "$root/skills/internal" -type f -print -quit 2>/dev/null | grep -q .; then
+  if [[ -e "$root/skills/internal" ]]; then
     echo "$name: Internal Skillが含まれています。" >&2
     exit 1
   fi
@@ -85,16 +85,18 @@ for target in "${targets[@]}"; do
     exit 1
   fi
 
-  if grep -Eq '\]\((docs/|CONTRIBUTING\.md)' "$root/README.md"; then
-    echo "$name: READMEにarchive外を指す相対リンクが残っています。" >&2
-    exit 1
-  fi
   if grep -q '/blob/main/' "$root/README.md"; then
     echo "$name: READMEにmain固定リンクが残っています。" >&2
     exit 1
   fi
   if ! grep -q "/blob/v${version}/" "$root/README.md"; then
     echo "$name: READMEのrepository内リンクがv${version}へ固定されていません。" >&2
+    exit 1
+  fi
+  relative_links="$(sed 's#](LICENSE)##g' "$root/README.md" | grep -Eo '\]\(([^#/:][^):]*)\)' || true)"
+  if [[ -n "$relative_links" ]]; then
+    echo "$name: READMEにarchive外を指し得る相対リンクが残っています。" >&2
+    printf '%s\n' "$relative_links" >&2
     exit 1
   fi
 
