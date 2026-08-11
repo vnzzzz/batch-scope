@@ -121,6 +121,7 @@ export BATCHSCOPE_CODEX_MODEL=<利用可能なCodexモデル>
 |---|---|
 | `make verify` | 静的検査とテスト |
 | `make run` | ポート8080でサービスを起動 |
+| `make smoke` | 一時サービスへデモデータを取り込み、公開APIをE2Eで確認 |
 | `make openapi` | `docs/api/openapi.yaml`を生成 |
 | `make openapi-check` | OpenAPI生成物と実装の差分を確認 |
 | `make demo-view` | デモのAPIレスポンスをテキスト表示 |
@@ -128,6 +129,8 @@ export BATCHSCOPE_CODEX_MODEL=<利用可能なCodexモデル>
 
 ポート8080はDev Containerからホストへ転送します。
 ホストのブラウザまたは`curl`から`http://localhost:8080`へ接続できます。
+
+起動済みサービスの検査や待機時間の変更方法は、`./scripts/smoke-api.sh --help`を参照してください。
 
 実行環境：ホスト
 
