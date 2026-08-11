@@ -82,6 +82,9 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	if configured.Mode == "target-search" {
+		return runTargetSearch(configured, os.Stdout)
+	}
 	specs, err := selectDatasets(configured)
 	if err != nil {
 		return err
@@ -139,7 +142,7 @@ func run() error {
 
 func parseConfig(arguments []string) (config, error) {
 	flags := flag.NewFlagSet("perf-measure", flag.ContinueOnError)
-	mode := flags.String("mode", "pipeline", "measurement mode: pipeline, import, concurrent, or connection-comparison")
+	mode := flags.String("mode", "pipeline", "measurement mode: pipeline, import, concurrent, connection-comparison, or target-search")
 	profile := flags.String("profile", "small", "dataset profile: small, medium, scale, pathological, or custom")
 	pathological := flags.String("pathological-cases", "all", "comma-separated pathological cases, or all")
 	nodes := flags.Int("nodes", 0, "custom profile node count")
@@ -152,7 +155,7 @@ func parseConfig(arguments []string) (config, error) {
 	if flags.NArg() != 0 {
 		return config{}, fmt.Errorf("unexpected positional arguments: %s", strings.Join(flags.Args(), " "))
 	}
-	if *mode != "pipeline" && *mode != "import" && *mode != "concurrent" && *mode != "connection-comparison" {
+	if *mode != "pipeline" && *mode != "import" && *mode != "concurrent" && *mode != "connection-comparison" && *mode != "target-search" {
 		return config{}, fmt.Errorf("unsupported mode %q", *mode)
 	}
 	if *runs < 2 {
@@ -161,7 +164,17 @@ func parseConfig(arguments []string) (config, error) {
 	if err := validateCustomSize(*profile, *nodes, *relations); err != nil {
 		return config{}, err
 	}
-	concurrencies, err := parsePositiveInts(*concurrencyText)
+	concurrencyValue := *concurrencyText
+	concurrencyWasSet := false
+	flags.Visit(func(current *flag.Flag) {
+		if current.Name == "concurrencies" {
+			concurrencyWasSet = true
+		}
+	})
+	if *mode == "target-search" && !concurrencyWasSet {
+		concurrencyValue = "1,4"
+	}
+	concurrencies, err := parsePositiveInts(concurrencyValue)
 	if err != nil {
 		return config{}, fmt.Errorf("parse concurrencies: %w", err)
 	}

@@ -212,5 +212,5 @@ MVPは専用のメトリクスexporterと`/metrics`エンドポイントを実�
 単一検索の内部処理（`Traverse`、`Scan`、`Build`）の中央値は対応規模の判断に使い、並行度4における同じ内部処理のp95は想定同時検索数の判断に使いました。
 各測定値と条件は[性能測定結果](development/performance-measurement.md#中間規模)と[SQLite接続方式の比較](development/performance-measurement.md#sqlite接続方式の比較)を参照してください。
 内部処理のp95にはHTTP層のDTO組立てとJSON化を含まないため、後続リミット取得の最終p95はIssue #13で確認します。
-完全一致検索の最終p95は、HTTP層を実装するIssue #10で確認します。
-完全一致検索は索引を使う単一行検索であり、後続解析より軽い処理としてp95 200 msの目標を維持します。
+完全一致検索はHTTP層を含めて測定済みであり、条件と結果は[完全一致検索のHTTP性能測定結果](development/target-search-performance.md)を参照してください。
+この結果に基づき、完全一致検索のp95 200 msの目標を維持します。

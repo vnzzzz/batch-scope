@@ -97,10 +97,22 @@ func New(config Config) (*App, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open SQLite store: %w", err)
 	}
-
-	bootID, err := newBootID()
+	a, err := NewWithStore(config, storage)
 	if err != nil {
 		_ = storage.Close()
+		return nil, err
+	}
+	return a, nil
+}
+
+// NewWithStoreは、準備済みのStoreを使って製品と同じHTTPルートを組み立てる。
+// 返したAppがStoreを所有するため、呼出側はApp.Closeで両方を閉じる。
+func NewWithStore(config Config, storage *store.Store) (*App, error) {
+	if storage == nil {
+		return nil, errors.New("store is nil")
+	}
+	bootID, err := newBootID()
+	if err != nil {
 		return nil, fmt.Errorf("generate boot ID: %w", err)
 	}
 

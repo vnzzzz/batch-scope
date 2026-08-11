@@ -34,6 +34,17 @@ func TestParseConfigRequiresRepeatedRunsAndExactConcurrencies(t *testing.T) {
 	if configured, err := parseConfig([]string{"-mode", "connection-comparison", "-runs", "2"}); err != nil || configured.Mode != "connection-comparison" {
 		t.Fatalf("parseConfig(connection-comparison) = %#v, %v", configured, err)
 	}
+	targetSearch, err := parseConfig([]string{"-mode", "target-search", "-runs", "2"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if targetSearch.Mode != "target-search" || !reflect.DeepEqual(targetSearch.Concurrencies, []int{1, 4}) {
+		t.Fatalf("parseConfig(target-search) = %#v", targetSearch)
+	}
+	targetSearch, err = parseConfig([]string{"-mode", "target-search", "-runs", "2", "-concurrencies", "2,3"})
+	if err != nil || !reflect.DeepEqual(targetSearch.Concurrencies, []int{2, 3}) {
+		t.Fatalf("parseConfig(target-search explicit concurrencies) = %#v, %v", targetSearch, err)
+	}
 }
 
 func TestParseConfigValidatesCustomSize(t *testing.T) {
