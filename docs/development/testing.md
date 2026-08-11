@@ -15,9 +15,7 @@ HTTP層は[API仕様](../design/api.md#エラー)に定めたProblem Detailsへ�
 
 ### 検索世代の一貫性
 
-一回の検索は、SQLiteと検索世代メタデータを同じ世代、同じ参照寿命で扱います。
-世代切替前に開始した検索は、処理を終えて参照を解放するまで旧SQLiteを保持します。
-新しい世代の準備または切替に失敗した場合は、現在世代を検索可能な状態で維持します。
+[SQLiteの世代切替](../design/storage.md#sqliteの世代切替)で定めた、検索中の世代整合性と切替失敗時の現在世代維持を検査します。
 
 ### スナップショット取込の資源管理
 
@@ -27,7 +25,7 @@ HTTP層は[API仕様](../design/api.md#エラー)に定めたProblem Detailsへ�
 
 ### 完全一致検索
 
-ID、名前、パスの正規化規則と検索結果の順序は、[SQLiteの完全一致検索の前処理](../design/storage.md#完全一致検索の前処理)と[API仕様](../design/api.md#対象の検索)を正本とします。
+ID、名前、パスの完全一致規則と検索結果の順序は、[API仕様](../design/api.md#対象の検索)を正本とします。
 空文字、空白のみの値、最大返却件数、`truncated`、同一ノードの重複排除を境界値として検査します。
 
 ### 入出力形式
@@ -48,7 +46,7 @@ HTTPテストはstatus code、Problem Details、header、公開DTOの必須項�
 | レイヤー | 主なfailure mode |
 |---|---|
 | pure functionまたはunit test | 正規化、変換規則、同じ入力に対する並び順が変わる |
-| storeまたはintegration test | SQLiteの制約、transaction、世代の参照寿命、並行切替でデータが混在する |
+| DB integration test | SQLiteの制約、transaction、世代の参照寿命、並行切替でデータが混在する |
 | HTTP integration test | status code、Problem Details、DTO、header、cancelの写像が公開仕様と異なる |
 | 実TCP test | upload deadlineがsocket readを中断せず、取込資源を保持し続ける |
 | demo response test | 取込から公開DTOまでの代表フローで、個別レイヤーの組合せが崩れる |
@@ -71,65 +69,23 @@ make verify
 `make verify`はGoのformat、shell scriptの構文、`go vet`、race detector付きのテスト、生成OpenAPIと実装の差分を検査します。
 通常のテストは、初期対応規模の受入境界と軽量な病理グラフを件数の合否に使いますが、実行時間やメモリ量の性能閾値を合否に使いません。
 
-Issue #40で追加するlocal smoke testは、実プロセスを起動した公開フローを確認する役割を持ちます。
-実装後もunit testやintegration testの代替にはせず、`make verify`との役割を分けます。
+local smoke testは、実プロセスを起動した公開フローを確認する役割を持ちます。
+unit testやintegration testの代替にはせず、`make verify`との役割を分けます。
 
 ## 性能測定用データ
 
 性能用データは`internal/testsupport/graphgen`が決まった規則で生成します。
 同じプロファイルからは、同じノード、relation、期待値、アーカイブを生成します。
 
-| プロファイル | 規模またはケース | 解析対象 | 実行環境と用途 |
-|---|---:|---|---|
-| Small | 10,000ノード、25,000 relation | `NET-TARGET`、`JOB-TARGET` | Dev ContainerとCIで取込から経路ツリーまでを検査する |
-| Medium | 100,000ノード、300,000 relation | `NET-TARGET`、`JOB-TARGET` | 8 GiB以上の利用可能メモリを目安とする専用環境で測定する |
-| Scale | 1,000,000ノード、3,000,000 relation | `NET-TARGET`、`JOB-TARGET` | Mediumより大きい専用環境で上限値の判断材料を測定する |
-| Pathological | 個別の軽量ケース | ケースごとの一対象 | Dev ContainerとCIで規模以外の形状を検査する |
+| プロファイル | 目的 | 実行環境 |
+|---|---|---|
+| Small | 初期対応規模の取込と解析を確認する | Dev ContainerとCI |
+| Medium | 初期対応規模を超えた増加傾向を測定する | 8 GiB以上の利用可能メモリを目安とする専用環境 |
+| Scale | Mediumより大きい規模の判断材料を測定する | 必要な資源を確保した専用環境 |
+| Pathological | 規模以外のグラフ形状を確認する | Dev ContainerとCI |
 
-`CapacityBoundary`はノード数、relation数、リミット設定数を受入上限へ合わせた有向非巡回グラフを生成します。
-`DenseSCC`はringへ弦を加え、指定したサイズのSCCとその内外のリミット設定を生成します。
-
-公開上限の1,000万ノードと5,000万依存関係は、受入条件ではなく入力拒否の上限です。
-実際に受け入れる初期対応規模は[運用](../operations.md#初期対応規模)を正本とします。
-
-## Issue #32の対応規模境界
-
-Issue #32では、Dev Containerで`go test`を介して取込後の`Traverse`、`Scan`、`Build`を実行しました。
-表の内部処理合計は三処理の合計であり、HTTP層のDTO組立てとJSON化を含みません。
-`alloc`は解析前後の`runtime.MemStats.TotalAlloc`の増分であり、解析中の累積割当量を示します。
-`heapInUse`は同じ前後の`runtime.MemStats.HeapInuse`の増分であり、最大RSSと最大HeapをサンプリングするIssue #14の指標とは異なります。
-
-リミット設定数の測定では、`CapacityBoundary(10_000, 25_000, limitCount)`を使い、ノード数とrelation数を受入上限に固定しました。
-
-| リミット設定数 | 内部処理合計 | `Build` | alloc | heapInUse | 経路ツリー |
-|---:|---:|---:|---:|---:|---:|
-| 53 | 1.036 s | 742 ms | 1,113.2 MiB | 836.3 MiB | 25,001 |
-| 500 | 1.087 s | 792 ms | 1,114.2 MiB | 727.4 MiB | 25,001 |
-| 1,000 | 1.021 s | 719 ms | 1,115.2 MiB | 833.6 MiB | 25,001 |
-| 2,000 | 1.025 s | 723 ms | 1,117.6 MiB | 759.4 MiB | 25,001 |
-| 5,000 | 1.128 s | 799 ms | 1,125.3 MiB | 844.0 MiB | 25,001 |
-
-すべての条件で欠落、メモリ不足、異常終了なく完了し、宣言したリミット設定を全件返しました。
-リミット設定数を53件から5,000件へ約94倍にしても内部処理合計の増加は約9%であり、リミット設定数は処理時間の支配要因ではありませんでした。
-この結果に基づき、リミット設定数の受入上限は5,000件を維持します。
-
-SCCサイズの測定では、`DenseSCC(size, size)`を使いました。
-ノード数は`size + 2`、relation数は`2 × size + 2`です。
-
-| SCCサイズ | 内部処理合計 | `Build` | alloc | 経路ツリー |
-|---:|---:|---:|---:|---:|
-| 1,000 | 85 ms | 71 ms | 19.5 MiB | 2,003 |
-| 2,000 | 323 ms | 293 ms | 55.8 MiB | 4,003 |
-| 2,500 | 535 ms | 491 ms | 78.6 MiB | 5,003 |
-| 3,000 | 717 ms | 670 ms | 105.7 MiB | 6,003 |
-| 4,000 | 1.305 s | 1.245 s | 178.8 MiB | 8,003 |
-| 6,000 | 2.914 s | 2.805 s | 356.2 MiB | 12,003 |
-| 8,000 | 5.475 s | 5.343 s | 609.3 MiB | 16,003 |
-| 9,990 | 8.589 s | 8.420 s | 906.7 MiB | 19,983 |
-
-最大の9,990ノードでも完了しましたが、`Build`の時間はSCCサイズに対して超線形に増えました。
-内部処理の中央値1秒以下を判定基準とし、測定点のうちこの基準を満たす最大の3,000ノードをSCCサイズの受入上限に採用します。
-SCCサイズは取込時に検査し、受入済みスナップショットの検索は処理量によって打ち切りません。
+各プロファイルの件数、生成規則、期待値は`internal/testsupport/graphgen`を正本とします。
+初期対応規模は[運用](../operations.md#初期対応規模)、測定済みの条件と結果は[性能測定結果](performance-measurement.md)を参照してください。
 
 ## 性能測定
 
@@ -179,7 +135,7 @@ go run ./cmd/perf-measure -mode import -profile medium -runs 2
 公開HTTPの完全一致検索では、各coldラウンドの前に検索用接続プールの全接続を同時に保持し、それぞれへ`PRAGMA shrink_memory`を実行します。
 warmラウンドは、直前のcoldラウンドと同じ`http.Handler`と接続プールを使い、ページキャッシュを解放せずに続けます。
 
-検索の`total_ns`は`Traverse`の開始から`Build`の終了までです。
+検索の`total_ns`は後続探索の開始から経路ツリー生成の終了までです。
 結果の決まった順序でのJSON化とSHA-256計算は`serialize_digest_ns`へ分けます。
 HeapとLinuxのRSSは5 ms間隔と段階の境界で取得するため、サンプル間の短いピークを捉えない可能性があります。
 
@@ -194,7 +150,7 @@ HeapとLinuxのRSSは5 ms間隔と段階の境界で取得するため、サン�
 出力はケース、coldまたはwarm、並行度ごとに全要求のレイテンシと`min`、`median`、`p95`、`max`を保持し、返却件数と`truncated`も記録します。
 
 公開HTTPの後続リミット取得も、完全一致検索と同じ測定境界と開始線を使います。
-測定区間には検索世代の取得、`Traverse`、`Scan`、`Build`、公開DTOへの写像、JSON化、構造化ログ、レスポンス書き込みを含めます。
+測定区間には検索世代の取得、後続探索、リミット抽出、経路ツリー生成、公開DTOへの写像、JSON化、構造化ログ、レスポンス書き込みを含めます。
 プロファイルを変更する場合は`PERF_LIMIT_ANALYSIS_PROFILE`、並行度を変更する場合は`PERF_LIMIT_ANALYSIS_CONCURRENCIES`を指定します。
 
 接続方式の比較測定は、一回の取込で作成したSQLiteを世代固有のファイルパスへ複製し、製品の`store`を閉じてから測定専用の接続を開きます。
@@ -203,13 +159,7 @@ HeapとLinuxのRSSは5 ms間隔と段階の境界で取得するため、サン�
 各ラウンドの前に接続プールの全接続を同時に確保して`PRAGMA shrink_memory`を実行し、方式を先に測る順序はラウンドと並行度ごとに交互にします。
 OSのページキャッシュは既存の並行負荷測定と同様に保持します。
 
-世代切替中の検索は次の検査で確認します。
-旧SQLiteで`Traverse`を終えた検索を一時停止し、新SQLiteへ切り替えて新世代を検索した後、旧世代の`Scan`と`Build`を再開します。
-旧検索が旧世代だけ、新検索が新世代だけを返し、ノード、リミット、経路ツリーに世代が混在しないことを検査します。
-
-```bash
-go test -run TestSearchKeepsOneSnapshotGenerationAcrossConcurrentSwitch -count=1 -v ./internal/importer
-```
+世代切替の検査では、切替前に開始した検索と切替後に開始した検索を並行させ、各検索のSQLite、メタデータ、解析結果が一つの世代だけで構成されることを確認します。
 
 測定条件と採用済みの性能値は[性能測定結果](performance-measurement.md)、[完全一致検索のHTTP性能測定結果](target-search-performance.md)、[後続リミット取得のHTTP性能測定結果](limit-analysis-performance.md)を参照します。
 通常テストへ性能閾値を追加せず、性能判断は再現可能な測定結果にもとづいて行います。

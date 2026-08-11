@@ -1,195 +1,63 @@
 # SQLiteの構成
 
-SQLiteは、取り込んだスナップショットを検索しやすい形で保存するために使います。
-外部へ公開するAPIや入力形式は、SQLiteのテーブル構成に依存させません。
+SQLiteは、検査済みスナップショットを検索しやすい形で保持するread sideです。
+外部へ公開するAPIと取込形式は、SQLiteのテーブル、列、索引の構成に依存させません。
 
-## テーブル
+## 保存する関係
 
-```mermaid
-erDiagram
-    NODE ||--o{ NODE : parent
-    NODE ||--o{ LIMIT_FACT : owns
-    NODE ||--o{ RELATION : from
-    NODE ||--o{ RELATION : to
-
-    NODE {
-      text node_id PK
-      text node_type
-      text name
-      text name_normalized
-      text path
-      text path_normalized
-      text parent_id FK
-      text locator_json
-      text attributes_json
-    }
-
-    LIMIT_FACT {
-      text limit_id PK
-      text node_id FK
-      text kind
-      int business_day_offset
-      int local_time_seconds
-      text time_zone
-      int finish_sort_seconds
-      int duration_seconds
-      text source_text
-      text origin
-      text certainty
-    }
-
-    RELATION {
-      text relation_id PK
-      text from_id FK
-      text to_id FK
-      text relation_kind
-      text origin
-      text certainty
-      text evidence_json
-    }
-```
-
-## リミットの保存方法
-
-リミットは、検索のたびに種類ごとの規則で並べ替えます。
-ノードのJSONへ埋め込むと、検索のたびにJSONを解析する必要があり、SQLiteのインデックスも使いにくくなります。
-このため、リミットは`limit_fact`テーブルへ分けて保存します。
-
-`finish_by`は、同じタイムゾーン内で並べ替えられる秒数へ変換します。
-
-```text
-finish_sort_seconds = businessDayOffset × 86400 + localTimeSeconds
-```
-
-`finish_by`には、`kind`、`time_zone`、`finish_sort_seconds`の複合インデックスを作ります。
-実行日が分からない状態では、異なるタイムゾーンの値を同じ時刻として比較しません。
-
-`max_elapsed`は、固定秒数の`duration_seconds`へ変換します。
-年や月を含む期間は長さが一定でないため、MVPでは`max_elapsed`として受け入れません。
-小数部は、指定した期間の構成要素のうち最も小さい単位にだけ許可します。
-各構成要素を秒へ換算した合計がちょうど整数になる値だけを受け入れます。
-
-`raw`は元の表記を保存します。
-数値へ変換しないため、設定値による並べ替えは行いません。
-
-## インデックス
-
-```sql
-CREATE UNIQUE INDEX idx_node_id ON node(node_id);
-CREATE INDEX idx_node_parent ON node(parent_id);
-CREATE INDEX idx_node_name_exact ON node(node_type, name_normalized);
-CREATE INDEX idx_node_path_exact ON node(node_type, path_normalized);
-CREATE INDEX idx_relation_from ON relation(from_id);
-CREATE INDEX idx_relation_to ON relation(to_id);
-CREATE INDEX idx_limit_node ON limit_fact(node_id);
-CREATE INDEX idx_limit_finish ON limit_fact(kind, time_zone, finish_sort_seconds);
-CREATE INDEX idx_limit_elapsed ON limit_fact(kind, duration_seconds);
-```
-
-## 完全一致検索の前処理
-
-完全一致検索では、取込時と検索時に同じ正規化を適用します。
-実装上の正本は`internal/normalize`です。
-
-| 検索対象 | 保存と検索の規則 |
+| データ | 保存上の役割 |
 |---|---|
-| ID | 入力された文字列を変更せず`node_id`へ保存し、検索値も変更せず比較する |
-| 名前 | Unicode NFKC、前後空白の除去、Unicodeケースフォールディングを適用し、`name_normalized`へ保存する |
-| パス | Unicode NFKCと前後空白の除去を適用し、`path_normalized`へ保存する。大文字と小文字は区別する |
+| ノード | ID、種別、表示情報、単一親の所属関係を保持する |
+| relation | 実行順に影響する有向の依存関係を保持する |
+| リミット | ジョブに設定された完了条件を種類ごとに保持する |
 
-名前とパスの検索値には、保存時と同じ正規化を適用してから比較します。
+親子関係とrelationは別のデータとして保存します。
+親子関係は所属を表し、relationは実行順の到達可能性を表すためです。
 
-## 依存関係の重複判定
+同じ二つのノード間でも、種類、生成元、確実性、根拠が異なるrelationは区別します。
+内容がすべて同じrelationは取込時に拒否します。
 
-`relation_id`は、依存関係の内容を構成する次の項目から作ります。
-同じ項目からは常に同じIDを作る必要があります。
+## 検索方式
 
-```text
-fromId + toId + kind + origin + certainty + canonicalized evidence
-```
+完全一致検索、親から直接の子を得るscope展開、外向きrelationの取得、ノードに属するリミットの取得に索引を使います。
+名前とパスは、取込時に検索用の値を保存し、検索時にも同じ変換を適用します。
+利用者へ保証する完全一致の意味と結果順は[対象の検索](api.md#対象の検索)で定めます。
 
-このIDにより、同じ二つのノード間でも、種類や判定根拠が異なる依存関係を別々に保存できます。
-すべての項目が同じ依存関係は重複として拒否します。
+リミットはノードのJSONへ埋め込まず、種類ごとに比較できる値として保存します。
+`finish_by`は同じタイムゾーン内で業務日オフセットと時刻を比較し、異なるタイムゾーンを同じ絶対時刻として比較しません。
+`max_elapsed`は固定秒数へ変換できる値だけを比較し、`raw`は数値として比較しません。
 
-`relation_id`は、項目を正規化したJSONからSHA-256で生成し、hex文字列として保存します。
-JSON objectのキーは辞書順に並べ、配列の順序は入力どおりに保持します。
-`evidence`の欠落と空配列は同じ値として扱います。
-数値は整数として正規化するため、例えば`1`と`1.0`からは同じ値を生成します。
+後続探索では、未展開の到達ノードをまとめて外向きrelationとジョブネットの直接の子を取得します。
+スナップショット全体を常駐するグラフへ複製せず、索引付きSQLiteから必要な隣接情報を読みます。
+探索範囲とscope遷移の意味は[後続リミットの検索](dependency-analysis.md)を参照してください。
 
-## 後続探索
+## SQLite接続方式
 
-後続探索には、索引付きSQLiteのバッチ探索を使います。
-後続探索は、未展開の到達ノードをまとめ、`idx_relation_from`を使って外向きrelationをバッチ取得します。
-到達ノードは一度だけ展開するため、各ノードの外向きrelationを高々一度だけ読みます。
+取込中のSQLiteは一つの書き込み接続で作成します。
+検索用SQLiteは世代ごとの不変ファイルを読み取り専用で開き、想定同時検索数に合わせて最大4接続を使用します。
 
-到達ノードが`job_network`の場合は、`idx_node_parent`を使って直接の論理子ノードをバッチ取得します。
-取得した子はscope遷移として扱い、依存関係と区別して保存します。
+単一接続では同時検索時の接続待ちが支配的になり、接続数だけを増やした比較でレイテンシとスループットが改善しました。
+オンメモリ検索構造が必要であることを示す測定結果はないため、保存方式と検索方式を追加で複雑にしません。
+採否の根拠は[対応規模と検索方式](decisions.md#対応規模と検索方式)、測定値は[SQLite接続方式の比較](../development/performance-measurement.md#sqlite接続方式の比較)を参照してください。
 
-検索には索引付きSQLiteを継続して使用し、取込時に構築する不変オンメモリ検索構造は導入しません。
-Issue #14で観測された制約はSQLiteの探索性能ではなく、単一接続における`database/sql`の接続待ちでした。
-接続数だけを変更した比較で待ち時間とレイテンシが改善し、オンメモリ化の必要性を示す測定結果がないためです。
+## SQLiteの世代切替
 
-採否の根拠と測定値は[設計判断](decisions.md#対応規模と検索方式)を参照してください。
+スナップショットの世代は、検索に使うSQLiteと、そのスナップショットを識別するメタデータの組です。
+一回の検索は、両方を同じ世代として処理終了まで使用します。
 
-## SQLiteの接続
+取込では、現在世代とは別のSQLiteを作成します。
+入力、索引、SQLiteの整合性を確認した後だけ、新しいSQLiteとメタデータを検索先として公開します。
+作成または検査に失敗した場合は、現在世代を変更しません。
 
-取込用SQLiteは最大1接続で開きます。
-検索用SQLiteは読み取り専用で開き、最大接続数と最大アイドル接続数を4にします。
-接続の有効期間とアイドル期間には上限を設けません。
+切替後に開始した検索は新世代を使用します。
+切替前に開始した検索は旧世代を使用して完了し、途中で新世代のデータを混在させません。
+旧世代のSQLiteは、その世代を使用する検索がすべて終了した後に閉じて削除します。
 
-接続ごとの設定は、`sql.DB.Exec`で一度だけPRAGMAを実行する方式ではなく、DSNのクエリパラメーターで指定します。
-この方式により、接続プールが後から作る接続にも同じ設定を適用します。
+この方式では、切替中に新旧のSQLiteを同時に保持します。
+運用時のディスク見積りは[初期の資源見積り](../operations.md#初期の資源見積り)を参照してください。
 
-| 用途 | 最大接続数 | DSNで指定する設定 |
-|---|---:|---|
-| 取込 | 1 | `_foreign_keys=on` |
-| 検索 | 4 | `_foreign_keys=on`、`mode=ro`、`immutable=1`、`_query_only=1` |
+## 同一内容の判定
 
-`immutable=1`は、検索世代のファイルを参照が残る間は置換も削除もしないことを前提に使用します。
-
-## SQLiteの作成と切替
-
-スナップショットを取り込むたびに`importing.db`を新規作成します。
-ノード、リミット、依存関係を登録した後で、検索用のインデックスを作ります。
-
-検索先を切り替える前に、外部キー、SQLiteの整合性、親子関係の循環、代表的な検索結果を確認します。
-すべての確認に通った場合だけ、新しいSQLiteを検索に使います。
-
-検査後は`importing.db`を閉じ、`generation-`、20桁の連番、`.db`から成る世代別ファイル名へrenameします。
-検索用SQLiteは、この世代別ファイルを読み取り専用で開きます。
-固定した`current.db`のパスは再利用しません。
-
-検索先を切り替えると、旧世代を退役状態にします。
-旧世代を参照する検索が残っている場合は、その参照が0になるまでSQLiteを閉じず、ファイルも削除しません。
-最後の参照を解放した後に、SQLiteを閉じて世代別ファイルを削除します。
-
-検索中の切替と元のSQLiteを閉じる条件は[運用](../operations.md#検索と取込の同時実行)で定めます。
-
-## 検索世代メタデータ
-
-検索世代は、次のメタデータをSQLiteと組にして保持します。
-
-| 項目 | 内容 |
-|---|---|
-| `SnapshotID` | スナップショットの識別子 |
-| `GeneratedAt` | スナップショットの生成日時 |
-| `SchemaVersion` | 取込形式のバージョン |
-| `NodeCount` | ノード数 |
-| `RelationCount` | relation数 |
-| `LimitCount` | リミット設定の総数 |
-| `MaxSCCNodes` | 探索グラフの最大SCCに含まれるノード数 |
-| `MaxJobNetworkDepth` | ジョブネット階層の最大深さ |
-| `Fingerprint` | 展開後の内容フィンガープリント |
-
-`Store.Acquire`は、SQLite、同じ世代のメタデータ、解放関数をまとめて返します。
-切替後も解放関数を呼ぶまでは、SQLiteとメタデータの世代が変わりません。
-
-## 内容フィンガープリント
-
-内容フィンガープリントは、展開後の`manifest.json`、`nodes.ndjson`、`relations.ndjson`をこの固定順序でSHA-256へ入力し、16進文字列として保持します。
-各ファイルは、ファイル名のバイト長を64ビット符号なし整数のbig-endianで入力し、ファイル名、内容長を64ビット符号なし整数のbig-endian、内容のバイト列の順に続けます。
-ファイル名と内容長を境界情報に含めるため、異なるファイル分割が同じ連結バイト列になることを防ぎます。
-
-tarとgzipのヘッダー、アーカイブ内のファイル順、権限、更新日時、gzipの圧縮レベルは対象に含めません。
-展開後の三ファイルが同じであれば、コンテナ表現だけが異なるアーカイブからも同じ値を生成します。
-展開後ファイルの空白や改行を含む内容が変われば、内容フィンガープリントも変わります。
+同じ`snapshotId`を再送した場合の同一性は、展開後の`manifest.json`、`nodes.ndjson`、`relations.ndjson`の内容で判定します。
+アーカイブのファイル順、権限、更新日時、gzipの圧縮方法は判定に含めません。
+利用者へ公開する再送時の動作は[同時取込と再送](api.md#同時取込と再送)で定めます。

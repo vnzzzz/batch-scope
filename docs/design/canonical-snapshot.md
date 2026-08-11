@@ -2,12 +2,11 @@
 
 ジョブマネージャー固有の定義は、BatchScopeが受け入れる共通形式へ変換します。
 この全量データを、この文書では**スナップショット**と呼びます。
-JSON Schemaは、JSONの構造と1レコード単体の基本制約を定義します。
-基本制約には、型、必須項目、列挙値、長さ、追加プロパティの可否が含まれます。
+JSON Schemaは、JSONの構造、型、必須項目、列挙値、長さ、追加プロパティの可否を定義します。
 BatchScopeの追加検査は、複数レコード間の整合性と意味上の制約を確認します。
 両者の検査責務と取込を拒否する条件は、[取込を拒否する入力](#取込を拒否する入力)に示します。
 各ファイルのJSON Schemaは[`../../schema`](../../schema/)配下に置きます。
-JSON Schema間の参照には相対パスを使い、公開URLを表す`$id`は設定しません。
+Markdownへ各Schemaのフィールド一覧と境界値を転記しません。
 
 ## 形式の考え方
 
@@ -26,33 +25,15 @@ batchscope-snapshot.tar.gz
 └── relations.ndjson
 ```
 
-| 項目 | 値 |
-|---|---|
-| メディアタイプ | `application/vnd.batchscope.snapshot+gzip` |
-| 圧縮後サイズ上限 | 500 MiB |
-| 展開後サイズ上限 | 4 GiB |
-| `manifest.json`サイズ上限 | 1 MiB |
-
 アーカイブの直下には、この三つのファイルだけを配置します。
 ディレクトリ、シンボリックリンク、ハードリンク、親ディレクトリを指すパス、同名の重複エントリは拒否します。
+メディアタイプと受信方法は[スナップショットの取込](api.md#スナップショットの取込)、サイズ上限は[サービス側の上限](../operations.md#サービス側の上限)を参照してください。
 
 ## マニフェスト
 
 `manifest.json`には、スナップショットを識別する値と件数を記録します。
-
-```json
-{
-  "schemaVersion": "0.5",
-  "snapshotId": "2026-08-05T01:00:00Z",
-  "generatedAt": "2026-08-05T01:00:00Z",
-  "nodeCount": 8,
-  "relationCount": 7,
-  "producer": {
-    "name": "batchscope-normalizer",
-    "version": "0.5.0"
-  }
-}
-```
+宣言したノード数とrelation数は、NDJSONの実件数と一致する必要があります。
+項目と制約は[`manifest.schema.json`](../../schema/manifest.schema.json)を参照してください。
 
 ## ノード
 
@@ -68,19 +49,9 @@ batchscope-snapshot.tar.gz
 | `job_status` | ジョブの完了状態または結果状態 | なし |
 | `external_event` | 外部ベンダー、クラウド、サーバレスから届くイベント | なし |
 
-ジョブIDは、全環境を通じて重複しない値を使います。
-そのほかのノードIDも、一つのスナップショット内で重複してはいけません。
-
-```json
-{
-  "type": "job",
-  "id": "JOB-A",
-  "name": "売上集計",
-  "path": "/DAILY/SALES/JOB-A",
-  "parentId": "NET-SALES",
-  "limitFacts": []
-}
-```
+ノードIDは、一つのスナップショット内で重複してはいけません。
+ジョブIDには、複数環境の定義を一つにまとめても衝突しない値を使います。
+項目と単体制約は[`node.schema.json`](../../schema/node.schema.json)を参照してください。
 
 ## リミット
 
@@ -93,25 +64,13 @@ batchscope-snapshot.tar.gz
 | `max_elapsed` | 指定時間以内の完了 | ISO 8601 Durationを秒へ変換して比較する |
 | `raw` | 安全に項目へ分解できなかった設定 | 数値として比較しない |
 
-```json
-{
-  "id": "LIMIT-JOB-C-FINISH",
-  "kind": "finish_by",
-  "businessDayOffset": 1,
-  "localTime": "06:00:00",
-  "timeZone": "Asia/Tokyo",
-  "sourceText": "翌日06:00までに終了",
-  "origin": "scheduler",
-  "certainty": "declared"
-}
-```
-
 `limitFacts`を設定できるノードは`job`だけです。
 リミットIDは、設定先が同じジョブか異なるジョブかにかかわらず、一つのスナップショット内で重複してはいけません。
 ジョブネットを指定して検索する場合は、配下のリミット設定済みジョブを検索時に全件抽出します。
 元の表記を取得できる場合は、`sourceText`へ保存します。
 項目へ安全に分解できない設定は`raw`として保存します。
 BatchScopeは、検索時に到達可能な範囲にあるリミット設定済みジョブを全件返します。
+項目と単体制約は[`limit-fact.schema.json`](../../schema/limit-fact.schema.json)を参照してください。
 
 ## 依存関係の向き
 
@@ -125,22 +84,8 @@ BatchScopeは、検索時に到達可能な範囲にあるリミット設定済�
 | `consumed_by` | ファイルなどをジョブまたはジョブネットが入力として使う |
 | `observed_by` | ファイル、状態、イベントをジョブまたはジョブネットが監視する |
 
-```json
-{
-  "fromId": "JOB-A",
-  "toId": "file:nfs-prod:sales.done",
-  "kind": "produces",
-  "origin": "ai_analysis",
-  "certainty": "confirmed",
-  "evidence": [
-    {
-      "source": "scripts/job_a.sh",
-      "location": {"startLine": 84, "endLine": 84},
-      "note": "トリガファイルを作成"
-    }
-  ]
-}
-```
+relationの両端は、同じスナップショットに存在するノードを参照する必要があります。
+項目と単体制約は[`relation.schema.json`](../../schema/relation.schema.json)を参照してください。
 
 ## 生成元
 

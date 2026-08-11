@@ -20,45 +20,17 @@ stateDiagram-v2
 | `ready` | 可 | 200 | 検査済みのスナップショットを使用している |
 
 サービス状態の`empty`、`importing`、`ready`は、検索できる世代と進行中の取込の有無を表します。
-取込リソースの状態は別の概念であり、`accepted`、`validating`、`building`、`activating`、`succeeded`の順に進み、各途中状態から`failed`へ遷移します。
-取込リソースの各状態で公開する項目は[API仕様の取込状況](design/api.md#取込状況)を参照してください。
+取込リソースの状態は、個別の取込処理の進行と失敗を表す別の概念です。
+状態の意味と公開項目は[API仕様の取込状況](design/api.md#取込状況)を参照してください。
 
-`GET /v1/status`の`snapshot`は検索に使用中の世代を型付きで返します。
-初回取込中は`null`であり、更新取込中は切替前の世代を返します。
+更新取込中も検索できる世代がある場合は、切替前の世代を継続して利用できます。
 
 ## SQLiteの切替
 
-```mermaid
-sequenceDiagram
-    participant L as ローダー
-    participant A as API
-    participant I as 取込ワーカー
-    participant N as importing.db
-    participant G as 新しいgeneration-N.db
-    participant O as 旧世代のgeneration-M.db
+取込中は、現在世代とは別に新しいSQLiteを準備します。
+検査に成功した場合だけ検索先を切り替え、失敗した場合は現在世代を維持します。
 
-    L->>A: POST スナップショット
-    A->>A: リクエストボディを一時ファイルへ保存
-    A->>I: 受信後の非同期処理を開始
-    A-->>L: 202、取込状況のURI
-    I->>N: ノードと依存関係を登録
-    I->>N: インデックスを作成して検査
-    alt 成功
-      I->>N: Close
-      I->>G: 世代別パスへrename
-      I->>G: 読み取り専用でOpen
-      I->>A: 検索先と世代メタデータを切替
-      opt 旧世代あり
-        A->>O: 最後の参照終了後にCloseして削除
-      end
-    else 失敗
-      I->>N: importing.dbを削除
-    end
-```
-
-検索用SQLiteには、`generation-`、20桁の連番、`.db`から成る世代別ファイル名を割り当てます。
-`current.db`のような固定パスは再利用しません。
-このため、切替前のSQLiteが新しい接続を開いても、次の世代のファイルを読むことはありません。
+切替中の検索と旧世代の寿命を含む保証は、[SQLiteの世代切替](design/storage.md#sqliteの世代切替)を参照してください。
 
 データディレクトリの既定値は`/tmp/batchscope`です。
 `BATCHSCOPE_DATA_DIR`で変更できます。
@@ -77,21 +49,16 @@ sequenceDiagram
 Cloud Runの書き込み可能な組み込みファイルシステムは一時領域です。
 Cloud Runへ32 MiBを超えるアーカイブを直接送る場合は、通信経路全体でHTTP/2を使う必要があります。
 
-## 取込時の処理
+## 取込時の判断
 
-| 段階 | 応答との関係 | 処理 | 問題がある場合 |
-|---|---|---|---|
-| 受信 | 同期 | リクエストボディを一時ファイルへ保存し、圧縮後サイズを確認する | `202 Accepted`を返さず、上限超過または中断として終了する |
-| `validating` | 非同期 | 展開後サイズを確認しながら展開し、JSON、参照関係、対応規模、内容のフィンガープリントを検査する | 取込リソースを`failed`にする |
-| `building` | 非同期 | NDJSONをPrepared StatementとトランザクションでSQLiteへ登録する | `importing.db`を破棄し、取込リソースを`failed`にする |
-| `activating` | 非同期 | 索引とSQLiteを検査し、世代別ファイルを読み取り専用で開いて検索先を切り替える | 切替前の検索世代を維持し、取込リソースを`failed`にする |
+`202 Accepted`は、リクエストボディの保存が完了し、非同期処理を開始したことを示します。
+取込の成功を示すものではないため、運用者は`Location`の取込リソースが終端状態になるまで確認します。
 
-500 MiBのアーカイブをメモリへ一度に展開しません。
+取込が`failed`になった場合は、`error`の種別、理由、入力位置を確認します。
+更新取込の失敗では現在世代を維持するため、検索可否はサービス状態で別に確認します。
 
-新しい世代の取込リソースは、検索先の切替が完了した後に`succeeded`となります。
-`succeeded`となった世代を使う検索は、同じ世代のSQLiteとメタデータを処理終了まで保持するため、切替による部分結果を返しません。
-取込が失敗した場合は現在の検索世代を維持します。
-切替後に旧世代のSQLiteを後始末できなかった場合は警告として扱い、完了済みの切替を取込失敗へ変更しません。
+検索先の切替が完了した後に旧世代の後始末だけが失敗した場合は、警告ログを調査します。
+すでに公開した新世代を取込失敗へ戻しません。
 
 ## 取込履歴
 
@@ -103,14 +70,9 @@ Cloud Runへ32 MiBを超えるアーカイブを直接送る場合は、通信�
 
 ## 検索と取込の同時実行
 
-検索APIは、呼び出し開始時点で使用中のSQLiteへの参照を保持します。
-新しいSQLiteの準備が終わったら、その後の検索先を一度で切り替えます。
-
-切替前に始まった検索は、元のSQLiteを使って完了します。
-元のSQLiteは、参照している検索がなくなった後に閉じます。
-
 同時に実行できる取込は一件です。
 検索は取込と並行して実行できます。
+検索と世代切替の保証は[SQLiteの世代切替](design/storage.md#sqliteの世代切替)を参照してください。
 
 ## 環境変数
 
@@ -153,32 +115,19 @@ Cloud Runへ32 MiBを超えるアーカイブを直接送る場合は、通信�
 | ジョブネット階層深さ | 64階層 |
 | 想定同時検索数 | 4件 |
 
-ノード数とrelation数は、`manifest.json`の宣言値が上限を超えていれば、NDJSONを走査する前に拒否します。
-宣言値が実件数より少ない場合も、`nodes.ndjson`または`relations.ndjson`の有効行が上限を超えた時点で走査を停止します。
-リミット設定は、`nodes.ndjson`の検査中に総数が上限を超えた最初の設定で走査を停止します。
-ジョブネット階層深さは、`nodes.ndjson`の検査工程で計測して拒否します。
-SCCサイズは、検索時に展開する種別のノードを`fromId`とするrelationと、`job_network`から直接の論理子ノードへのscope遷移を辺とする探索グラフから、`relations.ndjson`の検査後に入力順に左右されない値として計算します。
-上限超過時の取込検査の理由コードは`capacity_exceeded`です。
-
 これらは取込時に検査する受入条件です。
 受入済みスナップショットの検索を、経路の深さ、探索量、返却件数で打ち切るための値ではありません。
-ノード数、relation数、想定同時検索数の測定根拠は[性能測定結果](development/performance-measurement.md)を参照してください。
-リミット設定数とSCCサイズの境界確認は[Issue #32の対応規模境界](development/testing.md#issue-32の対応規模境界)を参照してください。
+上限を超える入力は、受入後の全件解析を保証できないため`snapshot-capacity-exceeded`で拒否します。
+測定根拠は[性能測定結果](development/performance-measurement.md)を参照してください。
 
 ## 初期の資源見積り
 
-初期対応規模は、Apple arm64の10コア、`GOMAXPROCS=10`、Go 1.26.5、`modernc.org/sqlite v1.56.0`の環境で測定しました。
-このCPU構成を基準環境とし、同時検索数4件を想定します。
+初期対応規模は、Apple arm64の10コアを基準環境とし、同時検索数4件を想定して測定しました。
 コア数が少ない環境で同じレイテンシを保証するものではありません。
 
-Issue #14の10,000ノード、25,000 relationの測定では、解析直前からのプロセスの最大Heap増分は115.64 MiB、最大RSS増分は142.46 MiBでした。
-Issue #32の`CapacityBoundary(10_000, 25_000, 5_000)`による境界測定では、解析前後の`runtime.MemStats`から求めた`HeapInuse`増分の`heapInUse`は844.0 MiB、`TotalAlloc`増分の`alloc`は1,125.3 MiBでした。
-
-Issue #14の値は実行中にサンプリングした最大Heap増分と最大RSS増分であり、Issue #32の値は解析前後の`HeapInuse`増分と累積割当量である`TotalAlloc`増分です。
-指標が異なるため、これらの値は単純に比較できません。
-
-どちらも単一検索の一部指標であり、HTTPの要求処理、レスポンスのJSON化、想定同時検索数4件による重複分を含む最低メモリ量ではありません。
-142.46 MiBを最低必要メモリとして扱わず、実行環境には境界測定と同時検索を含む十分な余裕を確保します。
+測定したHeap、RSS、累積割当量は測定境界が異なり、単純に比較できません。
+どの値もHTTP処理と同時検索による重複分を含む最低必要メモリではないため、実行環境には余裕を確保します。
+測定環境、指標、値は[性能測定結果](development/performance-measurement.md)を参照してください。
 
 同じ規模の取込では、一時ディスク使用量の最大は9.39 MiB、完成したSQLiteは7.54 MiBでした。
 ただし、一時ディスクには最大500 MiBの受信ファイル、最大4 GiBの展開ファイル、作成中のSQLite、使用中と退役済みの世代別SQLiteが同時に存在する可能性があります。
@@ -239,12 +188,5 @@ MVPは専用のメトリクスexporterと`/metrics`エンドポイントを実�
 
 500 MiBは入力サイズの上限であり、取込時間の保証値ではありません。
 
-単一検索の内部処理（`Traverse`、`Scan`、`Build`）の中央値は対応規模の判断に使い、並行度4における同じ内部処理のp95は想定同時検索数の判断に使いました。
-各測定値と条件は[性能測定結果](development/performance-measurement.md#中間規模)と[SQLite接続方式の比較](development/performance-measurement.md#sqlite接続方式の比較)を参照してください。
-
-後続リミット取得は、初期対応規模のSmallでHTTPハンドラー、公開DTO組立て、JSON化を含めて測定済みです。
-warmかつ並行度4のp95は753.289 msであり、初期目標の1秒を満たしました。
-条件と分布は[後続リミット取得のHTTP性能測定結果](development/limit-analysis-performance.md)を参照してください。
-
-完全一致検索はHTTP層を含めて測定済みであり、条件と結果は[完全一致検索のHTTP性能測定結果](development/target-search-performance.md)を参照してください。
-この結果に基づき、完全一致検索のp95 200 msの目標を維持します。
+対応規模と同時検索数の根拠は[性能測定結果](development/performance-measurement.md)を参照してください。
+公開HTTPを含む条件と結果は、[完全一致検索のHTTP性能測定結果](development/target-search-performance.md)と[後続リミット取得のHTTP性能測定結果](development/limit-analysis-performance.md)を参照してください。

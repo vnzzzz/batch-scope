@@ -124,40 +124,17 @@ export BATCHSCOPE_CODEX_MODEL=<利用可能なCodexモデル>
 | `make smoke` | 一時サービスへデモデータを取り込み、公開APIをE2Eで確認 |
 | `make openapi` | `docs/api/openapi.yaml`を生成 |
 | `make openapi-check` | OpenAPI生成物と実装の差分を確認 |
-| `make demo-view` | デモのAPIレスポンスをテキスト表示 |
-| `make release-artifacts VERSION=0.1.0` | GitHub Releasesへ登録するバイナリを作成 |
 
 ポート8080はDev Containerからホストへ転送します。
 ホストのブラウザまたは`curl`から`http://localhost:8080`へ接続できます。
 
 起動済みサービスの検査や待機時間の変更方法は、`./scripts/smoke-api.sh --help`を参照してください。
+デモレスポンスの表示は[デモ](demo.md)、公開用バイナリとコンテナイメージの作成は[ビルドと公開](build-and-release.md)を参照してください。
 
-実行環境：ホスト
+## API仕様の確認
 
-| コマンド | 用途 |
-|---|---|
-| `make image` | 本番用コンテナイメージの作成 |
-| `make image-run` | 作成済みイメージの起動 |
-
-## 現在のサービス骨格
-
-現在の実装は次のAPIを公開します。
-
-| API | 動作 |
-|---|---|
-| `GET /healthz` | プロセスの生存確認 |
-| `GET /readyz` | スナップショット未投入時は503 |
-| `GET /v1/status` | 起動状態とスナップショット状態 |
-| `POST /v1/snapshot-imports` | スナップショットの受信と非同期取込の開始 |
-| `GET /v1/snapshot-imports/{importId}` | 取込状況の取得 |
-| `GET /v1/snapshots/current` | 現在使用中のスナップショット情報の取得 |
-| `GET /v1/targets` | ジョブとジョブネットの完全一致検索 |
-| `GET /v1/downstream-limit-analysis` | 後続リミットと依存経路の全件解析 |
-
-このほかに、Humaが`/docs`、`/openapi.json`、`/openapi.yaml`を提供します。
-
-スナップショット取込APIの入出力は[API仕様](../design/api.md#スナップショットの取込)を参照してください。
-デモ用レスポンスの確認方法は[デモ](demo.md)を参照してください。
+APIの意味と保証は[API仕様](../design/api.md)、機械的な入出力形式は[生成OpenAPI](../api/openapi.yaml)を参照してください。
+開発中のサービスでは、Humaが生成したAPIドキュメントを`http://localhost:8080/docs`で確認できます。
 
 ## AIエージェントによる開発
 
