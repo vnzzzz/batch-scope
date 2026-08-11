@@ -22,7 +22,7 @@ if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?
   exit 2
 fi
 
-for command in tar sha256sum find diff grep mktemp; do
+for command in tar sha256sum find diff grep mktemp awk; do
   command -v "$command" >/dev/null 2>&1 || {
     echo "必要なコマンドが見つかりません: $command" >&2
     exit 1
@@ -142,6 +142,22 @@ for target in "${targets[@]}"; do
     exit 1
   fi
 done
+
+expected_checksum_files="$work_dir/expected-checksum.files"
+actual_checksum_files="$work_dir/actual-checksum.files"
+printf '%s\n' \
+  "batchscope_${version}_linux_amd64.tar.gz" \
+  "batchscope_${version}_linux_arm64.tar.gz" \
+  "batchscope_${version}_darwin_amd64.tar.gz" \
+  "batchscope_${version}_darwin_arm64.tar.gz" \
+  'batchscope_demo_snapshot.tar.gz' \
+  | sort > "$expected_checksum_files"
+awk '{print $2}' "$output_dir/checksums.txt" | sed 's#^\*##' | sort > "$actual_checksum_files"
+if ! diff -u "$expected_checksum_files" "$actual_checksum_files" >/dev/null; then
+  echo "checksums.txtの対象ファイル集合がRelease成果物と一致しません。" >&2
+  diff -u "$expected_checksum_files" "$actual_checksum_files" >&2 || true
+  exit 1
+fi
 
 (
   cd "$output_dir"
