@@ -134,7 +134,7 @@ flowchart LR
 ```
 
 実行用イメージには、アプリケーションバイナリだけを含めます。
-GitHub Releaseで配布するPublic Skill、JSON Schema、デモスナップショット、設計文書は追加しません。
+Release向けのPublic Skill、JSON Schema、デモスナップショットや、リポジトリ内の設計文書は追加しません。
 Codex CLI、Claude Code、Node.js、Goコンパイラ、Git、シェルも含めません。
 
 ## ローカルイメージの作成
