@@ -5,7 +5,7 @@ usage() {
   cat <<'USAGE'
 Usage: scripts/build-release-artifacts.sh <version> <commit> [output-dir]
 
-GitHub Releasesへ登録するOS別アーカイブとチェックサムを作成します。
+GitHub Releasesへ登録するOS別アーカイブ、デモスナップショット、チェックサムを作成します。
 実行環境はLinuxのDev ContainerまたはGitHub Actionsです。
 USAGE
 }
@@ -43,11 +43,6 @@ fi
 
 if [[ ! -d skills/public/batchscope/references ]]; then
   echo "公開アーカイブへ同梱するPublic Skillがありません。" >&2
-  exit 1
-fi
-
-if [[ ! -d examples/demo/snapshot ]]; then
-  echo "公開アーカイブへ同梱するデモスナップショットがありません。" >&2
   exit 1
 fi
 
@@ -97,9 +92,6 @@ stage_public_files() {
     mkdir -p "$(dirname "$destination")"
     cp "$schema_file" "$destination"
   done
-
-  mkdir -p "$stage/examples/demo"
-  cp -R examples/demo/snapshot "$stage/examples/demo/"
 }
 
 targets=(
@@ -128,6 +120,10 @@ for target in "${targets[@]}"; do
 
   tar -C "$work_dir" -czf "$output_dir/${name}.tar.gz" "$name"
 done
+
+tar -C examples/demo/snapshot \
+  -czf "$output_dir/batchscope_demo_snapshot.tar.gz" \
+  manifest.json nodes.ndjson relations.ndjson
 
 (
   cd "$output_dir"
