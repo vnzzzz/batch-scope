@@ -46,6 +46,18 @@ if [[ ! -d skills/public/batchscope/references ]]; then
   exit 1
 fi
 
+if [[ ! -d examples/demo/snapshot ]]; then
+  echo "公開アーカイブへ同梱するデモスナップショットがありません。" >&2
+  exit 1
+fi
+
+for demo_file in manifest.json nodes.ndjson relations.ndjson; do
+  if [[ ! -f "examples/demo/snapshot/$demo_file" ]]; then
+    echo "デモスナップショットに必要なファイルがありません: examples/demo/snapshot/$demo_file" >&2
+    exit 1
+  fi
+done
+
 mapfile -d '' schema_files < <(find schema -type f -name '*.schema.json' -print0)
 if [[ ${#schema_files[@]} -eq 0 ]]; then
   echo "公開アーカイブへ同梱するJSON Schemaがありません。" >&2
@@ -85,6 +97,9 @@ stage_public_files() {
     mkdir -p "$(dirname "$destination")"
     cp "$schema_file" "$destination"
   done
+
+  mkdir -p "$stage/examples/demo"
+  cp -R examples/demo/snapshot "$stage/examples/demo/"
 }
 
 targets=(
