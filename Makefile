@@ -5,7 +5,7 @@ IMAGE ?= batchscope
 TAG ?= local
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 COMMIT ?= $(shell git rev-parse --short=12 HEAD 2>/dev/null || echo unknown)
-.PHONY: help bootstrap fmt fmt-check scripts-check vet test run smoke openapi openapi-check verify demo-view perf-small perf-pathological perf-concurrent perf-connection-comparison perf-target-search perf-limit-analysis release-artifacts image image-run check-docker
+.PHONY: help bootstrap fmt fmt-check scripts-check vet test run smoke openapi openapi-check verify demo-view perf-small perf-pathological perf-concurrent perf-connection-comparison perf-target-search perf-limit-analysis release-artifacts release-artifacts-check image image-run check-docker
 
 PERF_RUNS ?= 5
 PERF_PATHOLOGICAL_RUNS ?= 3
@@ -83,6 +83,9 @@ perf-limit-analysis: ## [Dev Container] 公開HTTPの後続リミット取得性
 
 release-artifacts: ## [Dev Container/CI] GitHub Releasesへ登録するアーカイブを作成する
 	./scripts/build-release-artifacts.sh "$(VERSION)" "$(COMMIT)" dist
+
+release-artifacts-check: ## [Dev Container/CI] 作成済みRelease成果物の構成と内容を検査する
+	./scripts/check-release-artifacts.sh "$(VERSION)" dist
 
 check-docker:
 	@command -v docker >/dev/null 2>&1 || { echo 'Dockerを利用できるホスト上で実行してください。Dev ContainerにはDocker CLIとソケットを追加していません。' >&2; exit 1; }
