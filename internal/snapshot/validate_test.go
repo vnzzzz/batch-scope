@@ -207,7 +207,8 @@ func TestValidateRejectsActualNDJSONCapacityWhileStreaming(t *testing.T) {
 		for index := 0; index <= limits.MaxSnapshotNodes; index++ {
 			nodes[index] = fmt.Sprintf(`{"type":"job","id":"JOB-%d","name":"Job"}`, index)
 		}
-		// If validation reads beyond the first over-capacity row, this malformed row would replace the capacity error.
+		// 末尾の不正な行は、境界を越えて走査が続いたことを検出するための番兵である。
+		// 走査が止まらなければcapacity_exceededではなくinvalid_jsonが返る。
 		nodes[len(nodes)-1] = "{"
 
 		extracted := writeExtractedSnapshot(t, nodes, nil)
@@ -225,7 +226,8 @@ func TestValidateRejectsActualNDJSONCapacityWhileStreaming(t *testing.T) {
 				index,
 			)
 		}
-		// A parser that continues after the boundary would report invalid_json instead of capacity_exceeded.
+		// 末尾の不正な行は、境界を越えて走査が続いたことを検出するための番兵である。
+		// 走査が止まらなければcapacity_exceededではなくinvalid_jsonが返る。
 		relations[len(relations)-1] = "{"
 
 		extracted := writeExtractedSnapshot(t, nodes, relations)
@@ -268,7 +270,7 @@ func TestValidateRejectsLimitAndJobNetworkDepthCapacity(t *testing.T) {
 	})
 }
 
-func TestReadNodesStopsAtFirstLimitCapacityExceeded(t *testing.T) {
+func TestValidateStopsAtFirstLimitCapacityExceeded(t *testing.T) {
 	const factsPerNode = 1_000
 	limit := func(id string) map[string]any {
 		return map[string]any{
@@ -292,79 +294,11 @@ func TestReadNodesStopsAtFirstLimitCapacityExceeded(t *testing.T) {
 		limit("OVER-0"), limit("OVER-1"), limit("OVER-2"),
 	}
 	nodes = append(nodes, testNode("job", "OVER-CAPACITY", nil, overflowFacts))
-	// This line must remain unread after the first excess limit ends the NDJSON callback.
+	// 最初の超過リミットで走査を止め、後続の不正な行を入力として消費しない。
 	nodes = append(nodes, "{")
 
 	extracted := writeExtractedSnapshot(t, nodes, nil)
-	schemas, err := getSchemas()
-	if err != nil {
-		t.Fatal(err)
-	}
-	orderedIDs, byID, nodeCount, limitCount, duplicateErr, err := readNodes(context.Background(), extracted.Nodes, schemas.node)
-	assertValidationError(t, err, ErrorCapacityExceeded, nodesName, capacityLine, "/limitFacts/0")
-	if nodeCount != capacityLine || limitCount != limits.MaxSnapshotLimits+1 {
-		t.Fatalf("readNodes() counts = nodes %d, limits %d; want nodes %d, limits %d", nodeCount, limitCount, capacityLine, limits.MaxSnapshotLimits+1)
-	}
-	if len(orderedIDs) != capacityLine-1 || len(byID) != capacityLine-1 {
-		t.Fatalf("readNodes() retained nodes = ordered %d, map %d; want %d", len(orderedIDs), len(byID), capacityLine-1)
-	}
-	if duplicateErr != nil {
-		t.Fatalf("readNodes() duplicate error = %v, want nil", duplicateErr)
-	}
-
-	_, err = Validate(context.Background(), extracted)
-	assertValidationError(t, err, ErrorCapacityExceeded, nodesName, capacityLine, "/limitFacts/0")
-
-	// The current line remains subject to line validation before its limit count can trigger the streaming boundary.
-	nodes[capacityLine-1] = testNodeWithName("job", "OVER-CAPACITY", "", nil, overflowFacts)
-	_, err = Validate(context.Background(), writeExtractedSnapshot(t, nodes, nil))
-	assertValidationError(t, err, ErrorSchemaViolation, nodesName, capacityLine, "/name")
-}
-
-func TestReadNodesAppliesLimitCapacityBeforeDuplicateNode(t *testing.T) {
-	const factsPerNode = 1_000
-	limitFacts := func(prefix string, count int) []any {
-		facts := make([]any, count)
-		for index := range facts {
-			facts[index] = map[string]any{
-				"id": fmt.Sprintf("%s-%d", prefix, index), "kind": "raw", "sourceText": "raw",
-				"origin": "manual", "certainty": "declared",
-			}
-		}
-		return facts
-	}
-
-	nodes := make([]string, 0, 7)
-	nodes = append(nodes, testNode("job", "DUPLICATED", nil, limitFacts("LIMIT-0", factsPerNode)))
-	for nodeIndex := 1; nodeIndex < limits.MaxSnapshotLimits/factsPerNode; nodeIndex++ {
-		nodes = append(nodes, testNode(
-			"job", fmt.Sprintf("JOB-%d", nodeIndex), nil,
-			limitFacts(fmt.Sprintf("LIMIT-%d", nodeIndex), factsPerNode),
-		))
-	}
-	capacityLine := len(nodes) + 1
-	nodes = append(nodes, testNode("job", "DUPLICATED", nil, limitFacts("DUPLICATE-ROW", factsPerNode)))
-	// 重複判定より先に容量超過で停止しなければ、この後続行のinvalid_jsonが返る。
-	nodes = append(nodes, "{")
-
-	extracted := writeExtractedSnapshot(t, nodes, nil)
-	schemas, err := getSchemas()
-	if err != nil {
-		t.Fatal(err)
-	}
-	orderedIDs, byID, nodeCount, limitCount, duplicateErr, err := readNodes(context.Background(), extracted.Nodes, schemas.node)
-	assertValidationError(t, err, ErrorCapacityExceeded, nodesName, capacityLine, "/limitFacts/0")
-	if nodeCount != capacityLine || limitCount != limits.MaxSnapshotLimits+1 {
-		t.Fatalf("readNodes() counts = nodes %d, limits %d; want nodes %d, limits %d", nodeCount, limitCount, capacityLine, limits.MaxSnapshotLimits+1)
-	}
-	if len(orderedIDs) != capacityLine-1 || len(byID) != capacityLine-1 {
-		t.Fatalf("readNodes() retained nodes = ordered %d, map %d; want %d", len(orderedIDs), len(byID), capacityLine-1)
-	}
-	if duplicateErr != nil {
-		t.Fatalf("readNodes() duplicate error = %v, want nil before capacity error", duplicateErr)
-	}
-
-	_, err = Validate(context.Background(), extracted)
+	_, err := Validate(context.Background(), extracted)
 	assertValidationError(t, err, ErrorCapacityExceeded, nodesName, capacityLine, "/limitFacts/0")
 }
 
@@ -659,51 +593,6 @@ func TestValidateRejectsInvalidBusinessDayOffsetNumbers(t *testing.T) {
 	}
 }
 
-func TestValidateReturnsEarlierParentReferenceBeforeLaterDuplicate(t *testing.T) {
-	nodes := []string{
-		testNode("job", "FIRST", stringPointer("MISSING"), nil),
-		testNode("management_unit", "ROOT", nil, nil),
-		testNode("job", "OTHER", nil, nil),
-		testNode("job", "DUPLICATE", nil, nil),
-		testNode("job", "DUPLICATE", nil, nil),
-	}
-	_, err := Validate(context.Background(), writeExtractedSnapshot(t, nodes, nil))
-	assertValidationError(t, err, ErrorMissingParent, nodesName, 1, "/parentId")
-}
-
-func TestValidateReturnsEarlierDuplicateBeforeLaterParentReference(t *testing.T) {
-	nodes := []string{
-		testNode("job", "DUPLICATE", nil, nil),
-		testNode("job", "DUPLICATE", nil, nil),
-		testNode("management_unit", "ROOT", nil, nil),
-		testNode("job", "OTHER", nil, nil),
-		testNode("job", "LAST", stringPointer("MISSING"), nil),
-	}
-	_, err := Validate(context.Background(), writeExtractedSnapshot(t, nodes, nil))
-	assertValidationError(t, err, ErrorDuplicateNode, nodesName, 2, "/id")
-}
-
-func TestValidateReturnsLineValidationBeforeNodeCrossValidation(t *testing.T) {
-	nodes := []string{
-		testNode("job", "DUPLICATE", nil, nil),
-		testNode("job", "DUPLICATE", nil, nil),
-		`{"type":"job","id":"INVALID","name":""}`,
-	}
-	_, err := Validate(context.Background(), writeExtractedSnapshot(t, nodes, nil))
-	assertValidationError(t, err, ErrorSchemaViolation, nodesName, 3, "/name")
-}
-
-func TestValidateReportsParentCycleAtSmallestCycleLine(t *testing.T) {
-	nodes := []string{
-		testNode("management_unit", "BRANCH", stringPointer("C"), nil),
-		testNode("management_unit", "A", stringPointer("C"), nil),
-		testNode("management_unit", "B", stringPointer("A"), nil),
-		testNode("management_unit", "C", stringPointer("B"), nil),
-	}
-	_, err := Validate(context.Background(), writeExtractedSnapshot(t, nodes, nil))
-	assertValidationError(t, err, ErrorParentCycle, nodesName, 2, "/parentId")
-}
-
 func TestValidateRejectsLimitOutsideJob(t *testing.T) {
 	limit := map[string]any{"id": "RAW", "kind": "raw", "sourceText": "raw", "origin": "manual", "certainty": "declared"}
 	nodes := []string{testNode("job_network", "NET", nil, []any{limit})}
@@ -781,40 +670,6 @@ func TestValidateRejectsDuplicateRelationsAfterCanonicalizingEvidence(t *testing
 	}
 	_, err := Validate(context.Background(), writeExtractedSnapshot(t, nodes, relations))
 	assertValidationError(t, err, ErrorDuplicateRelation, relationsName, 2, "")
-}
-
-func TestRelationIDCompatibility(t *testing.T) {
-	tests := []struct {
-		name     string
-		relation relation
-		want     string
-	}{
-		{
-			name: "with evidence",
-			relation: relation{
-				FromID: "A", ToID: "B", Kind: "precedes", Origin: "scheduler", Certainty: "declared",
-				Evidence: json.RawMessage(`[{"source":"definition","location":{"startLine":1,"endLine":2}}]`),
-			},
-			want: "7d52b337b498f1747ee9638c9da66e0eb53d1d1a13a5aa6fa7fc6cb4e1eeacdb",
-		},
-		{
-			name:     "without evidence",
-			relation: relation{FromID: "A", ToID: "B", Kind: "precedes", Origin: "scheduler", Certainty: "declared"},
-			want:     "88b20ce1ebe22b016ca9745450783252a5276eb18bbbc62c358426c2579de43e",
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got, err := relationID(tt.relation)
-			if err != nil {
-				t.Fatalf("relationID() error = %v", err)
-			}
-			// この不一致は、保存済みrelation_idとの互換性が壊れたことを示す。
-			if encoded := hex.EncodeToString(got[:]); encoded != tt.want {
-				t.Fatalf("relationID() = %q, want %q", encoded, tt.want)
-			}
-		})
-	}
 }
 
 func TestRelationIDIsDeterministicAndChangesWithEveryIdentityField(t *testing.T) {

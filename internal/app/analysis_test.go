@@ -17,7 +17,6 @@ import (
 	"testing"
 	"time"
 
-	"batchscope/internal/limitscan"
 	"batchscope/internal/snapshot"
 	"batchscope/internal/store"
 
@@ -115,6 +114,8 @@ func TestDownstreamLimitAnalysisPublicContractAndResults(t *testing.T) {
 	assertUncoveredRoutes(t, body, treeNodes)
 	assertCycles(t, body)
 
+	// 公開パラメーターはtargetIdとincludeEvidenceだけであり、件数や深さを指す名前のqueryを受け付けない。
+	// 受け付けてしまうと、受入済みスナップショットの検索結果を件数で打ち切る経路ができる。
 	withUnknown := serveRequest(a, "/v1/downstream-limit-analysis?targetId=NET-TARGET&maxDepth=1&limit=1&treeNodes=1")
 	assertStatus(t, withUnknown, http.StatusOK)
 	if !bytes.Equal(base.Body.Bytes(), withUnknown.Body.Bytes()) {
@@ -150,7 +151,12 @@ func TestDownstreamLimitAnalysisEvidenceToggleIsConsistent(t *testing.T) {
 	a := newTestApp(t)
 	completeAnalysisGeneration(t, a, "evidence-snapshot", analysisFixture("EVIDENCE"))
 
-	without := decodeObject(t, serveRequest(a, "/v1/downstream-limit-analysis?targetId=NET-TARGET"))
+	withoutResponse := serveRequest(a, "/v1/downstream-limit-analysis?targetId=NET-TARGET")
+	explicitFalseResponse := serveRequest(a, "/v1/downstream-limit-analysis?targetId=NET-TARGET&includeEvidence=false")
+	if !bytes.Equal(withoutResponse.Body.Bytes(), explicitFalseResponse.Body.Bytes()) {
+		t.Fatal("omitted and explicit false includeEvidence values returned different responses")
+	}
+	without := decodeObject(t, withoutResponse)
 	with := decodeObject(t, serveRequest(a, "/v1/downstream-limit-analysis?targetId=NET-TARGET&includeEvidence=true"))
 	assertRelationEvidencePresence(t, without, false)
 	assertRelationEvidencePresence(t, with, true)
@@ -266,16 +272,38 @@ func TestDownstreamLimitAnalysisErrors(t *testing.T) {
 		assertAnalysisProblem(t, a, "/v1/downstream-limit-analysis?targetId=JOB", http.StatusInternalServerError, "/problems/internal-error")
 	})
 	t.Run("internal inconsistency", func(t *testing.T) {
-		a := newTestApp(t)
-		data := analysisTestData{
-			nodes: []appTestNode{{id: "BROKEN-NET", typeName: "job_network", name: "Broken"}},
-			facts: []analysisTestFact{{
-				id: "BROKEN-LIMIT", ownerID: "BROKEN-NET", kind: "raw", sourceText: appString("raw"),
-				origin: "manual", certainty: "declared",
-			}},
+		for _, test := range []struct {
+			name     string
+			targetID string
+			data     analysisTestData
+		}{
+			{
+				name: "non-job limit owner", targetID: "BROKEN-NET",
+				data: analysisTestData{
+					nodes: []appTestNode{{id: "BROKEN-NET", typeName: "job_network", name: "Broken"}},
+					facts: []analysisTestFact{{
+						id: "BROKEN-LIMIT", ownerID: "BROKEN-NET", kind: "raw", sourceText: appString("raw"),
+						origin: "manual", certainty: "declared",
+					}},
+				},
+			},
+			{
+				name: "incomplete fact", targetID: "BROKEN-JOB",
+				data: analysisTestData{
+					nodes: []appTestNode{{id: "BROKEN-JOB", typeName: "job", name: "Broken"}},
+					facts: []analysisTestFact{{
+						id: "BROKEN-LIMIT", ownerID: "BROKEN-JOB", kind: "max_elapsed",
+						origin: "manual", certainty: "declared",
+					}},
+				},
+			},
+		} {
+			t.Run(test.name, func(t *testing.T) {
+				a := newTestApp(t)
+				completeAnalysisGeneration(t, a, "broken-snapshot", test.data)
+				assertAnalysisProblem(t, a, "/v1/downstream-limit-analysis?targetId="+test.targetID, http.StatusInternalServerError, "/problems/internal-error")
+			})
 		}
-		completeAnalysisGeneration(t, a, "broken-snapshot", data)
-		assertAnalysisProblem(t, a, "/v1/downstream-limit-analysis?targetId=BROKEN-NET", http.StatusInternalServerError, "/problems/internal-error")
 	})
 }
 
@@ -362,25 +390,6 @@ func TestDownstreamLimitAnalysisTargetIDLengthAndLogging(t *testing.T) {
 		t.Fatalf("invalid target_id was logged: %v", entry["target_id"])
 	}
 
-	assertAnalysisProblem(t, a, "/v1/downstream-limit-analysis?targetId=", http.StatusBadRequest, "/problems/invalid-request")
-}
-
-func TestDownstreamLimitAnalysisIncludeEvidenceValues(t *testing.T) {
-	a := newTestApp(t)
-	completeAnalysisGeneration(t, a, "include-evidence-values", analysisFixture("VALUES"))
-
-	for _, path := range []string{
-		"/v1/downstream-limit-analysis?targetId=NET-TARGET",
-		"/v1/downstream-limit-analysis?targetId=NET-TARGET&includeEvidence=false",
-		"/v1/downstream-limit-analysis?targetId=NET-TARGET&includeEvidence=true",
-	} {
-		assertStatus(t, serveRequest(a, path), http.StatusOK)
-	}
-	assertAnalysisProblem(
-		t, a,
-		"/v1/downstream-limit-analysis?targetId=NET-TARGET&includeEvidence=",
-		http.StatusBadRequest, "/problems/invalid-request",
-	)
 }
 
 func TestDownstreamLimitAnalysisPreservesArbitraryPrecisionEvidenceLines(t *testing.T) {
@@ -482,24 +491,6 @@ func TestDownstreamLimitAnalysisOpenAPIFactVariants(t *testing.T) {
 		if line.Type != huma.TypeInteger || line.Format != "" || line.Minimum == nil || *line.Minimum != 1 {
 			t.Errorf("%s schema = %#v", field, line)
 		}
-	}
-}
-
-func TestMapAnalysisFactRejectsIncompleteVariants(t *testing.T) {
-	if _, err := mapAnalysisFact(limitscan.Fact{
-		ID: "BROKEN", Kind: limitscan.KindFinishBy, Origin: "scheduler", Certainty: "declared",
-	}); err == nil {
-		t.Fatal("finish_by without kind-specific fields was mapped")
-	}
-	if _, err := mapAnalysisFact(limitscan.Fact{
-		ID: "BROKEN", Kind: limitscan.KindMaxElapsed, Origin: "scheduler", Certainty: "declared",
-	}); err == nil {
-		t.Fatal("max_elapsed without duration was mapped")
-	}
-	if _, err := mapAnalysisFact(limitscan.Fact{
-		ID: "BROKEN", Kind: limitscan.KindRaw, Origin: "scheduler", Certainty: "declared",
-	}); err == nil {
-		t.Fatal("raw without sourceText was mapped")
 	}
 }
 

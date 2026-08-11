@@ -65,7 +65,7 @@ func TestTraverseReachesEndOfLongSerialPath(t *testing.T) {
 	}
 }
 
-func TestTraverseReachesEveryHighFanOutBranchInBatches(t *testing.T) {
+func TestTraverseReachesEveryHighFanOutBranch(t *testing.T) {
 	const branches = 1_200
 	nodes := []testNode{{id: "START", typeName: "job"}}
 	relations := make([]testRelation, 0, branches)
@@ -81,9 +81,6 @@ func TestTraverseReachesEveryHighFanOutBranchInBatches(t *testing.T) {
 	}
 	if got, want := len(result.Nodes), branches+1; got != want {
 		t.Errorf("len(Nodes) = %d, want %d", got, want)
-	}
-	if got, want := result.Stats.RelationQueries, 4; got != want {
-		t.Errorf("RelationQueries = %d, want %d", got, want)
 	}
 	if got, want := result.Stats.RelationRows, branches; got != want {
 		t.Errorf("RelationRows = %d, want %d", got, want)

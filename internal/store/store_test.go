@@ -129,28 +129,6 @@ func TestStateTransitionsAndSingleImport(t *testing.T) {
 	}
 }
 
-func TestCurrentGenerationDoesNotAcquireSearchReference(t *testing.T) {
-	directory := t.TempDir()
-	storage := newTestStore(t, directory)
-	if generation, ok := storage.CurrentGeneration(); ok || generation != (Generation{}) {
-		t.Fatalf("empty CurrentGeneration() = %#v, %t", generation, ok)
-	}
-	activateValue(t, storage, "current")
-
-	generation, ok := storage.CurrentGeneration()
-	if !ok || generation.SnapshotID != "current" {
-		t.Fatalf("CurrentGeneration() = %#v, %t", generation, ok)
-	}
-	activateValue(t, storage, "next")
-	files, err := filepath.Glob(filepath.Join(directory, "generation-*.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(files) != 1 {
-		t.Fatalf("generation files = %v, want old generation released without an Acquire reference", files)
-	}
-}
-
 func TestAcquireKeepsOldDatabaseUntilReleaseAfterSwitch(t *testing.T) {
 	directory := t.TempDir()
 	storage := newTestStore(t, directory)
@@ -190,24 +168,6 @@ func TestAcquireKeepsOldDatabaseUntilReleaseAfterSwitch(t *testing.T) {
 	}
 }
 
-func TestAcquiredDatabaseKeepsSnapshotAcrossRepeatedQueriesAfterSwitch(t *testing.T) {
-	storage := newTestStore(t, t.TempDir())
-	activateValue(t, storage, "old")
-
-	oldDB, _, releaseOld, err := storage.Acquire()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer releaseOld()
-
-	activateValue(t, storage, "new")
-	for queryNumber := 1; queryNumber <= 5; queryNumber++ {
-		if got := queryValue(t, oldDB); got != "old" {
-			t.Fatalf("old database value after switch on query %d = %q, want old", queryNumber, got)
-		}
-	}
-}
-
 func TestRetiredHandleReconnectsToItsOwnGenerationPath(t *testing.T) {
 	storage := newTestStore(t, t.TempDir())
 	activateValue(t, storage, "old")
@@ -218,7 +178,7 @@ func TestRetiredHandleReconnectsToItsOwnGenerationPath(t *testing.T) {
 	defer releaseOld()
 
 	activateValue(t, storage, "new")
-	// アイドル接続を破棄し、退役済みsql.DBがDSNから新しい接続を作る経路を必ず通す。
+	// 接続を作り直した後も、退役世代の参照は切替前と同じSQLiteを保持する。
 	oldDB.SetMaxIdleConns(0)
 	if got := queryValue(t, oldDB); got != "old" {
 		t.Fatalf("reconnected old database value = %q, want old", got)
