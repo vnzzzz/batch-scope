@@ -5,7 +5,7 @@ IMAGE ?= batchscope
 TAG ?= local
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 COMMIT ?= $(shell git rev-parse --short=12 HEAD 2>/dev/null || echo unknown)
-.PHONY: help bootstrap fmt fmt-check scripts-check vet test run openapi openapi-check verify demo-view perf-small perf-medium perf-scale perf-pathological perf-concurrent perf-connection-comparison perf-target-search perf-limit-analysis perf-growth release-artifacts image image-run check-docker
+.PHONY: help bootstrap fmt fmt-check scripts-check vet test run smoke openapi openapi-check verify demo-view perf-small perf-medium perf-scale perf-pathological perf-concurrent perf-connection-comparison perf-target-search perf-limit-analysis perf-growth release-artifacts image image-run check-docker
 
 PERF_RUNS ?= 5
 PERF_PATHOLOGICAL_RUNS ?= 3
@@ -42,6 +42,9 @@ scripts-check: ## [Dev Container/CI] シェルスクリプトの構文を確認�
 
 run: ## [Dev Container] サービスを起動する
 	go run ./cmd/batchscope serve
+
+smoke: ## [Dev Container] 公開APIのE2Eスモークテストを実行する
+	./scripts/smoke-api.sh
 
 openapi: ## [Dev Container] OpenAPIを生成する
 	@mkdir -p docs/api
