@@ -418,6 +418,7 @@ func openSearchDatabase(ctx context.Context, path string) (*sql.DB, error) {
 func sqliteDSN(path string, search bool) string {
 	dsn := url.URL{Scheme: "file", Path: path}
 	query := url.Values{}
+	// 接続プールが後から開く接続にも同じ制約を適用するため、接続単位の設定はDSNへ含める。
 	query.Set("_foreign_keys", "on")
 	if search {
 		// 検索世代のファイルは参照がなくなるまで置換も削除もしないため、immutableで開ける。
