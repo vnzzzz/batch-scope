@@ -13,19 +13,19 @@ Linuxでは`amd64`と`arm64`のtar.gzを配布しています。
 
 ```bash
 # 例: Linux amd64
- tar -xzf batchscope_*_linux_amd64.tar.gz
+tar -xzf batchscope_*_linux_amd64.tar.gz
 cd batchscope_*_linux_amd64
 ./batchscope version
-./batchscope serve
+./batchscope serve -data-dir "$(mktemp -d)"
 ```
 
 既定では`0.0.0.0:8080`で待ち受けます。
-起動後は`http://127.0.0.1:8080/docs`でAPIドキュメントを確認できます。
+上の例では試用のため空の一時データディレクトリを使っています。起動後は`http://127.0.0.1:8080/docs`でAPIドキュメントを確認できます。
 
 ### 2. デモデータで試す
 
 デモでは、利用中のバイナリと同じversionのスナップショットを使います。
-別のターミナルで次を実行してください。`git`、`curl`、`jq`、`tar`が必要です。
+同じ展開ディレクトリを別のターミナルで開き、次を実行してください。`git`、`curl`、`jq`、`tar`が必要です。
 
 ```bash
 VERSION="v$(./batchscope version | awk '{print $2}')"
