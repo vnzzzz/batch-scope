@@ -338,6 +338,19 @@ func TestFailedUpdateDoesNotReplaceCurrentDatabase(t *testing.T) {
 	}
 }
 
+func TestValidateGenerationRejectsSCCCapacity(t *testing.T) {
+	generation := testGeneration("scc-boundary")
+	generation.MaxSCCNodes = limits.MaxSCCNodes
+	if err := validateGeneration(generation); err != nil {
+		t.Fatalf("validateGeneration() boundary error = %v", err)
+	}
+
+	generation.MaxSCCNodes++
+	if err := validateGeneration(generation); !errors.Is(err, ErrGenerationCapacity) {
+		t.Fatalf("validateGeneration() error = %v, want %v", err, ErrGenerationCapacity)
+	}
+}
+
 func TestCompleteRejectsParentCycleAndKeepsCurrentDatabase(t *testing.T) {
 	directory := t.TempDir()
 	storage := newTestStore(t, directory)

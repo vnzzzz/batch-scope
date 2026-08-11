@@ -78,6 +78,7 @@ type Generation struct {
 	NodeCount          int
 	RelationCount      int
 	LimitCount         int
+	MaxSCCNodes        int
 	MaxJobNetworkDepth int
 	Fingerprint        string
 }
@@ -410,11 +411,12 @@ func validateGeneration(generation Generation) error {
 	if generation.SnapshotID == "" || generation.SchemaVersion == "" || generation.GeneratedAt.IsZero() || generation.Fingerprint == "" {
 		return errors.New("generation metadata is incomplete")
 	}
-	if generation.NodeCount < 0 || generation.RelationCount < 0 || generation.LimitCount < 0 {
+	if generation.NodeCount < 0 || generation.RelationCount < 0 || generation.LimitCount < 0 || generation.MaxSCCNodes < 0 {
 		return errors.New("generation counts must not be negative")
 	}
 	if generation.NodeCount > limits.MaxSnapshotNodes || generation.RelationCount > limits.MaxSnapshotRelations ||
-		generation.LimitCount > limits.MaxSnapshotLimits || generation.MaxJobNetworkDepth > limits.MaxJobNetworkDepth {
+		generation.LimitCount > limits.MaxSnapshotLimits || generation.MaxSCCNodes > limits.MaxSCCNodes ||
+		generation.MaxJobNetworkDepth > limits.MaxJobNetworkDepth {
 		return ErrGenerationCapacity
 	}
 	return nil

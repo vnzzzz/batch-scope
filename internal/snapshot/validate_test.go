@@ -201,6 +201,40 @@ func TestValidateRejectsManifestCapacityBeforeReadingNDJSON(t *testing.T) {
 	}
 }
 
+func TestValidateRejectsActualNDJSONCapacityWhileStreaming(t *testing.T) {
+	t.Run("nodes", func(t *testing.T) {
+		nodes := make([]string, limits.MaxSnapshotNodes+2)
+		for index := 0; index <= limits.MaxSnapshotNodes; index++ {
+			nodes[index] = fmt.Sprintf(`{"type":"job","id":"JOB-%d","name":"Job"}`, index)
+		}
+		// If validation reads beyond the first over-capacity row, this malformed row would replace the capacity error.
+		nodes[len(nodes)-1] = "{"
+
+		extracted := writeExtractedSnapshot(t, nodes, nil)
+		writeManifest(t, extracted.Manifest, 1, 0)
+		_, err := Validate(context.Background(), extracted)
+		assertValidationError(t, err, ErrorCapacityExceeded, nodesName, limits.MaxSnapshotNodes+1, "")
+	})
+
+	t.Run("relations", func(t *testing.T) {
+		nodes := []string{testNode("job", "JOB", nil, nil)}
+		relations := make([]string, limits.MaxSnapshotRelations+2)
+		for index := 0; index <= limits.MaxSnapshotRelations; index++ {
+			relations[index] = fmt.Sprintf(
+				`{"fromId":"JOB","toId":"JOB","kind":"precedes","origin":"scheduler","certainty":"declared","evidence":[{"source":"%d"}]}`,
+				index,
+			)
+		}
+		// A parser that continues after the boundary would report invalid_json instead of capacity_exceeded.
+		relations[len(relations)-1] = "{"
+
+		extracted := writeExtractedSnapshot(t, nodes, relations)
+		writeManifest(t, extracted.Manifest, len(nodes), 0)
+		_, err := Validate(context.Background(), extracted)
+		assertValidationError(t, err, ErrorCapacityExceeded, relationsName, limits.MaxSnapshotRelations+1, "")
+	})
+}
+
 func TestValidateRejectsLimitAndJobNetworkDepthCapacity(t *testing.T) {
 	t.Run("limits", func(t *testing.T) {
 		nodes := make([]string, 0, 6)
@@ -232,6 +266,59 @@ func TestValidateRejectsLimitAndJobNetworkDepthCapacity(t *testing.T) {
 		_, err := Validate(context.Background(), writeExtractedSnapshot(t, nodes, nil))
 		assertValidationError(t, err, ErrorCapacityExceeded, nodesName, 0, "/parentId")
 	})
+}
+
+func TestReadNodesStopsAtFirstLimitCapacityExceeded(t *testing.T) {
+	const factsPerNode = 1_000
+	limit := func(id string) map[string]any {
+		return map[string]any{
+			"id": id, "kind": "raw", "sourceText": "raw", "origin": "manual", "certainty": "declared",
+		}
+	}
+
+	nodes := make([]string, 0, limits.MaxSnapshotLimits/factsPerNode+3)
+	remaining := limits.MaxSnapshotLimits
+	for nodeIndex := 0; remaining > 0; nodeIndex++ {
+		count := min(remaining, factsPerNode)
+		facts := make([]any, count)
+		for factIndex := range facts {
+			facts[factIndex] = limit(fmt.Sprintf("LIMIT-%d-%d", nodeIndex, factIndex))
+		}
+		nodes = append(nodes, testNode("job", fmt.Sprintf("JOB-%d", nodeIndex), nil, facts))
+		remaining -= count
+	}
+	capacityLine := len(nodes) + 1
+	overflowFacts := []any{
+		limit("OVER-0"), limit("OVER-1"), limit("OVER-2"),
+	}
+	nodes = append(nodes, testNode("job", "OVER-CAPACITY", nil, overflowFacts))
+	// This line must remain unread after the first excess limit ends the NDJSON callback.
+	nodes = append(nodes, "{")
+
+	extracted := writeExtractedSnapshot(t, nodes, nil)
+	schemas, err := getSchemas()
+	if err != nil {
+		t.Fatal(err)
+	}
+	orderedIDs, byID, nodeCount, limitCount, duplicateErr, err := readNodes(context.Background(), extracted.Nodes, schemas.node)
+	assertValidationError(t, err, ErrorCapacityExceeded, nodesName, capacityLine, "/limitFacts/0")
+	if nodeCount != capacityLine || limitCount != limits.MaxSnapshotLimits+1 {
+		t.Fatalf("readNodes() counts = nodes %d, limits %d; want nodes %d, limits %d", nodeCount, limitCount, capacityLine, limits.MaxSnapshotLimits+1)
+	}
+	if len(orderedIDs) != capacityLine-1 || len(byID) != capacityLine-1 {
+		t.Fatalf("readNodes() retained nodes = ordered %d, map %d; want %d", len(orderedIDs), len(byID), capacityLine-1)
+	}
+	if duplicateErr != nil {
+		t.Fatalf("readNodes() duplicate error = %v, want nil", duplicateErr)
+	}
+
+	_, err = Validate(context.Background(), extracted)
+	assertValidationError(t, err, ErrorCapacityExceeded, nodesName, capacityLine, "/limitFacts/0")
+
+	// The current line remains subject to line validation before its limit count can trigger the streaming boundary.
+	nodes[capacityLine-1] = testNodeWithName("job", "OVER-CAPACITY", "", nil, overflowFacts)
+	_, err = Validate(context.Background(), writeExtractedSnapshot(t, nodes, nil))
+	assertValidationError(t, err, ErrorSchemaViolation, nodesName, capacityLine, "/name")
 }
 
 func TestValidateAcceptsJSONNumberFormsForManifestCounts(t *testing.T) {
@@ -733,6 +820,58 @@ func TestValidateReturnsInputCountsWithoutRetainingRelations(t *testing.T) {
 	}
 	if result.NodeCount != 3 || result.RelationCount != 2 {
 		t.Fatalf("Validate() result = %#v, want 3 nodes and 2 relations", result)
+	}
+}
+
+func TestValidateMeasuresMaximumSCCSize(t *testing.T) {
+	tests := []struct {
+		name      string
+		nodes     []string
+		relations []string
+		want      int
+	}{
+		{
+			name: "multiple components",
+			nodes: []string{
+				testNode("job", "A", nil, nil), testNode("job", "B", nil, nil),
+				testNode("job", "C", nil, nil), testNode("job", "D", nil, nil),
+				testNode("job", "E", nil, nil), testNode("job", "ISOLATED", nil, nil),
+			},
+			relations: []string{
+				testRelation("A", "B", "precedes", "scheduler", "declared", nil),
+				testRelation("B", "A", "precedes", "scheduler", "declared", nil),
+				testRelation("C", "D", "precedes", "scheduler", "declared", nil),
+				testRelation("D", "E", "precedes", "scheduler", "declared", nil),
+				testRelation("E", "C", "precedes", "scheduler", "declared", nil),
+			},
+			want: 3,
+		},
+		{
+			name:      "self loop",
+			nodes:     []string{testNode("job", "SELF", nil, nil)},
+			relations: []string{testRelation("SELF", "SELF", "precedes", "scheduler", "declared", nil)},
+			want:      1,
+		},
+		{
+			name: "scope edge closes cycle",
+			nodes: []string{
+				testNode("job_network", "NET", nil, nil),
+				testNode("job", "JOB", stringPointer("NET"), nil),
+			},
+			relations: []string{testRelation("JOB", "NET", "precedes", "scheduler", "declared", nil)},
+			want:      2,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result, err := Validate(context.Background(), writeExtractedSnapshot(t, tt.nodes, tt.relations))
+			if err != nil {
+				t.Fatalf("Validate() error = %v", err)
+			}
+			if result.MaxSCCNodes != tt.want {
+				t.Fatalf("Validate() MaxSCCNodes = %d, want %d", result.MaxSCCNodes, tt.want)
+			}
+		})
 	}
 }
 

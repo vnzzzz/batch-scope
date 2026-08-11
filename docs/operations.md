@@ -126,16 +126,21 @@ Cloud Runへ32 MiBを超えるアーカイブを直接送る場合は、通信�
 | ノード | 10,000件 |
 | relation | 25,000件 |
 | リミット設定 | 5,000件 |
+| SCCサイズ | 3,000ノード |
 | ジョブネット階層深さ | 64階層 |
 | 想定同時検索数 | 4件 |
 
-ノード数とrelation数は、`manifest.json`を検査した時点で上限を超えていれば、NDJSONを走査する前に拒否します。
-リミット設定の総数とジョブネット階層深さは、`nodes.ndjson`の検査工程で計測して拒否します。
+ノード数とrelation数は、`manifest.json`の宣言値が上限を超えていれば、NDJSONを走査する前に拒否します。
+宣言値が実件数より少ない場合も、`nodes.ndjson`または`relations.ndjson`の有効行が上限を超えた時点で走査を停止します。
+リミット設定は、`nodes.ndjson`の検査中に総数が上限を超えた最初の設定で走査を停止します。
+ジョブネット階層深さは、`nodes.ndjson`の検査工程で計測して拒否します。
+SCCサイズは、relationと`job_network`から直接の論理子ノードへのscope遷移を辺とする探索グラフから、`relations.ndjson`の検査後に入力順に左右されない値として計算します。
 上限超過時の取込検査の理由コードは`capacity_exceeded`です。
 
 これらは取込時に検査する受入条件です。
 受入済みスナップショットの検索を、経路の深さ、探索量、返却件数で打ち切るための値ではありません。
-対応規模と想定同時検索数の測定根拠は[性能測定結果](development/performance-measurement.md)を参照してください。
+ノード数、relation数、想定同時検索数の測定根拠は[性能測定結果](development/performance-measurement.md)を参照してください。
+リミット設定数とSCCサイズの境界確認は[Issue #32の対応規模境界](development/testing.md#issue-32の対応規模境界)を参照してください。
 
 ## 初期の資源見積り
 
@@ -197,7 +202,8 @@ MVPは専用のメトリクスexporterと`/metrics`エンドポイントを実�
 
 500 MiBは入力サイズの上限であり、取込時間の保証値ではありません。
 
-内部の`Traverse`、`Scan`、`Build`を合わせた並行度4のp95は839.499 msでした。
-後続リミット取得の1秒目標に対する余力は約160 msであり、HTTP層のDTO組立てとJSON化はこの測定に含みません。
-公開HTTPの最終p95は、完全一致検索をIssue #10、後続リミット取得をIssue #13で実装した後に確認します。
+単一検索の内部処理（`Traverse`、`Scan`、`Build`）の中央値は対応規模の判断に使い、並行度4における同じ内部処理のp95は想定同時検索数の判断に使いました。
+各測定値と条件は[性能測定結果](development/performance-measurement.md#中間規模)と[SQLite接続方式の比較](development/performance-measurement.md#sqlite接続方式の比較)を参照してください。
+内部処理のp95にはHTTP層のDTO組立てとJSON化を含まないため、後続リミット取得の最終p95はIssue #13で確認します。
+完全一致検索の最終p95は、HTTP層を実装するIssue #10で確認します。
 完全一致検索は索引を使う単一行検索であり、後続解析より軽い処理としてp95 200 msの目標を維持します。

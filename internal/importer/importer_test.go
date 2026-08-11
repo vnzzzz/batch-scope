@@ -46,7 +46,8 @@ func TestRunImportsDemoSnapshotWithIndexes(t *testing.T) {
 	assertCount(t, db, "limit_fact", 3)
 	assertCount(t, db, "relation", 8)
 	if generation.SnapshotID == "" || generation.SchemaVersion != "0.5" || generation.GeneratedAt.IsZero() ||
-		generation.NodeCount != 9 || generation.RelationCount != 8 || generation.LimitCount != 3 || len(generation.Fingerprint) != 64 {
+		generation.NodeCount != 9 || generation.RelationCount != 8 || generation.LimitCount != 3 || generation.MaxSCCNodes != 6 ||
+		len(generation.Fingerprint) != 64 {
 		t.Fatalf("generation metadata = %#v", generation)
 	}
 

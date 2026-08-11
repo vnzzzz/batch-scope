@@ -11,19 +11,22 @@ const (
 	// MaxNDJSONLineBytes は、一件の検査で保持するメモリ量を制限する。
 	MaxNDJSONLineBytes int64 = 16 << 20
 
-	// MaxSnapshotNodesは、後続解析全体がp95 1秒の目標内に収まった測定上の最大規模を採用する。
-	// 10,000ノードと25,000 relationでは中央値396.929 ms、倍の規模では1.125秒だった。
+	// MaxSnapshotNodesは、単一検索の内部処理（Traverse、Scan、Build）の中央値が396.929 msだった測定規模を採用する。
+	// 同じ規模における並行度4の内部処理のp95は839.499 msであり、HTTP層を含む最終p95はIssue #13で確認する。
 	MaxSnapshotNodes = 10_000
-	// MaxSnapshotRelationsは、MaxSnapshotNodesと組み合わせて396.929 msで完遂した測定条件に合わせる。
-	// relationを50,000件へ増やした条件はHTTP層の処理前にp95 1秒の予算を使い切った。
+	// MaxSnapshotRelationsは、MaxSnapshotNodesと組み合わせた単一検索の内部処理中央値を測定した条件に合わせる。
+	// relationを50,000件へ増やした条件は、HTTP層の処理前に内部処理の中央値が1秒を超えた。
 	MaxSnapshotRelations = 25_000
-	// MaxSnapshotLimitsは、p95 1秒を確認した入力からリミット数だけが無制限に増える未測定条件を受け入れない。
-	// ScanとBuildの完遂保証を測定済みの容量枠へ留めるため、受入時の総数を5,000件に制限する。
+	// MaxSnapshotLimitsは、ノード数とrelation数が受入上限の条件で、5,000件を欠落なく返した測定規模を採用する。
+	// 53件から5,000件へ増やしたときの内部処理時間の増加は約9%であり、リミット数は支配要因ではなかった。
 	MaxSnapshotLimits = 5_000
-	// MaxJobNetworkDepthは、p95 1秒を確認した入力からscope展開の深さだけが増える未測定条件を受け入れない。
+	// MaxSCCNodesは、BuildがSCCサイズに対して超線形に増えるため、内部処理の中央値が717 msだった3,000ノードを受入上限とする。
+	// 4,000ノードでは1.305秒となったため取込時に拒否し、受入済みスナップショットの検索はSCCサイズで打ち切らない。
+	MaxSCCNodes = 3_000
+	// MaxJobNetworkDepthは、測定した入力からscope展開の深さだけが増える未測定条件を受け入れない。
 	// 入れ子を64階層まで取込時に許可し、検索時には深さを理由に結果を打ち切らない。
 	MaxJobNetworkDepth = 64
-	// MaxSearchConnectionsは、並行度4でp95 839.499 msとなり、後続解析の1秒目標を満たした接続数である。
+	// MaxSearchConnectionsは、並行度4の内部処理がp95 839.499 msとなり、後続解析の1秒目標を満たした接続数である。
 	// 並行度8では接続待ち以外が制約となったため、測定根拠のない接続追加は行わない。
 	MaxSearchConnections = 4
 )

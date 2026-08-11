@@ -3,6 +3,7 @@ package importer
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"reflect"
@@ -10,8 +11,10 @@ import (
 	"sort"
 	"testing"
 
+	"batchscope/internal/limits"
 	"batchscope/internal/limitscan"
 	"batchscope/internal/pathtree"
+	"batchscope/internal/snapshot"
 	"batchscope/internal/testsupport/graphgen"
 	"batchscope/internal/traversal"
 )
@@ -24,6 +27,58 @@ type pipelineResult struct {
 
 func TestScalePipelineSmall(t *testing.T) {
 	assertGeneratedDataset(t, graphgen.Small(), false)
+}
+
+func TestCapacityBoundaryPipelineCompletes(t *testing.T) {
+	dataset := graphgen.CapacityBoundary(
+		limits.MaxSnapshotNodes,
+		limits.MaxSnapshotRelations,
+		limits.MaxSnapshotLimits,
+	)
+	visitGeneratedPipelines(t, dataset, false, func(_ graphgen.Expectation, result pipelineResult) {
+		assertAllInputLimitsReturned(t, dataset.Nodes, result.Limits)
+	})
+}
+
+func TestSCCCapacityBoundaryPipeline(t *testing.T) {
+	t.Run("accepts exact boundary", func(t *testing.T) {
+		dataset := graphgen.DenseSCC(limits.MaxSCCNodes, limits.MaxSCCNodes)
+		visitGeneratedPipelines(t, dataset, false, func(_ graphgen.Expectation, result pipelineResult) {
+			if len(result.Traversal.Cycles) != 1 || len(result.Traversal.Cycles[0].NodeIDs) != limits.MaxSCCNodes {
+				t.Fatalf("cycles = %#v, want one SCC with %d nodes", traversalSCCs(result.Traversal), limits.MaxSCCNodes)
+			}
+			assertAllInputLimitsReturned(t, dataset.Nodes, result.Limits)
+		})
+	})
+
+	t.Run("rejects overflow and keeps current generation", func(t *testing.T) {
+		workspace := t.TempDir()
+		storage := newImporterTestStore(t, filepath.Join(workspace, "data"))
+		if _, err := Run(context.Background(), workspace, bytes.NewReader(singleNodeArchive(t, "CURRENT")), storage); err != nil {
+			t.Fatalf("initial Run() error = %v", err)
+		}
+
+		dataset := graphgen.DenseSCC(limits.MaxSCCNodes+1, limits.MaxSCCNodes+1)
+		archive, err := dataset.Archive(false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = Run(context.Background(), workspace, bytes.NewReader(archive), storage)
+		var validationErr *snapshot.Error
+		if !errors.As(err, &validationErr) || validationErr.Kind != snapshot.ErrorCapacityExceeded ||
+			validationErr.File != "relations.ndjson" || validationErr.Pointer != "" {
+			t.Fatalf("Run() error = %v, want relations.ndjson capacity_exceeded", err)
+		}
+
+		db, generation, release, err := storage.Acquire()
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer release()
+		if got := queryValueForImporterTest(t, db); got != "CURRENT" || generation.SnapshotID != "CURRENT" {
+			t.Fatalf("active generation after SCC capacity failure: value=%q metadata=%#v", got, generation)
+		}
+	})
 }
 
 func TestScalePipelinePathological(t *testing.T) {
@@ -115,6 +170,27 @@ func inputLimitCount(nodes []graphgen.Node) int {
 		count += len(node.LimitFacts)
 	}
 	return count
+}
+
+func assertAllInputLimitsReturned(t *testing.T, nodes []graphgen.Node, result limitscan.Result) {
+	t.Helper()
+	want := make([]string, 0, inputLimitCount(nodes))
+	for _, node := range nodes {
+		for _, limit := range node.LimitFacts {
+			want = append(want, limit.ID)
+		}
+	}
+	sort.Strings(want)
+
+	gotFacts := limitFacts(result)
+	got := make([]string, 0, len(gotFacts))
+	for id := range gotFacts {
+		got = append(got, id)
+	}
+	sort.Strings(got)
+	if !slices.Equal(got, want) {
+		t.Fatalf("returned limit IDs differ: got %d, want %d", len(got), len(want))
+	}
 }
 
 func assertGeneratedExpectation(t *testing.T, want graphgen.Expectation, result pipelineResult) {

@@ -90,6 +90,7 @@ func Run(ctx context.Context, temporaryDirectory string, source io.Reader, stora
 		NodeCount:          validated.NodeCount,
 		RelationCount:      validated.RelationCount,
 		LimitCount:         validated.LimitCount,
+		MaxSCCNodes:        validated.MaxSCCNodes,
 		MaxJobNetworkDepth: validated.MaxJobNetworkDepth,
 		Fingerprint:        validated.Fingerprint,
 	}
