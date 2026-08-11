@@ -77,12 +77,12 @@ unit testやintegration testの代替にはせず、`make verify`との役割を
 性能用データは`internal/testsupport/graphgen`が決まった規則で生成します。
 同じプロファイルからは、同じノード、relation、期待値、アーカイブを生成します。
 
-| プロファイル | 目的 | 実行環境 |
+| プロファイル | 目的 | 現在の扱い |
 |---|---|---|
-| Small | 初期対応規模の取込と解析を確認する | Dev ContainerとCI |
-| Medium | 初期対応規模を超えた増加傾向を測定する | 8 GiB以上の利用可能メモリを目安とする専用環境 |
-| Scale | Mediumより大きい規模の判断材料を測定する | 必要な資源を確保した専用環境 |
-| Pathological | 規模以外のグラフ形状を確認する | Dev ContainerとCI |
+| Small | 初期対応規模の取込と解析を確認する | Dev ContainerとCI、および現行の性能測定で使用する |
+| Pathological | 規模以外のグラフ形状を確認する | Dev ContainerとCI、および現行の性能測定で使用する |
+| Medium | 初期対応規模を超えた増加傾向を調べる | 過去の性能測定で使用した生成器として保持する |
+| Scale | Mediumより大きい規模の判断材料を作る | 過去の測定設計で使用した生成器として保持する |
 
 各プロファイルの件数、生成規則、期待値は`internal/testsupport/graphgen`を正本とします。
 初期対応規模は[運用](../operations.md#初期対応規模)、測定済みの条件と結果は[性能測定結果](performance-measurement.md)を参照してください。
@@ -90,43 +90,27 @@ unit testやintegration testの代替にはせず、`make verify`との役割を
 ## 性能測定
 
 性能測定は通常検査から分離し、専用コマンドがJSONの測定結果を出力します。
-SmallとPathologicalは開発環境で形状別の傾向を確認し、MediumとScaleは必要なメモリを確保した専用環境で実行します。
+現行の標準コマンドは、製品が受け入れる規模または軽量な病理グラフを対象にします。
 
 `cmd/perf-measure`は取込と静的解析を同じプロセスで実行し、JSONを標準出力へ出します。
 出力は設定、実行環境、測定方法、入力件数とアーカイブのSHA-256、各実行の値、`min`、`median`、`p95`、`max`の要約を含みます。
 `p95`はnearest-rank方式で求めます。
 
-実行環境：Dev Containerまたは専用の測定環境
+実行環境：Dev Container
 
 | コマンド | 測定内容 |
 |---|---|
 | `PERF_RUNS=3 make perf-small` | Smallの取込、二対象のcoldとwarmの静的解析 |
-| `PERF_RUNS=2 make perf-medium` | Mediumの取込と静的解析。利用可能メモリは8 GiB以上が目安 |
-| `PERF_RUNS=2 make perf-scale` | Scaleの取込と静的解析。必要メモリは未測定 |
-| `PERF_PATHOLOGICAL_RUNS=3 make perf-pathological` | 全Pathologicalケースの取込と解析 |
+| `PERF_PATHOLOGICAL_RUNS=3 make perf-pathological` | 受入範囲内のPathologicalケースの取込と解析 |
 | `PERF_CONCURRENT_RUNS=2 make perf-concurrent` | Smallの`NET-TARGET`を並行度1、2、4、8で解析 |
 | `PERF_CONNECTION_COMPARISON_RUNS=5 make perf-connection-comparison` | Smallの`NET-TARGET`について単一接続と複数読み取り接続を並行度1、2、4、8で比較 |
 | `PERF_TARGET_SEARCH_RUNS=20 make perf-target-search` | Smallを使い、公開HTTPの完全一致検索を並行度1、4、cold、warm、検索ケース別に測定 |
 | `PERF_LIMIT_ANALYSIS_RUNS=20 make perf-limit-analysis` | Smallを使い、公開HTTPの後続リミット取得を並行度1、4、cold、warmで測定 |
-| `PERF_GROWTH_RUNS=2 make perf-growth` | 10k、20k、40k、80kノードを別プロセスで測定し、規模別のJSONを`/tmp/batchscope-perf-growth`へ保存 |
 
-任意規模は`custom`プロファイルへノード数とrelation数を指定します。
-relation数はノード数の2.5倍から3倍までとし、Small、Medium、Scaleと同じ増加傾向を保ちます。
-
-```bash
-go run ./cmd/perf-measure \
-  -profile custom \
-  -nodes 40000 \
-  -relations 100000 \
-  -runs 2
-```
-
-取込だけを測定する場合は`-mode import`を指定します。
-反復数は`-runs`で指定し、分布を作るため2以上を必要とします。
-
-```bash
-go run ./cmd/perf-measure -mode import -profile medium -runs 2
-```
+Medium、Scale、10,000ノードを超える中間規模の結果は、現在の受入上限を確定する前に行った測定履歴です。
+現行の製品validationは受入上限を超える入力を拒否するため、それらを現行の取込経路で測定するコマンドは標準入口として提供しません。
+過去の測定条件と結果は[性能測定結果](performance-measurement.md)に記録します。
+対応規模を見直す場合は、候補上限を測定できる再現可能な専用手順を先に用意し、製品validationを一時的に弱めて測定しません。
 
 取込後の静的解析における`cold`は、各実行前に`PRAGMA shrink_memory`でSQLite接続のページキャッシュを解放した状態です。
 同じ測定の`warm`は、直前の`cold`と同じSQLite接続を使い、接続のページキャッシュを解放せずに続けた状態です。
