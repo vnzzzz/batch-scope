@@ -28,39 +28,6 @@ jobs:
           go-version-file: go.mod
           cache: false
 
-      - name: Measure operational scale
-        shell: bash
-        run: |
-          set -Eeuo pipefail
-          go run ./cmd/perf-measure -profile operational -runs 2 > /tmp/operational.json
-          jq '{
-            environment,
-            datasets: [.datasets[] | {
-              input,
-              import: .import.summary,
-              searches: [.searches[] | {
-                target_id,
-                cache_state,
-                summary
-              }]
-            }]
-          }' /tmp/operational.json
-
-      - name: Measure representative HTTP analysis
-        shell: bash
-        run: |
-          set -Eeuo pipefail
-          go run ./cmd/perf-measure -mode limit-analysis -profile operational -runs 2 -concurrencies 1,4 > /tmp/operational-http.json
-          jq '{
-            environment,
-            datasets: [.datasets[] | {
-              name,
-              nodes,
-              relations,
-              target
-            }]
-          }' /tmp/operational-http.json
-
       - name: Verify
         run: make verify
 
