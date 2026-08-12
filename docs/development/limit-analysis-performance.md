@@ -146,5 +146,6 @@ Mediumはこの測定時点では受入上限外だったため、当時の公�
 並行度4のp95はcold 12.24 ms、warm 10.51 msで、p95 1秒の代表負荷目標を満たしました。
 
 40万ノード全体へ到達する`OPS-ROOT`は、内部`Traverse -> Scan -> Build`のp95が15.12秒でした。
+公開HTTPでも700,000 tree nodeを含む応答をJSONまで返し、並行度1のp95はcold 16.04秒、warm 15.23秒でした。
 これは完全解析保証のstress caseであり、1秒以内に切り捨てる対象にはしません。
 詳細な取込、メモリ、段階別測定は[Issue #52の再測定](performance-measurement.md#issue-52-実運用40万ノード級の再測定)を参照してください。
