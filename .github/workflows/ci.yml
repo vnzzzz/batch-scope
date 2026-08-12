@@ -28,11 +28,11 @@ jobs:
           go-version-file: go.mod
           cache: false
 
-      - name: Measure operational scale
+      - name: Measure historical hard shape
         shell: bash
         run: |
           set -Eeuo pipefail
-          go run ./cmd/perf-measure -profile operational -runs 2 > /tmp/operational.json
+          go run ./cmd/perf-measure -profile medium -runs 2 > /tmp/medium.json
           jq '{
             environment,
             datasets: [.datasets[] | {
@@ -54,7 +54,7 @@ jobs:
                 }]
               }]
             }]
-          }' /tmp/operational.json
+          }' /tmp/medium.json
 
       - name: Verify
         run: make verify
