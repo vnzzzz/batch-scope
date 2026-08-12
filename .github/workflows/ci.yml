@@ -31,5 +31,33 @@ jobs:
       - name: Verify
         run: make verify
 
+      - name: Measure operational scale
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          go run ./cmd/perf-measure -profile operational -runs 2 > /tmp/operational.json
+          jq '{
+            environment,
+            datasets: [.datasets[] | {
+              input,
+              import: .import.summary,
+              searches: [.searches[] | {
+                target_id,
+                cache_state,
+                summary,
+                runs: [.runs[] | {
+                  reached_nodes,
+                  relation_connections,
+                  relation_rows,
+                  scope_edges,
+                  limits,
+                  tree_nodes,
+                  hidden_connections,
+                  uncovered_routes
+                }]
+              }]
+            }]
+          }' /tmp/operational.json
+
       - name: Build production image
         run: make image TAG=ci
