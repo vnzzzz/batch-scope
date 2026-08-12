@@ -28,11 +28,11 @@ jobs:
           go-version-file: go.mod
           cache: false
 
-      - name: Measure historical hard shape
+      - name: Measure operational scale
         shell: bash
         run: |
           set -Eeuo pipefail
-          go run ./cmd/perf-measure -profile medium -runs 2 > /tmp/medium.json
+          go run ./cmd/perf-measure -profile operational -runs 2 > /tmp/operational.json
           jq '{
             environment,
             datasets: [.datasets[] | {
@@ -41,20 +41,25 @@ jobs:
               searches: [.searches[] | {
                 target_id,
                 cache_state,
-                summary,
-                runs: [.runs[] | {
-                  reached_nodes,
-                  relation_connections,
-                  relation_rows,
-                  scope_edges,
-                  limits,
-                  tree_nodes,
-                  hidden_connections,
-                  uncovered_routes
-                }]
+                summary
               }]
             }]
-          }' /tmp/medium.json
+          }' /tmp/operational.json
+
+      - name: Measure representative HTTP analysis
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          go run ./cmd/perf-measure -mode limit-analysis -profile operational -runs 2 -concurrencies 1,4 > /tmp/operational-http.json
+          jq '{
+            environment,
+            datasets: [.datasets[] | {
+              name,
+              nodes,
+              relations,
+              target
+            }]
+          }' /tmp/operational-http.json
 
       - name: Verify
         run: make verify
