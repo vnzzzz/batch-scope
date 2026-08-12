@@ -47,9 +47,17 @@ func Search(ctx context.Context, db *sql.DB, query string, types []string) (Sear
 // SearchByLocalID は利用者が認識するジョブIDをnamespaceで任意に絞って完全一致検索する。
 // namespaceを省略した場合は、同じlocal IDを持つ全namespaceの候補を返す。
 func SearchByLocalID(ctx context.Context, db *sql.DB, localID, namespace string, types []string) (SearchResult, error) {
-	candidates, truncated, err := searchLocalIDCandidates(ctx, db, localID, namespace, types)
+	candidates, truncated, err := searchIndexedLocalIDCandidates(ctx, db, localID, namespace, types)
+	if err != nil && strings.Contains(err.Error(), "no such table: node_identity") {
+		// namespace導入前に直接組み立てたテストDBや旧世代を読む場合だけcanonical IDから復元する。
+		// 製品の新規取込世代はnode_identity indexを持つため、このfallbackでは全node scanしない。
+		candidates, truncated, err = searchCanonicalLocalIDCandidates(ctx, db, localID, namespace, types)
+	}
 	if err != nil {
 		return SearchResult{}, err
+	}
+	if truncated {
+		candidates = candidates[:MaxSearchResults]
 	}
 	result, err := loadSearchItems(ctx, db, candidates, truncated)
 	if err != nil {
@@ -67,10 +75,6 @@ func SearchByLocalID(ctx context.Context, db *sql.DB, localID, namespace string,
 		}
 		return strings.Compare(left.ID, right.ID)
 	})
-	if len(result.Items) > MaxSearchResults {
-		result.Items = result.Items[:MaxSearchResults]
-		result.Truncated = true
-	}
 	return result, nil
 }
 
@@ -96,7 +100,34 @@ func loadSearchItems(ctx context.Context, db *sql.DB, candidates []candidate, tr
 	return SearchResult{Items: items, Truncated: truncated}, nil
 }
 
-func searchLocalIDCandidates(ctx context.Context, db *sql.DB, localID, namespace string, types []string) ([]candidate, bool, error) {
+func searchIndexedLocalIDCandidates(ctx context.Context, db *sql.DB, localID, namespace string, types []string) ([]candidate, bool, error) {
+	typePlaceholders := make([]string, len(types))
+	args := make([]any, 0, len(types)+3)
+	args = append(args, localID)
+	condition := "identity.local_id = ?"
+	if namespace != "" {
+		condition += " AND identity.namespace = ?"
+		args = append(args, namespace)
+	}
+	for index, nodeType := range types {
+		typePlaceholders[index] = "?"
+		args = append(args, nodeType)
+	}
+	args = append(args, MaxSearchResults+1)
+
+	statement := fmt.Sprintf(`
+SELECT node.node_id
+FROM node_identity AS identity
+JOIN node ON node.node_id = identity.node_id
+WHERE %s
+	AND node.node_type IN (%s)
+ORDER BY identity.namespace COLLATE BINARY, identity.local_id COLLATE BINARY,
+	node.node_type COLLATE BINARY, node.node_id COLLATE BINARY
+LIMIT ?`, condition, strings.Join(typePlaceholders, ","))
+	return readLocalIDCandidates(ctx, db, statement, args...)
+}
+
+func searchCanonicalLocalIDCandidates(ctx context.Context, db *sql.DB, localID, namespace string, types []string) ([]candidate, bool, error) {
 	typePlaceholders := make([]string, len(types))
 	args := make([]any, 0, len(types)+4)
 	for index, nodeType := range types {
@@ -128,7 +159,10 @@ WHERE node.node_type IN (%s)
 	AND %s
 ORDER BY node.node_id COLLATE BINARY
 LIMIT ?`, strings.Join(typePlaceholders, ","), identityCondition)
+	return readLocalIDCandidates(ctx, db, statement, args...)
+}
 
+func readLocalIDCandidates(ctx context.Context, db *sql.DB, statement string, args ...any) ([]candidate, bool, error) {
 	rows, err := db.QueryContext(ctx, statement, args...)
 	if err != nil {
 		return nil, false, fmt.Errorf("search target local ID candidates: %w", err)
