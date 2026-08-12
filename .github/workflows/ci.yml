@@ -36,13 +36,15 @@ jobs:
           free -b
           echo 'Runner CPUs:'
           nproc
-          go run ./cmd/perf-measure \
-            -mode limit-analysis \
-            -profile operational \
-            -target OPS-ROOT \
-            -runs 2 \
-            -concurrencies 1,4 \
-            > /tmp/issue52-ops-root.json
+          /usr/bin/time -v -o /tmp/issue52-time.txt \
+            go run ./cmd/perf-measure \
+              -mode limit-analysis \
+              -profile operational \
+              -target OPS-ROOT \
+              -runs 2 \
+              -concurrencies 1,4 \
+              > /tmp/issue52-ops-root.json
+          cat /tmp/issue52-time.txt
           jq '{
             environment,
             configuration,
@@ -59,7 +61,6 @@ jobs:
                 uncovered_routes: .target.uncovered_routes,
                 cycles: .target.cycles,
                 deterministic: .target.deterministic,
-                deterministic_digest: .target.deterministic_digest,
                 measurements: [.target.measurements[] | {
                   concurrency,
                   cache_state,
