@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"strings"
 
-	"batchscope/internal/identity"
 	"batchscope/internal/normalize"
 )
 
@@ -42,6 +41,7 @@ func Search(ctx context.Context, db *sql.DB, query string, types []string) (Sear
 
 // SearchLocalID は利用者向けlocal job IDを完全一致で検索する。
 // namespaceがnilなら全namespaceを検索し、同じlocal IDが複数namespaceに存在する場合も全候補を返す。
+// node_identity導入前のSQLiteでは候補を返さず、呼出側がlegacy Searchへfallbackする。
 func SearchLocalID(ctx context.Context, db *sql.DB, localID string, namespace *string, types []string) (SearchResult, error) {
 	candidates, truncated, err := searchLocalIDCandidates(ctx, db, localID, namespace, types)
 	if err != nil {
@@ -77,29 +77,14 @@ func searchLocalIDCandidates(ctx context.Context, db *sql.DB, localID string, na
 	if err != nil {
 		return nil, false, err
 	}
+	if !withIdentity {
+		return []candidate{}, false, nil
+	}
+
 	typePlaceholders := make([]string, len(types))
 	for index := range types {
 		typePlaceholders[index] = "?"
 	}
-
-	if !withIdentity {
-		if namespace != nil && *namespace != identity.DefaultNamespace {
-			return []candidate{}, false, nil
-		}
-		args := []any{localID}
-		for _, nodeType := range types {
-			args = append(args, nodeType)
-		}
-		args = append(args, MaxSearchResults+1)
-		statement := fmt.Sprintf(`
-SELECT node_id
-FROM node
-WHERE node_id = ? AND node_type IN (%s)
-ORDER BY node_id COLLATE BINARY
-LIMIT ?`, strings.Join(typePlaceholders, ","))
-		return queryLocalCandidates(ctx, db, statement, args)
-	}
-
 	args := []any{localID}
 	namespaceClause := ""
 	if namespace != nil {
