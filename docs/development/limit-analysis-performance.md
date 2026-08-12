@@ -137,7 +137,6 @@ CPU数、利用可能メモリ、同居プロセスが異なる環境で同じp9
 `includeEvidence=true`によるrelation evidenceの追加と、5,000件のリミットをすべて大きな文字列として返す最悪応答サイズは測定していません。
 Mediumはこの測定時点では受入上限外だったため、当時の公開HTTP分布を取得していません。Issue #52で対応規模を更新した後の結果は[取込と静的解析の性能測定結果](performance-measurement.md#issue-52-実運用40万ノード級の再測定)を参照してください。
 
-
 ## Issue #52のoperational profile
 
 2026-08-12に、400,000ノード / 300,000 relationのoperational profileで公開HTTPを再測定しました。
@@ -146,6 +145,11 @@ Mediumはこの測定時点では受入上限外だったため、当時の公�
 並行度4のp95はcold 12.24 ms、warm 10.51 msで、p95 1秒の代表負荷目標を満たしました。
 
 40万ノード全体へ到達する`OPS-ROOT`は、内部`Traverse -> Scan -> Build`のp95が15.12秒でした。
-公開HTTPでも700,000 tree nodeを含む応答をJSONまで返し、並行度1のp95はcold 16.04秒、warm 15.23秒でした。
+公開HTTPでは700,000 tree nodeと95,949 `uncoveredRoutes`を含む応答をJSONまで返し、並行度1のp95はcold 19.66秒、warm 20.59秒、並行度4のp95はcold 43.93秒、warm 42.81秒でした。
+全要求が60秒deadline内で完遂し、結果の決定性を維持しました。
+
+並行度1/4の全件到達target測定はcommit `019eaa2c8d1f8435d13569bb171081664920d938`のGitHub Actions CI #178で実行しました。測定プロセスの最大RSSは9,402,744 KiB（約8.97 GiB）です。
+測定ハーネスは`httptest.ResponseRecorder`で完全な応答bodyを保持するため、本番HTTPサーバーの厳密な必要メモリ値とは扱いません。一方、8 GiBを全件到達target 4件同時実行の十分条件とも扱いません。
+
 これは完全解析保証のstress caseであり、1秒以内に切り捨てる対象にはしません。
-詳細な取込、メモリ、段階別測定は[Issue #52の再測定](performance-measurement.md#issue-52-実運用40万ノード級の再測定)を参照してください。
+詳細な取込、メモリ、段階別測定と運用資源の判定は[Issue #52の再測定](performance-measurement.md#issue-52-実運用40万ノード級の再測定)を参照してください。
