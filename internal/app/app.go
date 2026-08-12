@@ -110,7 +110,8 @@ type targetsInput struct {
 
 // Resolveは、Humaのパラメーター束縛では区別できないselectorの未指定、空文字、重複を保持する。
 func (input *targetsInput) Resolve(ctx huma.Context) []error {
-	query := ctx.URL().Query()
+	requestURL := ctx.URL()
+	query := requestURL.Query()
 	input.queryProvided = query.Has("query")
 	input.queryRepeated = len(query["query"]) > 1
 	input.jobIDProvided = query.Has("jobId")
