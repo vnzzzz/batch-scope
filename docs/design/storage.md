@@ -17,8 +17,8 @@ SQLiteは、検査済みスナップショットを検索しやすい形で保�
 
 `node_identity`は`node_id`を主キーとしてnodeへ対応し、`namespace + local_id`を一意にします。
 local IDから全namespaceの候補を取得できるよう、`local_id, namespace, node_id`の順で索引します。
-schema `0.5`のnodeは`namespace=default`、`local_id=node_id`として登録します。
-schema `0.6`では取込時にcanonical IDとの対応を検査してから登録します。
+schema `0.6`では取込時にcanonical IDとの対応を検査してから`node_identity`へ登録します。
+schema `0.5`は意味上`default` namespaceとして扱いますが、`node_identity`へは登録せず、従来のID/name/path検索へfallbackさせます。これにより既存レスポンスの`matchedBy`とJSON形状を維持します。
 
 同じ二つのノード間でも、種類、生成元、確実性、根拠が異なるrelationは区別します。
 内容がすべて同じrelationは取込時に拒否します。
@@ -26,9 +26,10 @@ relationはnamespaceを跨げます。namespaceを理由にSQLite検索や後続
 
 ## 検索方式
 
-利用者向けのtarget検索は、`namespace + local ID`またはlocal IDだけを`node_identity`で完全一致検索します。
+schema `0.6`の利用者向けtarget検索は、`namespace + local ID`またはlocal IDだけを`node_identity`で完全一致検索します。
 namespaceを省略した場合は、同じlocal IDを持つ全namespaceの候補を返します。
-canonical ID、名前、完全パスを使う旧`query`検索も互換契約として維持します。
+local ID一致がない場合は、canonical ID、名前、完全パスを使う従来検索へfallbackします。
+schema `0.5`も同じ従来検索を使用します。
 
 完全一致検索、親から直接の子を得るscope展開、外向きrelationの取得、ノードに属するリミットの取得に索引を使います。
 名前とパスは、取込時に検索用の値を保存し、検索時にも同じ変換を適用します。
