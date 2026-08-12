@@ -9,10 +9,27 @@ import (
 	"fmt"
 	"time"
 
+	"batchscope/internal/identity"
 	"batchscope/internal/normalize"
 )
 
 const secondsPerBusinessDay int64 = 24 * 60 * 60
+
+// ErrorInvalidIdentityは、schema versionごとのnamespace/local ID/canonical ID規則に違反した入力を表す。
+const ErrorInvalidIdentity ErrorKind = "invalid_identity"
+
+type loadNodeInput struct {
+	Type       string          `json:"type"`
+	ID         string          `json:"id"`
+	Namespace  *string         `json:"namespace"`
+	LocalID    *string         `json:"localId"`
+	Name       string          `json:"name"`
+	Path       *string         `json:"path"`
+	ParentID   *string         `json:"parentId"`
+	LimitFacts []limitFact     `json:"limitFacts"`
+	Locator    json.RawMessage `json:"locator"`
+	Attributes json.RawMessage `json:"attributes"`
+}
 
 // Load は検査済みの展開結果を再読込し、一つのトランザクションで検索用SQLiteへ登録する。
 // validatedは同じextractedに対するValidateの結果でなければならない。
@@ -31,6 +48,16 @@ func Load(ctx context.Context, db *sql.DB, extracted Extracted, validated Valida
 	if _, err := tx.ExecContext(ctx, "PRAGMA defer_foreign_keys = ON"); err != nil {
 		return fmt.Errorf("defer snapshot foreign keys: %w", err)
 	}
+	if _, err := tx.ExecContext(ctx, `
+CREATE TABLE node_identity (
+    node_id TEXT PRIMARY KEY REFERENCES node(node_id),
+    namespace TEXT NOT NULL,
+    local_id TEXT NOT NULL,
+    UNIQUE(namespace, local_id)
+);
+CREATE INDEX idx_node_identity_local ON node_identity(local_id, namespace, node_id);`); err != nil {
+		return fmt.Errorf("create node identity index: %w", err)
+	}
 
 	nodeStatement, err := tx.PrepareContext(ctx, `INSERT INTO node (
         node_id, node_type, name, name_normalized, path, path_normalized,
@@ -40,6 +67,14 @@ func Load(ctx context.Context, db *sql.DB, extracted Extracted, validated Valida
 		return fmt.Errorf("prepare node insert: %w", err)
 	}
 	defer nodeStatement.Close()
+
+	identityStatement, err := tx.PrepareContext(ctx, `INSERT INTO node_identity (
+        node_id, namespace, local_id
+    ) VALUES (?, ?, ?)`)
+	if err != nil {
+		return fmt.Errorf("prepare node identity insert: %w", err)
+	}
+	defer identityStatement.Close()
 
 	limitStatement, err := tx.PrepareContext(ctx, `INSERT INTO limit_fact (
         limit_id, node_id, kind, business_day_offset, local_time_seconds,
@@ -58,7 +93,7 @@ func Load(ctx context.Context, db *sql.DB, extracted Extracted, validated Valida
 	}
 	defer relationStatement.Close()
 
-	nodeCount, err := loadNodes(ctx, extracted.Nodes, nodeStatement, limitStatement)
+	nodeCount, err := loadNodes(ctx, extracted.Nodes, nodeStatement, identityStatement, limitStatement, validated.SchemaVersion)
 	if err != nil {
 		return err
 	}
@@ -80,13 +115,17 @@ func Load(ctx context.Context, db *sql.DB, extracted Extracted, validated Valida
 	return nil
 }
 
-func loadNodes(ctx context.Context, path string, nodes, limits *sql.Stmt) (int, error) {
+func loadNodes(ctx context.Context, path string, nodes, identities, limits *sql.Stmt, schemaVersion string) (int, error) {
 	count := 0
 	err := readNDJSON(ctx, path, nodesName, func(line int, contents []byte) error {
 		count++
-		var current nodeInput
+		var current loadNodeInput
 		if err := json.Unmarshal(contents, &current); err != nil {
 			return &Error{Kind: ErrorInvalidJSON, File: nodesName, Line: line, Err: err}
+		}
+		namespace, localID, err := resolveLoadIdentity(schemaVersion, current, line)
+		if err != nil {
+			return err
 		}
 
 		var normalizedPath any
@@ -106,6 +145,9 @@ func loadNodes(ctx context.Context, path string, nodes, limits *sql.Stmt) (int, 
 		); err != nil {
 			return fmt.Errorf("insert %s:%d: %w", nodesName, line, err)
 		}
+		if _, err := identities.ExecContext(ctx, current.ID, namespace, localID); err != nil {
+			return &Error{Kind: ErrorInvalidIdentity, File: nodesName, Line: line, Pointer: "/localId", Err: err}
+		}
 
 		for factIndex, fact := range current.LimitFacts {
 			if err := insertLimit(ctx, limits, current.ID, fact); err != nil {
@@ -115,6 +157,39 @@ func loadNodes(ctx context.Context, path string, nodes, limits *sql.Stmt) (int, 
 		return nil
 	})
 	return count, err
+}
+
+func resolveLoadIdentity(schemaVersion string, current loadNodeInput, line int) (string, string, error) {
+	switch schemaVersion {
+	case "0.5":
+		if current.Namespace != nil {
+			return "", "", &Error{Kind: ErrorInvalidIdentity, File: nodesName, Line: line, Pointer: "/namespace"}
+		}
+		if current.LocalID != nil {
+			return "", "", &Error{Kind: ErrorInvalidIdentity, File: nodesName, Line: line, Pointer: "/localId"}
+		}
+		return identity.DefaultNamespace, current.ID, nil
+	case "0.6":
+		if current.Namespace == nil {
+			return "", "", &Error{Kind: ErrorInvalidIdentity, File: nodesName, Line: line, Pointer: "/namespace"}
+		}
+		if current.LocalID == nil {
+			return "", "", &Error{Kind: ErrorInvalidIdentity, File: nodesName, Line: line, Pointer: "/localId"}
+		}
+		expected := identity.Encode(*current.Namespace, *current.LocalID)
+		if current.ID != expected {
+			return "", "", &Error{Kind: ErrorInvalidIdentity, File: nodesName, Line: line, Pointer: "/id"}
+		}
+		if current.ParentID != nil {
+			parentNamespace, _, ok := identity.Decode(*current.ParentID)
+			if !ok || parentNamespace != *current.Namespace {
+				return "", "", &Error{Kind: ErrorInvalidIdentity, File: nodesName, Line: line, Pointer: "/parentId"}
+			}
+		}
+		return *current.Namespace, *current.LocalID, nil
+	default:
+		return "", "", &Error{Kind: ErrorInvalidIdentity, File: manifestName, Pointer: "/schemaVersion"}
+	}
 }
 
 func insertLimit(ctx context.Context, statement *sql.Stmt, nodeID string, fact limitFact) error {
