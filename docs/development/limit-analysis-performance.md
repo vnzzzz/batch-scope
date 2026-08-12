@@ -68,7 +68,7 @@ p95は各条件の全要求にnearest-rank方式を適用しています。
 
 ## Small
 
-Smallは受入上限と同じ10,000ノード、25,000 relationです。
+Smallは2026-08-11時点の受入上限と同じ10,000ノード、25,000 relationです。
 アーカイブは198,110 bytes、SHA-256は`60b332fc50901cacdf5f95eb5560bcc540f58f151871afab9ce53750be08cb71`です。
 解析対象は`NET-TARGET`で、53件のリミット、24,156件の経路ツリーノード、1件の`uncoveredRoutes`、3件の循環を返しました。
 
@@ -110,7 +110,7 @@ coldを含む全Pathological条件でも最大のp95は同じケースの254.561
 
 ## Medium
 
-Mediumは100,000ノード、300,000 relationであり、現在の受入上限である10,000ノード、25,000 relationを超えます。
+Mediumは100,000ノード、300,000 relationであり、この測定を行った2026-08-11時点の受入上限10,000ノード、25,000 relationを超えていました。
 公開APIで解析できるデータは受入済みスナップショットに限られるため、測定用に取込検査を迂回しませんでした。
 
 測定コマンドは`manifest.json/nodeCount: capacity_exceeded`で終了しました。
@@ -120,7 +120,7 @@ HTTPハンドラーを呼び出していないため、Mediumの中央値、p95�
 ## 目標に対する判定
 
 性能目標は、データがキャッシュへ読み込まれた状態におけるp95 1秒です。
-受入上限と同じSmallのwarmかつ並行度4のp95は753.289 msであり、目標を満たしました。
+当時の受入上限と同じSmallのwarmかつ並行度4のp95は753.289 msであり、目標を満たしました。
 Pathologicalの全ケースも同じ目標を満たしました。
 
 参考値として、Smallのcoldかつ並行度4のp95は776.798 msでした。
@@ -135,4 +135,16 @@ coldでもOSのページキャッシュを保持するため、ストレージ�
 CPU数、利用可能メモリ、同居プロセスが異なる環境で同じp95を保証しません。
 
 `includeEvidence=true`によるrelation evidenceの追加と、5,000件のリミットをすべて大きな文字列として返す最悪応答サイズは測定していません。
-Mediumは受入上限外のため、公開HTTPの分布を取得していません。
+Mediumはこの測定時点では受入上限外だったため、当時の公開HTTP分布を取得していません。Issue #52で対応規模を更新した後の結果は[取込と静的解析の性能測定結果](performance-measurement.md#issue-52-実運用40万ノード級の再測定)を参照してください。
+
+
+## Issue #52のoperational profile
+
+2026-08-12に、400,000ノード / 300,000 relationのoperational profileで公開HTTPを再測定しました。
+環境はGitHub ActionsのUbuntu 24.04、linux/amd64、Go 1.26.5、4 CPUです。
+代表target `OPS-NET-0000`は100ノードへ到達し、99リミット、198 tree nodeを返します。
+並行度4のp95はcold 12.24 ms、warm 10.51 msで、p95 1秒の代表負荷目標を満たしました。
+
+40万ノード全体へ到達する`OPS-ROOT`は、内部`Traverse -> Scan -> Build`のp95が15.12秒でした。
+これは完全解析保証のstress caseであり、1秒以内に切り捨てる対象にはしません。
+詳細な取込、メモリ、段階別測定は[Issue #52の再測定](performance-measurement.md#issue-52-実運用40万ノード級の再測定)を参照してください。

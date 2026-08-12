@@ -149,8 +149,6 @@ type path struct {
 	nodeID             string
 	dependencyDistance int
 	graphDepth         int
-	hopCount           int
-	relationIDCount    int
 	previous           *path
 	via                graphEdge
 }
@@ -505,8 +503,6 @@ func extendPath(parent *path, edge graphEdge, destination traversal.Node) *path 
 		nodeID:             edge.toID,
 		dependencyDistance: parent.dependencyDistance,
 		graphDepth:         parent.graphDepth,
-		hopCount:           parent.hopCount + 1,
-		relationIDCount:    parent.relationIDCount,
 		previous:           parent,
 		via:                edge,
 	}
@@ -515,7 +511,6 @@ func extendPath(parent *path, edge graphEdge, destination traversal.Node) *path 
 		if destination.Type == "job" || destination.Type == "job_network" {
 			candidate.dependencyDistance++
 		}
-		candidate.relationIDCount += len(edge.relations)
 	}
 	return candidate
 }
