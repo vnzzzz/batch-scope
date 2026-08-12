@@ -90,16 +90,22 @@ type statusOutput struct {
 }
 
 type targetsInput struct {
-	Query         string   `query:"query" doc:"Exact ID, name, or full path to search for"`
+	Query         string   `query:"query" doc:"Legacy exact canonical ID, name, or full path search; use jobId for namespace-aware job ID search"`
+	JobID         string   `query:"jobId" doc:"Exact source-local job or job network ID"`
+	Namespace     string   `query:"namespace" doc:"Optional semantic definition-set namespace used with jobId"`
 	Types         []string `query:"type,explode" doc:"Target type filter; may be repeated" enum:"job,job_network"`
 	RequestID     string   `header:"X-Request-Id" doc:"Request identifier used in structured logs"`
 	queryProvided bool
+	jobIDProvided bool
+	nsProvided    bool
 }
 
-// Resolveは、Humaのパラメーター束縛では区別できないqueryの未指定と指定された空文字を区別する。
+// Resolveは、Humaのパラメーター束縛では区別できないquery parameterの未指定と指定値を区別する。
 func (input *targetsInput) Resolve(ctx huma.Context) []error {
-	requestURL := ctx.URL()
-	input.queryProvided = requestURL.Query().Has("query")
+	query := ctx.URL().Query()
+	input.queryProvided = query.Has("query")
+	input.jobIDProvided = query.Has("jobId")
+	input.nsProvided = query.Has("namespace")
 	return nil
 }
 
@@ -277,16 +283,11 @@ func registerRoutes(api huma.API, a *App) {
 		OperationID: "search-targets",
 		Method:      http.MethodGet,
 		Path:        "/v1/targets",
-		Summary:     "Search jobs and job networks by exact match",
+		Summary:     "Search jobs and job networks by local job ID or legacy exact match",
 		Errors:      []int{http.StatusBadRequest, http.StatusInternalServerError, http.StatusServiceUnavailable},
 		// パラメーター不正はAPI固有のinvalid-requestへ写像するため、Humaの422検査を使わない。
 		SkipValidateParams: true,
 	}, a.targets)
-	for _, parameter := range api.OpenAPI().Paths["/v1/targets"].Get.Parameters {
-		if parameter.Name == "query" {
-			parameter.Required = true
-		}
-	}
 	delete(api.OpenAPI().Paths["/v1/targets"].Get.Responses, "422")
 
 	registerAnalysisRoute(api, a)
@@ -382,9 +383,21 @@ func (a *App) targets(ctx context.Context, input *targetsInput) (*targetsOutput,
 		}
 	}
 
-	if !input.queryProvided {
+	if input.queryProvided == input.jobIDProvided {
 		errorType = "invalid-request"
-		return nil, InvalidRequestProblem("query is required")
+		return nil, InvalidRequestProblem("exactly one of jobId or query is required")
+	}
+	if input.nsProvided && !input.jobIDProvided {
+		errorType = "invalid-request"
+		return nil, InvalidRequestProblem("namespace can only be used with jobId")
+	}
+	if input.jobIDProvided && input.JobID == "" {
+		errorType = "invalid-request"
+		return nil, InvalidRequestProblem("jobId must not be empty")
+	}
+	if input.nsProvided && input.Namespace == "" {
+		errorType = "invalid-request"
+		return nil, InvalidRequestProblem("namespace must not be empty")
 	}
 
 	types, problem := targetTypes(input.Types)
@@ -405,7 +418,12 @@ func (a *App) targets(ctx context.Context, input *targetsInput) (*targetsOutput,
 	defer release()
 	snapshotID = generation.SnapshotID
 
-	result, err := target.Search(ctx, db, input.Query, types)
+	var result target.SearchResult
+	if input.jobIDProvided {
+		result, err = target.SearchByLocalID(ctx, db, input.JobID, input.Namespace, types)
+	} else {
+		result, err = target.Search(ctx, db, input.Query, types)
+	}
 	if err != nil {
 		errorType = "internal-error"
 		return nil, InternalErrorProblem("target search failed")
