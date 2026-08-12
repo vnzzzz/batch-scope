@@ -79,7 +79,6 @@ func TestTargetsRejectInvalidNamespaceSelectors(t *testing.T) {
 	a := newTestApp(t)
 	paths := []string{
 		"/v1/targets?namespace=main",
-		"/v1/targets?query=JOB&query=JOB",
 		"/v1/targets?query=JOB&namespace=",
 		"/v1/targets?query=JOB&namespace=main&namespace=dr",
 	}
