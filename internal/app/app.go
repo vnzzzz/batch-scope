@@ -323,7 +323,7 @@ func (a *App) health(context.Context, *struct{}) (*healthOutput, error) {
 	}, nil
 }
 
-func (a *App) ready(context.Context, *readyOutput) (*readyOutput, error) {
+func (a *App) ready(context.Context, *struct{}) (*readyOutput, error) {
 	if a.store.Ready() {
 		return &readyOutput{
 			Status: http.StatusOK,
@@ -338,7 +338,8 @@ func (a *App) ready(context.Context, *readyOutput) (*readyOutput, error) {
 		Body: ReadyResponse{
 			Status: "not_ready",
 			Reason: "snapshot_not_loaded",
-		}, nil
+		},
+	}, nil
 }
 
 func (a *App) status(context.Context, *struct{}) (*statusOutput, error) {
