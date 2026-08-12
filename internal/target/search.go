@@ -4,8 +4,10 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"slices"
 	"strings"
 
+	"batchscope/internal/identity"
 	"batchscope/internal/normalize"
 )
 
@@ -15,7 +17,7 @@ const MaxSearchResults = 1_000
 // SearchItem は検索に一致した対象と一致項目を表す。
 type SearchItem struct {
 	Node
-	MatchedBy    []string   `json:"matchedBy" enum:"id,name,path" nullable:"false"`
+	MatchedBy    []string   `json:"matchedBy" enum:"id,localId,name,path" nullable:"false"`
 	AncestorPath []Ancestor `json:"ancestorPath" nullable:"false"`
 }
 
@@ -30,7 +32,7 @@ type candidate struct {
 	matchedBy []string
 }
 
-// Search はID、名前、完全パスとの完全一致を検索し、定めた順序で最大1,000件を返す。
+// Search は従来互換のID、名前、完全パスとの完全一致を検索する。
 func Search(ctx context.Context, db *sql.DB, query string, types []string) (SearchResult, error) {
 	candidates, truncated, err := searchCandidates(ctx, db, query, types)
 	if err != nil {
@@ -39,7 +41,40 @@ func Search(ctx context.Context, db *sql.DB, query string, types []string) (Sear
 	if truncated {
 		candidates = candidates[:MaxSearchResults]
 	}
+	return loadSearchItems(ctx, db, candidates, truncated)
+}
 
+// SearchByLocalID は利用者が認識するジョブIDをnamespaceで任意に絞って完全一致検索する。
+// namespaceを省略した場合は、同じlocal IDを持つ全namespaceの候補を返す。
+func SearchByLocalID(ctx context.Context, db *sql.DB, localID, namespace string, types []string) (SearchResult, error) {
+	candidates, truncated, err := searchLocalIDCandidates(ctx, db, localID, namespace, types)
+	if err != nil {
+		return SearchResult{}, err
+	}
+	result, err := loadSearchItems(ctx, db, candidates, truncated)
+	if err != nil {
+		return SearchResult{}, err
+	}
+	slices.SortStableFunc(result.Items, func(left, right SearchItem) int {
+		if value := strings.Compare(left.Namespace, right.Namespace); value != 0 {
+			return value
+		}
+		if value := strings.Compare(left.LocalID, right.LocalID); value != 0 {
+			return value
+		}
+		if value := strings.Compare(left.Type, right.Type); value != 0 {
+			return value
+		}
+		return strings.Compare(left.ID, right.ID)
+	})
+	if len(result.Items) > MaxSearchResults {
+		result.Items = result.Items[:MaxSearchResults]
+		result.Truncated = true
+	}
+	return result, nil
+}
+
+func loadSearchItems(ctx context.Context, db *sql.DB, candidates []candidate, truncated bool) (SearchResult, error) {
 	ids := make([]string, len(candidates))
 	for index, candidate := range candidates {
 		ids[index] = candidate.id
@@ -59,6 +94,59 @@ func Search(ctx context.Context, db *sql.DB, query string, types []string) (Sear
 		}
 	}
 	return SearchResult{Items: items, Truncated: truncated}, nil
+}
+
+func searchLocalIDCandidates(ctx context.Context, db *sql.DB, localID, namespace string, types []string) ([]candidate, bool, error) {
+	typePlaceholders := make([]string, len(types))
+	args := make([]any, 0, len(types)+4)
+	for index, nodeType := range types {
+		typePlaceholders[index] = "?"
+		args = append(args, nodeType)
+	}
+
+	var identityCondition string
+	if namespace != "" {
+		canonicalID := identity.Canonical(namespace, localID)
+		if namespace == "default" {
+			identityCondition = "(node.node_id = ? OR node.node_id = ?)"
+			args = append(args, canonicalID, localID)
+		} else {
+			identityCondition = "node.node_id = ?"
+			args = append(args, canonicalID)
+		}
+	} else {
+		suffix := identity.LocalIDSuffix(localID)
+		identityCondition = "(node.node_id = ? OR (node.node_id LIKE 'bs1.%' AND substr(node.node_id, -length(?)) = ?))"
+		args = append(args, localID, suffix, suffix)
+	}
+	args = append(args, MaxSearchResults+1)
+
+	statement := fmt.Sprintf(`
+SELECT node.node_id
+FROM node
+WHERE node.node_type IN (%s)
+	AND %s
+ORDER BY node.node_id COLLATE BINARY
+LIMIT ?`, strings.Join(typePlaceholders, ","), identityCondition)
+
+	rows, err := db.QueryContext(ctx, statement, args...)
+	if err != nil {
+		return nil, false, fmt.Errorf("search target local ID candidates: %w", err)
+	}
+	defer rows.Close()
+
+	candidates := make([]candidate, 0, MaxSearchResults+1)
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, false, fmt.Errorf("scan target local ID candidate: %w", err)
+		}
+		candidates = append(candidates, candidate{id: id, matchedBy: []string{"localId"}})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, false, fmt.Errorf("iterate target local ID candidates: %w", err)
+	}
+	return candidates, len(candidates) > MaxSearchResults, nil
 }
 
 func searchCandidates(ctx context.Context, db *sql.DB, query string, types []string) ([]candidate, bool, error) {
