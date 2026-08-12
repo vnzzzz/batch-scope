@@ -24,16 +24,18 @@ batchscope-snapshot.tar.gz
 
 ## マニフェスト
 
+新規生成ではnamespace対応のschema `0.6`を使う。
+
 ```json
 {
-  "schemaVersion": "0.5",
-  "snapshotId": "2026-08-05T01:00:00Z",
-  "generatedAt": "2026-08-05T01:00:00Z",
+  "schemaVersion": "0.6",
+  "snapshotId": "2026-08-13T01:00:00Z",
+  "generatedAt": "2026-08-13T01:00:00Z",
   "nodeCount": 8,
   "relationCount": 7,
   "producer": {
     "name": "batchscope-normalizer",
-    "version": "0.5.0"
+    "version": "0.6.0"
   }
 }
 ```
@@ -41,6 +43,41 @@ batchscope-snapshot.tar.gz
 `nodeCount`と`relationCount`は、NDJSONの件数と一致させる。
 同じ`snapshotId`を再送できるのは、展開後の`manifest.json`、`nodes.ndjson`、`relations.ndjson`のbyte内容がすべて同じ場合だけである。
 JSONとして意味が同じでも、空白、改行、objectのキー順などでbyte内容が変わる場合は同じ`snapshotId`を再利用しない。
+
+schema `0.5`は既存の単一定義セットとの互換入力だけに使う。
+`0.5`ではnamespaceは暗黙`default`、`localId=id`であり、`namespace`/`localId`を追加しない。
+
+## namespaceとcanonical ID
+
+namespaceは物理ファイルではなく、意味上の定義セットを識別する。
+Main、DR、開発など、同じlocal IDが別定義として成立する境界へ安定したnamespaceを割り当てる。
+同じ定義セットが複数ファイルに分かれていてもnamespaceを分割しない。
+資料からnamespaceを確定できない場合は、名前やlocal IDの一致だけで既存namespaceへ統合しない。
+
+schema `0.6`のすべてのnodeへ次を設定する。
+
+- `namespace`: 定義セットID
+- `localId`: 元定義内のnode ID
+- `id`: snapshot内canonical ID
+
+canonical IDは次の式で作る。
+
+```text
+bsid1:<namespaceのUTF-8 byte長>:<namespace>:<localId>
+```
+
+例:
+
+```text
+main + JOB-A -> bsid1:4:main:JOB-A
+dr   + JOB-A -> bsid1:2:dr:JOB-A
+```
+
+node type、入力ファイル名、入力順をcanonical IDへ含めない。
+同じnamespace内で同じlocal IDが別定義として現れた場合は競合とし、suffixを付けて別identityへしない。
+
+`parentId`は同じnamespaceのcanonical IDだけを参照する。
+relationの`fromId`/`toId`はcanonical IDを参照し、namespaceを跨げる。
 
 ## ノード種別
 
@@ -53,9 +90,6 @@ JSONとして意味が同じでも、空白、改行、objectのキー順など�
 | `file_pattern` | パターンで表すファイル集合 | なし |
 | `job_status` | ジョブの完了状態または結果状態 | なし |
 | `external_event` | 外部システムから届くイベント | なし |
-
-ジョブIDは入力値を変更せず、全環境を通じて重複しない値として使う。
-そのほかのノードIDも、一つのスナップショット内で重複させない。
 
 ## リミット
 
@@ -92,6 +126,17 @@ BatchScopeは、ジョブネットの配下にあるリミット設定済みジ�
 | `consumed_by` | ファイルなどをジョブまたはジョブネットが入力として使う |
 | `observed_by` | 状態またはイベントをジョブまたはジョブネットが監視する |
 
+namespaceはidentity境界であって依存解析境界ではない。
+別namespace間の依存が資料から確認できる場合は明示的にrelationを作る。
+例えばMainジョブが作った共有ファイルをDRジョブが監視する場合は、次のようにresource nodeを介して表現できる。
+
+```text
+[main] JOB-A --produces--> [shared] ready.flag --observed_by--> [dr] JOB-A
+```
+
+他ジョブの終了確認には`job_status`、共有ファイルには`file`/`file_pattern`、外部通知には`external_event`を使える。
+namespaceが違うこと、local IDが同じことだけを根拠にrelationを生成してはならない。
+
 ## 生成元と確実性
 
 `origin`には次のいずれかを指定する。
@@ -113,8 +158,13 @@ BatchScopeは、ジョブネットの配下にあるリミット設定済みジ�
 
 ## 生成前の確認
 
-- ノードIDが重複していない。
-- `parentId`、`fromId`、`toId`が存在するノードを参照している。
+- schema versionは新規生成なら`0.6`である。
+- 全nodeに`namespace`と`localId`がある。
+- canonical `id`がnamespace/localIdから同じ規則で再生成できる。
+- 同一namespace内でlocalIdが競合していない。
+- `parentId`が同じnamespaceの存在するnodeを参照している。
+- `fromId`、`toId`が存在するcanonical node IDを参照している。
+- cross-namespace relationにはnamespace一致以外の根拠がある。
 - 親ノードの種別が許可されている。
 - 親子関係に循環がない。
 - 内容が同じ依存関係を重複して出力していない。
