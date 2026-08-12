@@ -8,8 +8,10 @@ import (
 	"errors"
 	"fmt"
 	"time"
+	"unicode/utf8"
 
 	"batchscope/internal/identity"
+	"batchscope/internal/limits"
 	"batchscope/internal/normalize"
 )
 
@@ -167,6 +169,9 @@ func resolveLoadIdentity(schemaVersion string, current loadNodeInput, line int) 
 		}
 		if current.LocalID != nil {
 			return "", "", &Error{Kind: ErrorInvalidIdentity, File: nodesName, Line: line, Pointer: "/localId"}
+		}
+		if utf8.RuneCountInString(current.ID) > limits.MaxLocalNodeIDLength {
+			return "", "", &Error{Kind: ErrorInvalidIdentity, File: nodesName, Line: line, Pointer: "/id"}
 		}
 		return identity.DefaultNamespace, current.ID, nil
 	case "0.6":
