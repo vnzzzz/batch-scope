@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"strconv"
 	"syscall"
 	"time"
@@ -64,14 +63,10 @@ func serve(args []string) error {
 		*listen = defaultListen
 	}
 
-	resolvedDataDir, err := resolveDataDirectory(*dataDir)
-	if err != nil {
-		return err
-	}
 	application, err := app.New(app.Config{
 		Version: version,
 		Commit:  commit,
-		DataDir: resolvedDataDir,
+		DataDir: *dataDir,
 	})
 	if err != nil {
 		return err
@@ -91,7 +86,7 @@ func serve(args []string) error {
 	errCh := make(chan error, 1)
 	go func() {
 		attrs := observability.Attrs(observability.Fields{Operation: "serve", BootID: application.BootID()})
-		attrs = append(attrs, slog.String("address", server.Addr), slog.String("data_dir", resolvedDataDir))
+		attrs = append(attrs, slog.String("address", server.Addr), slog.String("data_dir", application.DataDirectory()))
 		slog.LogAttrs(ctx, slog.LevelInfo, "BatchScope listening", attrs...)
 		if err := server.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
 			errCh <- err
@@ -109,17 +104,6 @@ func serve(args []string) error {
 	case err := <-errCh:
 		return err
 	}
-}
-
-func resolveDataDirectory(path string) (string, error) {
-	if path == "" {
-		return "", nil
-	}
-	resolved, err := filepath.Abs(path)
-	if err != nil {
-		return "", fmt.Errorf("resolve data directory: %w", err)
-	}
-	return resolved, nil
 }
 
 func defaultListenAddress() (string, error) {
