@@ -8,9 +8,17 @@ import (
 	"github.com/danielgtaylor/huma/v2"
 )
 
-// MarshalJSONは内部canonical IDを維持したまま、チャットやAPI利用者が直接使えるnamespace/localIdを各解析nodeへ付与する。
+// MarshalJSONはschema 0.6のcanonical IDからnamespace/localIdを公開する。
+// 旧形式IDは従来のid/type/nameだけを返し、0.5レスポンス互換を維持する。
 func (node analysisNode) MarshalJSON() ([]byte, error) {
-	namespace, localID := identity.PublicFields(node.ID)
+	namespace, localID, namespaced := identity.Decode(node.ID)
+	if !namespaced {
+		return json.Marshal(struct {
+			ID   string `json:"id"`
+			Type string `json:"type"`
+			Name string `json:"name"`
+		}{ID: node.ID, Type: node.Type, Name: node.Name})
+	}
 	return json.Marshal(struct {
 		ID        string `json:"id"`
 		Namespace string `json:"namespace"`
@@ -22,7 +30,8 @@ func (node analysisNode) MarshalJSON() ([]byte, error) {
 	})
 }
 
-// SchemaはMarshalJSONで追加する公開identityフィールドをOpenAPIにも反映する。
+// Schemaはnamespaced responseで追加される公開identityフィールドをOpenAPIへ反映する。
+// namespace/localIdはlegacy schema 0.5 responseでは省略されるためrequiredにはしない。
 func (analysisNode) Schema(huma.Registry) *huma.Schema {
 	return &huma.Schema{
 		Type: huma.TypeObject,
@@ -36,6 +45,6 @@ func (analysisNode) Schema(huma.Registry) *huma.Schema {
 			},
 			"name": {Type: huma.TypeString},
 		},
-		Required: []string{"id", "namespace", "localId", "type", "name"},
+		Required: []string{"id", "type", "name"},
 	}
 }
