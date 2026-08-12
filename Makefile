@@ -77,7 +77,7 @@ issue52-medium-concurrency:
 			exit 1; \
 		fi
 
-verify: fmt-check scripts-check vet test openapi-check issue52-medium-concurrency ## [Dev Container/CI] 静的検査とテストを実行する
+verify: issue52-medium-concurrency fmt-check scripts-check vet test openapi-check ## [Dev Container/CI] 静的検査とテストを実行する
 
 demo-view: ## [Dev Container] デモのAPIレスポンスを読みやすく表示する
 	./scripts/show-limit-analysis.sh examples/demo/responses/downstream-limit-analysis.json
