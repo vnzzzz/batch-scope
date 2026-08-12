@@ -21,12 +21,29 @@ Internal Skillの中にはBatchScope固有のものと、他リポジトリで�
 
 コードコメントと日本語技術文書のInternal Skillは、実装を担当するCodexと、レビューを担当するClaude Codeが共通して使用します。
 
+### Public Skillのnamespace責務
+
+Public Skillは、複数の定義セットを扱う場合に次を担当します。
+
+- 物理ファイル単位ではなく意味上の定義セット単位でnamespaceを決める。
+- schema `0.6`の`namespace`、`localId`、canonical `id`を一貫した規則で生成する。
+- namespaceを跨ぐ依存を資料上の根拠から抽出し、ファイル、ジョブ状態、外部イベント等を介したrelationとして明示する。
+- namespaceの違いまたはlocal IDの一致だけを理由に依存関係を生成しない。
+- 利用者がlocal job IDだけを指定した場合、`GET /v1/targets?query=...`が返す全namespaceの完全一致候補を確認する。
+- `truncated=false`で複数namespaceに一致した場合、一件を勝手に選ばず各canonical targetを解析する。
+- 回答では`[namespace] localId`を主表示にし、namespaceごとに解析結果を分ける。
+
+canonical IDは利用者に組み立てさせる検索キーではありません。
+検索時はlocal IDと任意のnamespaceを使い、APIから返されたcanonical IDを後続解析へ引き継ぎます。
+namespaceはidentity境界であり、後続探索を止める境界ではありません。
+
 ## 管理する内容
 
 | 対象 | 正本 | Skillでの扱い |
 |---|---|---|
 | 取込JSONの機械的制約 | `schema/`配下のJSON Schema | Public Skillへ詳細を転記せず、配布時も正本から機械的に同梱する |
 | 取込データの意味とレコード間制約 | `docs/design/canonical-snapshot.md` | Public Skillにはスナップショット作成時に必要な要点だけを記載する |
+| namespaceとcanonical identity | `docs/design/canonical-snapshot.md` | Public Skillには生成・検索・表示に必要な規則だけを記載する |
 | 変換と検索の手順 | `skills/public/batchscope/SKILL.md` | 製品利用時に直接指示する |
 | 変換時の要点 | `skills/public/batchscope/references/` | リポジトリ外でも判断できる範囲へ要約する |
 | バックログ監査 | `skills/internal/batchscope-backlog/SKILL.md` | Claude Codeの監査と登録手順を記載する |
@@ -91,6 +108,7 @@ Public Skill `batchscope`のPlugin、Marketplace、Gist同期、別リポジト�
 ## 更新規則
 
 - APIまたは取込形式を変更した場合は、実装、JSON Schema、設計文書、Public Skillの参照資料、必要なデモデータを同じ変更で更新する。
+- namespace/canonical identityを変更した場合は、Schema、SQLite、target検索、解析DTO、Public Skill、チャット表示を同じ変更で同期する。
 - JSON Schemaの制約をPublic Skillへ全文転記せず、利用時に必要な判断だけを記載する。
 - JSON Schemaで表現しない取込データの意味制約は`docs/design/canonical-snapshot.md`で管理し、Public Skillを意味制約の正本にしない。
 - OpenAPIは手書きで同梱しない。
