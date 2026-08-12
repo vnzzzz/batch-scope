@@ -3,7 +3,6 @@ package app
 import (
 	"context"
 	"net/http"
-	"net/url"
 	"testing"
 	"time"
 
@@ -94,14 +93,3 @@ func TestTargetsRejectAmbiguousSelectorParameters(t *testing.T) {
 		}
 	}
 }
-
-func TestTargetsNamespaceAndJobIDRemainExact(t *testing.T) {
-	input := &targetsInput{JobID: "JOB-A", Namespace: "Main"}
-	request := &fakeHumaURLContext{rawQuery: url.Values{"jobId": {"JOB-A"}, "namespace": {"Main"}}}
-	_ = input
-	_ = request
-	// Exactness itself is covered by the SQLite query; this placeholder intentionally keeps
-	// normalization out of the selector contract and is replaced by HTTP behavior tests above.
-}
-
-type fakeHumaURLContext struct{ rawQuery url.Values }
