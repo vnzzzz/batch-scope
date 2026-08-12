@@ -66,25 +66,17 @@ func LoadMany(ctx context.Context, db *sql.DB, ids []string) (map[string]Details
 		args[index] = id
 	}
 
-	identityJoin := ""
-	namespaceColumn := "?"
-	localIDColumn := "node.node_id"
-	argsPrefix := []any{identity.DefaultNamespace}
+	var query string
 	if withIdentity {
-		identityJoin = "LEFT JOIN node_identity AS identity ON identity.node_id = node.node_id"
-		namespaceColumn = "COALESCE(identity.namespace, ?)"
-		localIDColumn = "COALESCE(identity.local_id, node.node_id)"
-	}
-	allArgs := append(argsPrefix, args...)
-	query := fmt.Sprintf(`
+		query = fmt.Sprintf(`
 WITH RECURSIVE requested(target_id) AS (
 	VALUES %s
 ), lineage(target_id, node_id, node_type, name, path, parent_id, namespace, local_id, depth) AS (
 	SELECT requested.target_id, node.node_id, node.node_type, node.name, node.path, node.parent_id,
-		%s, %s, 0
+		COALESCE(identity.namespace, ?), COALESCE(identity.local_id, node.node_id), 0
 	FROM requested
 	JOIN node ON node.node_id = requested.target_id
-	%s
+	LEFT JOIN node_identity AS identity ON identity.node_id = node.node_id
 	UNION ALL
 	SELECT lineage.target_id, parent.node_id, parent.node_type, parent.name, parent.path, parent.parent_id,
 		COALESCE(parent_identity.namespace, ?), COALESCE(parent_identity.local_id, parent.node_id), lineage.depth + 1
@@ -94,10 +86,10 @@ WITH RECURSIVE requested(target_id) AS (
 )
 SELECT target_id, node_id, node_type, name, path, namespace, local_id, depth
 FROM lineage
-ORDER BY target_id COLLATE BINARY, depth DESC`, strings.Join(values, ","), namespaceColumn, localIDColumn, identityJoin)
-
-	if !withIdentity {
-		// legacy test databases may predate node_identity. Their complete lineage uses the implicit default namespace.
+ORDER BY target_id COLLATE BINARY, depth DESC`, strings.Join(values, ","))
+		args = append(args, identity.DefaultNamespace, identity.DefaultNamespace)
+	} else {
+		// 旧テストfixture等、node_identity導入前のSQLiteは単一default namespaceとして読む。
 		query = fmt.Sprintf(`
 WITH RECURSIVE requested(target_id) AS (
 	VALUES %s
@@ -113,14 +105,10 @@ WITH RECURSIVE requested(target_id) AS (
 SELECT target_id, node_id, node_type, name, path, ?, node_id, depth
 FROM lineage
 ORDER BY target_id COLLATE BINARY, depth DESC`, strings.Join(values, ","))
-		allArgs = append([]any{identity.DefaultNamespace}, args...)
-	} else {
-		// recursive parent lookup also needs the legacy fallback namespace.
-		allArgs = append([]any{identity.DefaultNamespace}, args...)
-		allArgs = append(allArgs, identity.DefaultNamespace)
+		args = append(args, identity.DefaultNamespace)
 	}
 
-	rows, err := db.QueryContext(ctx, query, allArgs...)
+	rows, err := db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("load target details: %w", err)
 	}
