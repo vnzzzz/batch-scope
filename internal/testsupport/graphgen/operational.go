@@ -99,11 +99,11 @@ func operationalDataset(nodeCount, relationCount, networkCount, limitCount int) 
 		Expectations: []Expectation{
 			{
 				InputNodeCount: nodeCount, InputRelationCount: relationCount, InputLimitCount: limitCount,
-				TargetID: rootID,
+				TargetID: representativeTarget,
 			},
 			{
 				InputNodeCount: nodeCount, InputRelationCount: relationCount, InputLimitCount: limitCount,
-				TargetID: representativeTarget,
+				TargetID: rootID,
 			},
 		},
 	}
