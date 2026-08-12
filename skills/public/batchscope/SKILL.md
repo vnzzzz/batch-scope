@@ -10,11 +10,11 @@ description: ジョブマネージャーの定義をBatchScopeの入力形式へ
 ## APIから検索する手順
 
 1. `GET /readyz`で検索可能な状態か確認する。
-2. 利用者がジョブIDを指定した場合は、`GET /v1/targets?jobId=<local-id>`を呼び出す。namespaceも指定された場合は`namespace=<namespace>`を加える。
-3. `jobId`だけを指定して複数namespaceに一致した場合は、一件を選ばせたり勝手に選んだりしない。`truncated=false`であれば返された**すべてのcandidate**について、各candidateのcanonical `id`を`targetId`へ指定して`GET /v1/downstream-limit-analysis`を呼び出す。
+2. 利用者がジョブIDを指定した場合は、`GET /v1/targets?query=<local-id>`を呼び出す。namespaceも指定された場合は`namespace=<namespace>`を加える。
+3. namespace未指定で同じlocal IDが複数namespaceに一致した場合は、一件を選ばせたり勝手に選んだりしない。`truncated=false`であれば返された**すべてのcandidate**について、各candidateのcanonical `id`を`targetId`へ指定して`GET /v1/downstream-limit-analysis`を呼び出す。
 4. 複数namespaceを解析した回答はnamespaceごとに独立した見出しへ分け、`[namespace] localId`を主表示にする。canonical `id`はAPI参照や診断が必要な場合だけ補助表示する。
-5. `GET /v1/targets?jobId=...`が`truncated=true`の場合は、全namespaceを解析済みとは扱わない。利用者へnamespace指定が必要であることを伝える。
-6. 利用者がジョブIDではなく完全な名前または完全パスしか分からない場合は、互換用の`GET /v1/targets?query=...`を使う。この検索で意味の異なる複数候補が返った場合は、namespace、localId、種別、完全パス、上位の管理単位を提示し、利用者の確認なしに対象を選ばない。
+5. `GET /v1/targets?query=...`が`truncated=true`の場合は、全namespaceを解析済みとは扱わない。利用者へnamespace指定が必要であることを伝える。
+6. `query`はlocal ID完全一致を最優先する。local ID一致がない場合にだけ、従来互換としてcanonical ID、完全な名前、完全パスの一致へfallbackする。このfallbackで意味の異なる複数候補が返った場合は、namespace、localId、種別、完全パス、上位の管理単位を提示し、利用者の確認なしに対象を選ばない。
 7. 確定した各canonical target IDについて、必要な場合だけ`includeEvidence=true`を加えて後続解析を行う。
 8. ジョブ指定時は対象自身のリミットを全件説明し、ジョブネット指定時は配下のリミット設定済みジョブを全件説明する。
 9. 経路を説明するときは、`tree[].viaRelations`の種類、生成元、確実性を省略しない。
@@ -45,6 +45,7 @@ JOB-A の検索結果: 2 namespace
 
 同じlocal IDをcanonical IDだけで区別させない。
 pathやnameが必要な場合もnamespace/localIdを先に表示する。
+legacy schema `0.5`の応答でnamespace/localIdが省略されている場合は、表示上だけ`[default] <id>`として扱う。
 
 ## スナップショットを作る手順
 
@@ -52,7 +53,7 @@ pathやnameが必要な場合もnamespace/localIdを先に表示する。
 2. **意味上の定義セット**を特定し、各セットへ安定したnamespaceを割り当てる。Main/DR/開発などの環境、顧客別定義セットなどが例であり、物理ファイル単位では分割しない。同じ定義セットが複数ファイルに分かれていれば同じnamespaceを使う。
 3. namespaceを資料から確定できない定義を、名前やlocal IDの一致だけで既存namespaceへ統合しない。
 4. schema version `0.6`を使い、全nodeへ`namespace`と元定義の`localId`を設定する。
-5. canonical `id`は`bsid1:<namespaceのUTF-8 byte長>:<namespace>:<localId>`で生成する。node type、入力ファイル名、入力順をidentityへ含めない。
+5. canonical `id`は`bsid1:<namespaceのUTF-8 byte長>:<namespace>:<localId>`で生成する。node type、入力ファイル名、入力順をidentityへ含めない。生成したcanonical IDは既存のnode ID上限1024文字以内でなければならない。
 6. 同一namespaceに同じlocalIdの別定義が存在する場合は競合として扱い、勝手にsuffix等を付けて別identityへしない。
 7. 管理単位、ジョブネット、ジョブの単一親階層を抽出し、`parentId`は同じnamespaceのcanonical IDだけを参照する。
 8. ジョブマネージャーが定義する先行後続関係を抽出する。
