@@ -2,6 +2,7 @@ package snapshot_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -94,10 +95,10 @@ func TestNamespacedSnapshotKeepsDuplicateLocalIDsAndCrossNamespaceDependency(t *
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := traversed.Nodes[drJob]; !ok {
+	if !reachedNode(traversed.Nodes, drJob) {
 		t.Fatalf("cross-namespace downstream job %q was not reached", drJob)
 	}
-	if _, ok := traversed.Nodes[sharedFile]; !ok {
+	if !reachedNode(traversed.Nodes, sharedFile) {
 		t.Fatalf("shared resource %q was not reached", sharedFile)
 	}
 }
@@ -131,10 +132,19 @@ func TestNamespacedSnapshotRejectsCrossNamespaceParent(t *testing.T) {
 		t.Fatal("Load succeeded with cross-namespace parent")
 	}
 	var snapshotErr *snapshot.Error
-	if !asSnapshotError(err, &snapshotErr) || snapshotErr.Kind != snapshot.ErrorInvalidIdentity || snapshotErr.Pointer != "/parentId" {
+	if !errors.As(err, &snapshotErr) || snapshotErr.Kind != snapshot.ErrorInvalidIdentity || snapshotErr.Pointer != "/parentId" {
 		t.Fatalf("Load error = %v", err)
 	}
 	_ = operation.Abort()
+}
+
+func reachedNode(nodes []traversal.Reached, id string) bool {
+	for _, reached := range nodes {
+		if reached.Node.ID == id {
+			return true
+		}
+	}
+	return false
 }
 
 func writeNamespacedFixture(t *testing.T, directory string, nodes, relations []string) snapshot.Extracted {
@@ -173,19 +183,3 @@ func writeFile(t *testing.T, path, contents string) {
 }
 
 func stringPointer(value string) *string { return &value }
-
-func asSnapshotError(err error, target **snapshot.Error) bool {
-	for err != nil {
-		if current, ok := err.(*snapshot.Error); ok {
-			*target = current
-			return true
-		}
-		type unwrapper interface{ Unwrap() error }
-		unwrapped, ok := err.(unwrapper)
-		if !ok {
-			return false
-		}
-		err = unwrapped.Unwrap()
-	}
-	return false
-}
