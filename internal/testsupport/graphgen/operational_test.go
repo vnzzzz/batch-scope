@@ -10,8 +10,8 @@ func TestOperationalDatasetKeepsRepresentativeRelationsInsideOneNetwork(t *testi
 	if len(dataset.Relations) != 8 {
 		t.Fatalf("relations = %d, want 8", len(dataset.Relations))
 	}
-	if len(dataset.Expectations) != 2 || dataset.Expectations[0].TargetID != "OPS-ROOT" || dataset.Expectations[1].TargetID != "OPS-NET-0000" {
-		t.Fatalf("targets = %#v, want root and representative network", dataset.Expectations)
+	if len(dataset.Expectations) != 2 || dataset.Expectations[0].TargetID != "OPS-NET-0000" || dataset.Expectations[1].TargetID != "OPS-ROOT" {
+		t.Fatalf("targets = %#v, want representative network and root", dataset.Expectations)
 	}
 
 	parents := make(map[string]string)
