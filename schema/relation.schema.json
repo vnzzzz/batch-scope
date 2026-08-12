@@ -5,8 +5,8 @@
   "additionalProperties": false,
   "required": ["fromId", "toId", "kind", "origin", "certainty"],
   "properties": {
-    "fromId": {"type": "string", "minLength": 1, "maxLength": 1024},
-    "toId": {"type": "string", "minLength": 1, "maxLength": 1024},
+    "fromId": {"type": "string", "minLength": 1, "maxLength": 4096},
+    "toId": {"type": "string", "minLength": 1, "maxLength": 4096},
     "kind": {"enum": ["precedes", "produces", "triggers", "consumed_by", "observed_by"]},
     "origin": {"enum": ["scheduler", "deterministic_analysis", "ai_analysis", "manual"]},
     "certainty": {"enum": ["declared", "confirmed", "inferred", "candidate"]},
