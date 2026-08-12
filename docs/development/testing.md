@@ -86,11 +86,12 @@ local smoke testとRelease artifact checkは、実プロセスまたは生成済
 | プロファイル | 目的 | 現在の扱い |
 |---|---|---|
 | Small | 軽量な回帰規模の取込と解析を確認する | Dev ContainerとCI、および通常の性能測定で使用する |
-| Operational | 400,000ノード / 300,000 relationの現行受入規模と代表・全件到達targetを測る | 通常CIから分離した専用測定で使用する |
-| Pathological | 規模以外のグラフ形状を確認する | Dev ContainerとCI、および現行の性能測定で使用する |
-| Medium | 100,000ノード / 300,000 relationの高密度形状を測る | Issue #52の比較測定と履歴確認に使用する |
+| Operational | 400,000ノード / 300,000 relationの現行受入規模と、代表・全件到達targetの到達範囲を測る | 通常CIから分離した専用測定で使用する |
+| Pathological | 長鎖、fan-in/out、SCC、深いscopeなど規模以外の独立した特殊形状を確認する | Dev ContainerとCI、および現行の性能測定で使用する |
+| Medium | 100,000ノード / 300,000 relationの高密度な分岐・合流形状を測る | Issue #52の比較測定と並行HTTP測定に使用する |
 | Scale | 現行受入規模を超える将来候補を識別する | 過去の測定設計で使用した生成器として保持する |
 
+Operationalは実運用規模と一検索の到達範囲、Mediumは高密度relation形状、Pathologicalは個別の特殊形状を分担します。単一profileだけで実データの全トポロジを再現したとは扱いません。
 各プロファイルの件数、生成規則、期待値は`internal/testsupport/graphgen`を正本とします。
 初期対応規模は[運用](../operations.md#初期対応規模)、測定済みの条件と結果は[性能測定結果](performance-measurement.md)を参照してください。
 
@@ -114,6 +115,7 @@ local smoke testとRelease artifact checkは、実プロセスまたは生成済
 | `PERF_CONNECTION_COMPARISON_RUNS=5 make perf-connection-comparison` | Smallの`NET-TARGET`について単一接続と複数読み取り接続を並行度1、2、4、8で比較 |
 | `PERF_TARGET_SEARCH_RUNS=20 make perf-target-search` | Smallを使い、公開HTTPの完全一致検索を並行度1、4、cold、warm、検索ケース別に測定 |
 | `PERF_LIMIT_ANALYSIS_RUNS=20 make perf-limit-analysis` | Smallを使い、公開HTTPの後続リミット取得を並行度1、4、cold、warmで測定 |
+| `go run ./cmd/perf-measure -mode limit-analysis -profile medium -target NET-TARGET -runs 2 -concurrencies 1,4` | 現行受入規模内の高密度Mediumについて公開HTTPを並行度1、4で測定 |
 
 OperationalとMediumは通常のrace suiteへ含めず、対応規模やアルゴリズム変更時だけ専用コマンドで測定します。Scaleは現行受入規模を超える履歴用generatorであり、製品validationを迂回して標準測定しません。
 過去と現在の測定条件・結果は[性能測定結果](performance-measurement.md)に記録します。
