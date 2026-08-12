@@ -11,7 +11,10 @@ import (
 	"path/filepath"
 	"sync"
 	"time"
+	"unicode/utf8"
 
+	"batchscope/internal/identity"
+	"batchscope/internal/limits"
 	"batchscope/internal/observability"
 	"batchscope/internal/store"
 	"batchscope/internal/target"
@@ -90,16 +93,30 @@ type statusOutput struct {
 }
 
 type targetsInput struct {
-	Query         string   `query:"query" doc:"Exact ID, name, or full path to search for"`
-	Types         []string `query:"type,explode" doc:"Target type filter; may be repeated" enum:"job,job_network"`
-	RequestID     string   `header:"X-Request-Id" doc:"Request identifier used in structured logs"`
-	queryProvided bool
+	// Queryはcanonical ID/name/pathによる旧検索契約を互換維持する。新規利用者はJobIDを使う。
+	Query     string   `query:"query" doc:"Legacy exact canonical ID, name, or full path selector; mutually exclusive with jobId"`
+	JobID     string   `query:"jobId" doc:"Exact local job or job network ID; returns matches from every namespace when namespace is omitted"`
+	Namespace string   `query:"namespace" doc:"Exact namespace used with jobId"`
+	Types     []string `query:"type,explode" doc:"Target type filter; may be repeated" enum:"job,job_network"`
+	RequestID string   `header:"X-Request-Id" doc:"Request identifier used in structured logs"`
+
+	queryProvided     bool
+	queryRepeated     bool
+	jobIDProvided     bool
+	jobIDRepeated     bool
+	namespaceProvided bool
+	namespaceRepeated bool
 }
 
-// Resolveは、Humaのパラメーター束縛では区別できないqueryの未指定と指定された空文字を区別する。
+// Resolveは、Humaのパラメーター束縛では区別できないselectorの未指定、空文字、重複を保持する。
 func (input *targetsInput) Resolve(ctx huma.Context) []error {
-	requestURL := ctx.URL()
-	input.queryProvided = requestURL.Query().Has("query")
+	query := ctx.URL().Query()
+	input.queryProvided = query.Has("query")
+	input.queryRepeated = len(query["query"]) > 1
+	input.jobIDProvided = query.Has("jobId")
+	input.jobIDRepeated = len(query["jobId"]) > 1
+	input.namespaceProvided = query.Has("namespace")
+	input.namespaceRepeated = len(query["namespace"]) > 1
 	return nil
 }
 
@@ -277,14 +294,21 @@ func registerRoutes(api huma.API, a *App) {
 		OperationID: "search-targets",
 		Method:      http.MethodGet,
 		Path:        "/v1/targets",
-		Summary:     "Search jobs and job networks by exact match",
+		Summary:     "Search jobs and job networks by local ID or legacy exact selector",
 		Errors:      []int{http.StatusBadRequest, http.StatusInternalServerError, http.StatusServiceUnavailable},
-		// パラメーター不正はAPI固有のinvalid-requestへ写像するため、Humaの422検査を使わない。
+		// selectorの排他条件と空値はAPI固有のinvalid-requestへ写像するため、Humaの422検査を使わない。
 		SkipValidateParams: true,
 	}, a.targets)
 	for _, parameter := range api.OpenAPI().Paths["/v1/targets"].Get.Parameters {
-		if parameter.Name == "query" {
-			parameter.Required = true
+		switch parameter.Name {
+		case "jobId":
+			minimum, maximum := 1, limits.MaxNodeIDLength
+			parameter.Schema.MinLength = &minimum
+			parameter.Schema.MaxLength = &maximum
+		case "namespace":
+			minimum, maximum := 1, identity.MaxNamespaceLength
+			parameter.Schema.MinLength = &minimum
+			parameter.Schema.MaxLength = &maximum
 		}
 	}
 	delete(api.OpenAPI().Paths["/v1/targets"].Get.Responses, "422")
@@ -299,7 +323,7 @@ func (a *App) health(context.Context, *struct{}) (*healthOutput, error) {
 	}, nil
 }
 
-func (a *App) ready(context.Context, *struct{}) (*readyOutput, error) {
+func (a *App) ready(context.Context, *readyOutput) (*readyOutput, error) {
 	if a.store.Ready() {
 		return &readyOutput{
 			Status: http.StatusOK,
@@ -314,8 +338,7 @@ func (a *App) ready(context.Context, *struct{}) (*readyOutput, error) {
 		Body: ReadyResponse{
 			Status: "not_ready",
 			Reason: "snapshot_not_loaded",
-		},
-	}, nil
+		}, nil
 }
 
 func (a *App) status(context.Context, *struct{}) (*statusOutput, error) {
@@ -382,11 +405,11 @@ func (a *App) targets(ctx context.Context, input *targetsInput) (*targetsOutput,
 		}
 	}
 
-	if !input.queryProvided {
+	selectorProblem := validateTargetSelector(input)
+	if selectorProblem != nil {
 		errorType = "invalid-request"
-		return nil, InvalidRequestProblem("query is required")
+		return nil, selectorProblem
 	}
-
 	types, problem := targetTypes(input.Types)
 	if problem != nil {
 		errorType = "invalid-request"
@@ -405,7 +428,16 @@ func (a *App) targets(ctx context.Context, input *targetsInput) (*targetsOutput,
 	defer release()
 	snapshotID = generation.SnapshotID
 
-	result, err := target.Search(ctx, db, input.Query, types)
+	var result target.SearchResult
+	if input.jobIDProvided {
+		var namespace *string
+		if input.namespaceProvided {
+			namespace = &input.Namespace
+		}
+		result, err = target.SearchLocalID(ctx, db, input.JobID, namespace, types)
+	} else {
+		result, err = target.Search(ctx, db, input.Query, types)
+	}
 	if err != nil {
 		errorType = "internal-error"
 		return nil, InternalErrorProblem("target search failed")
@@ -416,6 +448,41 @@ func (a *App) targets(ctx context.Context, input *targetsInput) (*targetsOutput,
 		Items:      result.Items,
 		Truncated:  result.Truncated,
 	}}, nil
+}
+
+func validateTargetSelector(input *targetsInput) *huma.ErrorModel {
+	if input.queryRepeated {
+		return InvalidRequestProblem("query must be specified once")
+	}
+	if input.jobIDRepeated {
+		return InvalidRequestProblem("jobId must be specified once")
+	}
+	if input.namespaceRepeated {
+		return InvalidRequestProblem("namespace must be specified once")
+	}
+	if input.queryProvided == input.jobIDProvided {
+		return InvalidRequestProblem("specify exactly one of jobId or query")
+	}
+	if input.namespaceProvided && !input.jobIDProvided {
+		return InvalidRequestProblem("namespace can only be specified with jobId")
+	}
+	if input.jobIDProvided {
+		if input.JobID == "" {
+			return InvalidRequestProblem("jobId must not be empty")
+		}
+		if utf8.RuneCountInString(input.JobID) > limits.MaxNodeIDLength {
+			return InvalidRequestProblem("jobId must not exceed 1024 characters")
+		}
+		if input.namespaceProvided {
+			if input.Namespace == "" {
+				return InvalidRequestProblem("namespace must not be empty")
+			}
+			if utf8.RuneCountInString(input.Namespace) > identity.MaxNamespaceLength {
+				return InvalidRequestProblem("namespace must not exceed 256 characters")
+			}
+		}
+	}
+	return nil
 }
 
 func targetTypes(requested []string) ([]string, *huma.ErrorModel) {
