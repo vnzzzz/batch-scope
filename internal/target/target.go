@@ -6,21 +6,27 @@ import (
 	"database/sql"
 	"fmt"
 	"strings"
+
+	"batchscope/internal/identity"
 )
 
 // Node はAPIで公開する対象ノードの共通表現である。
 type Node struct {
-	ID   string  `json:"id"`
-	Type string  `json:"type" enum:"job,job_network"`
-	Name string  `json:"name"`
-	Path *string `json:"path,omitempty"`
+	ID        string  `json:"id"`
+	Namespace string  `json:"namespace"`
+	LocalID   string  `json:"localId"`
+	Type      string  `json:"type" enum:"job,job_network"`
+	Name      string  `json:"name"`
+	Path      *string `json:"path,omitempty"`
 }
 
 // Ancestor は対象ノードの親子階層を構成する祖先の公開表現である。
 type Ancestor struct {
-	ID   string `json:"id"`
-	Type string `json:"type" enum:"management_unit,job_network"`
-	Name string `json:"name"`
+	ID        string `json:"id"`
+	Namespace string `json:"namespace"`
+	LocalID   string `json:"localId"`
+	Type      string `json:"type" enum:"management_unit,job_network"`
+	Name      string `json:"name"`
 }
 
 // Details は対象ノードと、最上位から直近の親までの祖先を保持する。
@@ -85,9 +91,13 @@ ORDER BY target_id COLLATE BINARY, depth DESC`, strings.Join(values, ","))
 		if err := rows.Scan(&targetID, &nodeID, &nodeType, &name, &path, &depth); err != nil {
 			return nil, fmt.Errorf("scan target details: %w", err)
 		}
+		namespace, localID := identity.PublicFromID(nodeID)
 		if depth == 0 {
 			detail := result[targetID]
-			detail.Node = Node{ID: nodeID, Type: nodeType, Name: name, Path: optionalString(path)}
+			detail.Node = Node{
+				ID: nodeID, Namespace: namespace, LocalID: localID,
+				Type: nodeType, Name: name, Path: optionalString(path),
+			}
 			if detail.AncestorPath == nil {
 				detail.AncestorPath = []Ancestor{}
 			}
@@ -98,7 +108,9 @@ ORDER BY target_id COLLATE BINARY, depth DESC`, strings.Join(values, ","))
 		if detail.AncestorPath == nil {
 			detail.AncestorPath = []Ancestor{}
 		}
-		detail.AncestorPath = append(detail.AncestorPath, Ancestor{ID: nodeID, Type: nodeType, Name: name})
+		detail.AncestorPath = append(detail.AncestorPath, Ancestor{
+			ID: nodeID, Namespace: namespace, LocalID: localID, Type: nodeType, Name: name,
+		})
 		result[targetID] = detail
 	}
 	if err := rows.Err(); err != nil {
