@@ -86,7 +86,7 @@ func serve(args []string) error {
 	errCh := make(chan error, 1)
 	go func() {
 		attrs := observability.Attrs(observability.Fields{Operation: "serve", BootID: application.BootID()})
-		attrs = append(attrs, slog.String("address", server.Addr), slog.String("data_dir", *dataDir))
+		attrs = append(attrs, slog.String("address", server.Addr), slog.String("data_dir", application.DataDirectory()))
 		slog.LogAttrs(ctx, slog.LevelInfo, "BatchScope listening", attrs...)
 		if err := server.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
 			errCh <- err
