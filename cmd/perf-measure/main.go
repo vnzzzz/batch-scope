@@ -148,7 +148,7 @@ func run() error {
 func parseConfig(arguments []string) (config, error) {
 	flags := flag.NewFlagSet("perf-measure", flag.ContinueOnError)
 	mode := flags.String("mode", "pipeline", "measurement mode: pipeline, import, concurrent, connection-comparison, target-search, or limit-analysis")
-	profile := flags.String("profile", "small", "dataset profile: small, pathological, or a historical oversized generator (medium, scale, custom)")
+	profile := flags.String("profile", "small", "dataset profile: small, operational, pathological, or a historical oversized generator (medium, scale, custom)")
 	pathological := flags.String("pathological-cases", "all", "comma-separated pathological cases, or all")
 	nodes := flags.Int("nodes", 0, "custom profile node count")
 	relations := flags.Int("relations", 0, "custom profile relation count")
@@ -233,6 +233,8 @@ func selectDatasets(configured config) ([]datasetSpec, error) {
 	switch configured.Profile {
 	case "small":
 		return []datasetSpec{{name: "small", build: graphgen.Small}}, nil
+	case "operational":
+		return []datasetSpec{{name: "operational-400k", build: graphgen.Operational400K}}, nil
 	case "medium":
 		// Medium and Scale are kept so historical measurement inputs remain identifiable.
 		// Current product validation still applies, so standard Make targets do not expose them.
