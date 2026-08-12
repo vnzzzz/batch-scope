@@ -329,8 +329,8 @@ func TestDownstreamLimitAnalysisErrors(t *testing.T) {
 }
 
 func TestDownstreamLimitAnalysisDeadlineAndCancellation(t *testing.T) {
-	if analysisDeadline != 10*time.Second {
-		t.Fatalf("analysisDeadline = %s, want 10s", analysisDeadline)
+	if analysisDeadline != 60*time.Second {
+		t.Fatalf("analysisDeadline = %s, want 60s", analysisDeadline)
 	}
 
 	directory := t.TempDir()

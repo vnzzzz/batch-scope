@@ -10,6 +10,7 @@ import (
 	"math"
 	"slices"
 	"sort"
+	"sync"
 
 	"batchscope/internal/limitscan"
 	"batchscope/internal/traversal"
@@ -152,8 +153,6 @@ type path struct {
 	relationIDCount    int
 	previous           *path
 	via                graphEdge
-	nodeIDs            []string
-	relationIDs        []string
 }
 
 type pathQueue []*path
@@ -248,25 +247,32 @@ func (state *buildState) prepare(traversalResult traversal.Result, limitResult l
 	if err != nil {
 		return err
 	}
-	state.confirmedPaths, err = shortestPaths(state.ctx, currentGraph, traversalResult.Target.ID, true, nil)
-	if err != nil {
-		return err
+	if allEdgesConfirmed(currentGraph) {
+		// 全接続が確定済みならconfirmed-only探索はallPathsと完全に同じになる。
+		// 大規模snapshotで同じpath DAGを二重保持しない。
+		state.confirmedPaths = state.allPaths
+		state.selectedPaths = state.allPaths
+	} else {
+		state.confirmedPaths, err = shortestPaths(state.ctx, currentGraph, traversalResult.Target.ID, true, nil)
+		if err != nil {
+			return err
+		}
+		// 確定経路の存在は距離より先に比較するため、全relationの最短経路とは別に選択結果を保持する。
+		state.selectedPaths = make(map[string]*path, len(state.allPaths))
+		for id, allPath := range state.allPaths {
+			if err := state.ctx.Err(); err != nil {
+				return err
+			}
+			if confirmedPath, ok := state.confirmedPaths[id]; ok {
+				state.selectedPaths[id] = confirmedPath
+			} else {
+				state.selectedPaths[id] = allPath
+			}
+		}
 	}
 	state.limitFreePaths, err = shortestPaths(state.ctx, currentGraph, traversalResult.Target.ID, false, state.limitOwners)
 	if err != nil {
 		return err
-	}
-	// 確定経路の存在は距離より先に比較するため、全relationの最短経路とは別に選択結果を保持する。
-	state.selectedPaths = make(map[string]*path, len(state.allPaths))
-	for id, allPath := range state.allPaths {
-		if err := state.ctx.Err(); err != nil {
-			return err
-		}
-		if confirmedPath, ok := state.confirmedPaths[id]; ok {
-			state.selectedPaths[id] = confirmedPath
-		} else {
-			state.selectedPaths[id] = allPath
-		}
 	}
 	if len(state.selectedPaths) != len(currentGraph.nodes) {
 		return errors.New("pathtree graph contains a node unreachable from target")
@@ -485,6 +491,15 @@ func shortestPaths(
 	return best, nil
 }
 
+func allEdgesConfirmed(current graph) bool {
+	for _, edge := range current.edges {
+		if !edge.confirmed() {
+			return false
+		}
+	}
+	return true
+}
+
 func extendPath(parent *path, edge graphEdge, destination traversal.Node) *path {
 	candidate := &path{
 		nodeID:             edge.toID,
@@ -505,6 +520,12 @@ func extendPath(parent *path, edge graphEdge, destination traversal.Node) *path 
 	return candidate
 }
 
+const maxPooledPathSteps = 4_096
+
+var pathStepsPool = sync.Pool{New: func() any {
+	return make([]*path, 0, 64)
+}}
+
 func lessPath(left, right *path) bool {
 	if left.dependencyDistance != right.dependencyDistance {
 		return left.dependencyDistance < right.dependencyDistance
@@ -512,43 +533,91 @@ func lessPath(left, right *path) bool {
 	if left.graphDepth != right.graphDepth {
 		return left.graphDepth < right.graphDepth
 	}
-	if comparison := slices.Compare(pathNodeIDs(left), pathNodeIDs(right)); comparison != 0 {
-		return comparison < 0
+
+	leftSteps := acquirePathSteps(left)
+	rightSteps := acquirePathSteps(right)
+	comparison := comparePathNodeIDs(leftSteps, rightSteps)
+	if comparison == 0 {
+		comparison = comparePathRelationIDs(leftSteps, rightSteps)
 	}
-	return slices.Compare(pathRelationIDs(left), pathRelationIDs(right)) < 0
+	releasePathSteps(leftSteps)
+	releasePathSteps(rightSteps)
+	return comparison < 0
 }
 
-func pathNodeIDs(current *path) []string {
-	if current.nodeIDs != nil {
-		return current.nodeIDs
+func acquirePathSteps(current *path) []*path {
+	steps := pathStepsPool.Get().([]*path)[:0]
+	for step := current; step != nil; step = step.previous {
+		steps = append(steps, step)
 	}
-	original := current
-	result := make([]string, current.hopCount+1)
-	for index := current.hopCount; index >= 0; index-- {
-		result[index] = current.nodeID
-		current = current.previous
-	}
-	original.nodeIDs = result
-	return original.nodeIDs
+	slices.Reverse(steps)
+	return steps
 }
 
-func pathRelationIDs(current *path) []string {
-	if current.relationIDs != nil {
-		return current.relationIDs
+func releasePathSteps(steps []*path) {
+	if cap(steps) > maxPooledPathSteps {
+		return
 	}
-	result := make([]string, current.relationIDCount)
-	index := len(result)
-	for step := current; step.previous != nil; step = step.previous {
-		if step.via.kind != edgeRelation {
+	clear(steps)
+	pathStepsPool.Put(steps[:0])
+}
+
+func comparePathNodeIDs(left, right []*path) int {
+	for index := 0; index < min(len(left), len(right)); index++ {
+		if left[index].nodeID < right[index].nodeID {
+			return -1
+		}
+		if left[index].nodeID > right[index].nodeID {
+			return 1
+		}
+	}
+	if len(left) < len(right) {
+		return -1
+	}
+	if len(left) > len(right) {
+		return 1
+	}
+	return 0
+}
+
+func comparePathRelationIDs(left, right []*path) int {
+	leftStep, leftRelation := 1, 0
+	rightStep, rightRelation := 1, 0
+	for {
+		leftID, leftOK := nextPathRelationID(left, &leftStep, &leftRelation)
+		rightID, rightOK := nextPathRelationID(right, &rightStep, &rightRelation)
+		if !leftOK || !rightOK {
+			switch {
+			case leftOK:
+				return 1
+			case rightOK:
+				return -1
+			default:
+				return 0
+			}
+		}
+		if leftID < rightID {
+			return -1
+		}
+		if leftID > rightID {
+			return 1
+		}
+	}
+}
+
+func nextPathRelationID(steps []*path, stepIndex, relationIndex *int) (string, bool) {
+	for *stepIndex < len(steps) {
+		step := steps[*stepIndex]
+		if step.via.kind != edgeRelation || *relationIndex >= len(step.via.relations) {
+			*stepIndex = *stepIndex + 1
+			*relationIndex = 0
 			continue
 		}
-		index -= len(step.via.relations)
-		for relationIndex, relation := range step.via.relations {
-			result[index+relationIndex] = relation.ID
-		}
+		id := step.via.relations[*relationIndex].ID
+		*relationIndex = *relationIndex + 1
+		return id, true
 	}
-	current.relationIDs = result
-	return current.relationIDs
+	return "", false
 }
 
 func buildCycles(ctx context.Context, input []traversal.Cycle, current graph) ([]Cycle, map[string]string, error) {
@@ -764,22 +833,19 @@ func countAlternatePaths(ctx context.Context, current graph, cycleByNode map[str
 	// SCC内の周回を一地点へまとめ、有限なDAG上で経路数を伝播させる。
 	// これにより、単純経路を列挙せずに合流後の代替経路数も引き継げる。
 	componentFor := make(map[string]string, len(current.nodes))
-	componentNodes := make(map[string][]string)
+	components := make(map[string]struct{}, len(current.nodes))
 	for id := range current.nodes {
 		componentID := "node:" + id
 		if cycleID, ok := cycleByNode[id]; ok {
 			componentID = cycleID
 		}
 		componentFor[id] = componentID
-		componentNodes[componentID] = append(componentNodes[componentID], id)
-	}
-	for componentID := range componentNodes {
-		sort.Strings(componentNodes[componentID])
+		components[componentID] = struct{}{}
 	}
 
 	type componentEdge struct{ from, to, key string }
 	edgeSet := make(map[string]struct{})
-	indegree := make(map[string]int, len(componentNodes))
+	indegree := make(map[string]int, len(components))
 	outgoing := make(map[string][]componentEdge)
 	for _, edge := range current.edges {
 		from := componentFor[edge.fromID]
@@ -796,7 +862,7 @@ func countAlternatePaths(ctx context.Context, current graph, cycleByNode map[str
 		outgoing[from] = append(outgoing[from], componentEdge)
 		indegree[to]++
 	}
-	for componentID := range componentNodes {
+	for componentID := range components {
 		sort.Slice(outgoing[componentID], func(i, j int) bool {
 			if outgoing[componentID][i].to != outgoing[componentID][j].to {
 				return outgoing[componentID][i].to < outgoing[componentID][j].to
@@ -807,12 +873,12 @@ func countAlternatePaths(ctx context.Context, current graph, cycleByNode map[str
 
 	ready := &stringHeap{}
 	heap.Init(ready)
-	for componentID := range componentNodes {
+	for componentID := range components {
 		if indegree[componentID] == 0 {
 			heap.Push(ready, componentID)
 		}
 	}
-	pathCounts := make(map[string]int, len(componentNodes))
+	pathCounts := make(map[string]int, len(components))
 	pathCounts[componentFor[targetID]] = 1
 	processed := 0
 	for ready.Len() > 0 {
@@ -829,7 +895,7 @@ func countAlternatePaths(ctx context.Context, current graph, cycleByNode map[str
 			}
 		}
 	}
-	if processed != len(componentNodes) {
+	if processed != len(components) {
 		return nil, errors.New("pathtree cycles do not cover every graph cycle")
 	}
 	counts := make(map[string]int, len(current.nodes))

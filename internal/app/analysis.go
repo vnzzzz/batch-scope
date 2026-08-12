@@ -26,9 +26,9 @@ import (
 
 const (
 	analysisOperation = "downstream_limit_analysis"
-	// p95 1秒は正常系のSLOであり、異常時に処理を打ち切るdeadlineとは役割が異なる。
-	// Smallのcold並行度4の最大840 msに約12倍の余裕を持たせ、遅いホストや同時検索の輻輳を吸収しつつgenerationの保持を制限する。
-	analysisDeadline = 10 * time.Second
+	// p95目標は正常系のSLOであり、異常時に処理を打ち切るdeadlineとは役割が異なる。
+	// 40万ノード級と高密度relation形状の完全解析実測に余裕を持たせ、受入済みsnapshotを時間上限だけで部分化しない。
+	analysisDeadline = 60 * time.Second
 )
 
 type analysisInput struct {
