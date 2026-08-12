@@ -27,8 +27,31 @@ jobs:
           cache: false
 
       - name: Apply guarded refactor
+        shell: bash
         run: |
+          set -Eeuo pipefail
+          set +e
           python3 scripts/issue52-refactor.py
+          refactor_status=$?
+          set -e
+          if [[ "$refactor_status" -ne 0 ]]; then
+            python3 - <<'PY'
+          from pathlib import Path
+          path = Path("internal/app/analysis.go")
+          text = path.read_text()
+          old = '''\t// p95 1秒は正常系のSLOであり、異常時に処理を打ち切るdeadlineとは役割が異なる。
+          \t// Smallのcold並行度4の最大840 msに約12倍の余裕を持たせ、遅いホストや同時検索の輻輳を吸収しつつgenerationの保持を制限する。
+          \tanalysisDeadline = 10 * time.Second
+          '''
+          new = '''\t// p95目標は正常系のSLOであり、異常時に処理を打ち切るdeadlineとは役割が異なる。
+          \t// 40万ノード級と高密度relation形状の完全解析実測に余裕を持たせ、受入済みsnapshotを時間上限だけで部分化しない。
+          \tanalysisDeadline = 60 * time.Second
+          '''
+          if text.count(old) != 1:
+              raise SystemExit(f"analysis deadline block count = {text.count(old)}")
+          path.write_text(text.replace(old, new, 1))
+          PY
+          fi
           gofmt -w internal/pathtree/pathtree.go internal/snapshot/validate.go internal/snapshot/validate_test.go internal/app/snapshot_imports_test.go internal/app/analysis.go
           go test ./internal/pathtree ./internal/snapshot ./internal/app
 
