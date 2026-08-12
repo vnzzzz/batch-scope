@@ -10,11 +10,18 @@ Markdownへ各Schemaのフィールド一覧と境界値を転記しません。
 
 ## 形式の考え方
 
-検索に必要なID、種別、親子関係、依存関係、リミットは共通項目として定義します。
+検索に必要なID、namespace、種別、親子関係、依存関係、リミットは共通項目として定義します。
 製品固有の補足情報は`locator`と`attributes`へ保存できます。
 
 入力に不明な点がある場合は、値を推測して確定させず、`inferred`または`candidate`として保存します。
 リミットを項目へ分解できない場合は、元の表記を`raw`として残します。
+
+## schema version
+
+`0.6`をnamespace対応形式とします。
+`0.5`は既存の単一定義セットとの互換入力として引き続き受け入れ、すべてのnodeを暗黙の`default` namespace、`localId=id`として扱います。
+`0.5`へ`namespace`または`localId`を混在させません。
+新しくスナップショットを生成する場合は`0.6`を使用します。
 
 ## アーカイブの内容
 
@@ -35,6 +42,42 @@ batchscope-snapshot.tar.gz
 宣言したノード数とrelation数は、NDJSONの実件数と一致する必要があります。
 項目と制約は[`manifest.schema.json`](../../schema/manifest.schema.json)を参照してください。
 
+## namespaceとnode identity
+
+namespaceは、**一つの意味上の定義セット**を識別します。物理ファイル名や取込ファイル単位ではありません。
+Main、DR、開発、顧客別テナントなど、同じlocal IDが別の定義として成立する境界へ安定したnamespaceを割り当てます。
+同じ定義セットが複数ファイルに分割されていても同じnamespaceを使用します。
+資料からnamespaceを確定できない定義を、名前の類似だけで既存namespaceへ統合しません。
+
+schema `0.6`の各nodeは次の三つのidentityを持ちます。
+
+- `namespace`: 定義セットのID
+- `localId`: 元の定義セット内で使われるnode ID
+- `id`: BatchScope内部でsnapshot全体を一意に参照するcanonical ID
+
+canonical IDは次の規則で決定します。
+
+```text
+bsid1:<namespaceのUTF-8 byte長>:<namespace>:<localId>
+```
+
+例:
+
+```text
+namespace = main, localId = JOB-A -> bsid1:4:main:JOB-A
+namespace = dr,   localId = JOB-A -> bsid1:2:dr:JOB-A
+```
+
+namespace長を先に保持するため、namespaceまたはlocal IDに`:`、`/`などの区切り文字が含まれても曖昧になりません。
+canonical IDは入力ファイル名、入力順、node typeに依存しません。
+同じ`namespace + localId`は常に同じcanonical IDになります。
+
+node typeはidentityへ含めません。同じnamespace内で同じlocal IDを別のjob、job network、resource等へ重複使用した入力は同じidentityの競合として拒否します。
+利用者向け検索と表示ではcanonical IDの組立てを要求せず、`namespace + localId`を使います。
+
+`parentId`、relationの`fromId`/`toId`はcanonical IDを参照します。
+親子階層は一つの定義セット内の所属を表すため、`parentId`は子と同じnamespaceだけを参照できます。
+
 ## ノード
 
 ノードは、管理単位の親子関係を構成する要素か、実行上の依存関係に現れる要素です。
@@ -49,8 +92,8 @@ batchscope-snapshot.tar.gz
 | `job_status` | ジョブの完了状態または結果状態 | なし |
 | `external_event` | 外部ベンダー、クラウド、サーバレスから届くイベント | なし |
 
-ノードIDは、一つのスナップショット内で重複してはいけません。
-ジョブIDには、複数環境の定義を一つにまとめても衝突しない値を使います。
+nodeのcanonical IDは一つのスナップショット内で重複してはいけません。
+schema `0.6`では同じ`namespace + localId`も重複してはいけません。
 項目と単体制約は[`node.schema.json`](../../schema/node.schema.json)を参照してください。
 
 ## リミット
@@ -96,7 +139,21 @@ BatchScopeは、検索時に到達可能な範囲にあるリミット設定済�
 | `consumed_by` | ファイルなどをジョブまたはジョブネットが入力として使う |
 | `observed_by` | ファイル、状態、イベントをジョブまたはジョブネットが監視する |
 
-relationの両端は、同じスナップショットに存在するノードを参照する必要があります。
+relationの両端は、同じスナップショットに存在するcanonical node IDを参照する必要があります。
+relationはnamespaceを跨げます。**namespaceはidentityの境界であって依存解析の境界ではありません。**
+
+一方、namespaceが異なること、またはlocal IDが同じことだけを根拠にrelationを自動生成しません。
+cross-namespace依存は入力資料から確認した依存だけを明示します。
+ジョブマネージャー間の直接線が存在しなくても、例えば次のような実行条件は既存のresource nodeを介して表現できます。
+
+```text
+[main] JOB-A --produces--> [shared] ready.flag --observed_by--> [dr] JOB-A
+```
+
+他namespaceのジョブ終了を監視する場合は`job_status`、共有ファイルは`file`/`file_pattern`、外部通知は`external_event`を利用できます。
+資料上の根拠を中間resourceへ安全に分解できない場合は、根拠と`origin`/`certainty`を保持したcross-namespace relationとして記録できます。
+検索時はこれらのrelationを通常の有向辺としてたどり、namespace境界で探索を止めません。
+
 項目と単体制約は[`relation.schema.json`](../../schema/relation.schema.json)を参照してください。
 
 ### relationの重複
@@ -139,11 +196,12 @@ relationの両端は、同じスナップショットに存在するノードを
 |---|---|---|
 | JSON Schema | 形式 | JSON Schemaに違反している |
 | BatchScopeの追加検査 | 件数 | マニフェストの件数が実データと一致しない |
-| BatchScopeの追加検査 | IDと参照 | ノードIDが重複している、存在しないノードまたは親を参照している |
+| BatchScopeの追加検査 | identity | schema `0.6`でnamespace/localIdがない、canonical IDが生成規則と一致しない、同一namespace内でlocalIdが競合する、`parentId`が別namespaceを指す |
+| BatchScopeの追加検査 | IDと参照 | canonical node IDが重複している、存在しないnodeまたは親を参照している |
 | BatchScopeの追加検査 | 親子関係 | 親の種別が許可されていない、複数の親を設定している、循環がある |
 | BatchScopeの追加検査 | リミット | `max_elapsed`を固定秒数へ変換できない |
 | BatchScopeの追加検査 | 依存関係 | 内容がすべて同じ依存関係が重複している |
 | アーカイブ検査 | アーカイブ | 不正なエントリがある、サイズ上限を超えている |
 
-実行上の依存関係に含まれる循環、孤立ノード、同名ノードは受け入れます。
+実行上の依存関係に含まれる循環、孤立node、同名node、異なるnamespaceに存在する同じlocal IDは受け入れます。
 `evidence`を持たない`inferred`の依存関係も受け入れますが、検索結果でも`inferred`のまま返します。
