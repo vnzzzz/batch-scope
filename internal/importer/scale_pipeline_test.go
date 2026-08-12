@@ -29,12 +29,12 @@ func TestScalePipelineSmall(t *testing.T) {
 	assertGeneratedDataset(t, graphgen.Small(), false)
 }
 
-func TestCapacityBoundaryPipelineCompletes(t *testing.T) {
-	dataset := graphgen.CapacityBoundary(
-		limits.MaxSnapshotNodes,
-		limits.MaxSnapshotRelations,
-		limits.MaxSnapshotLimits,
-	)
+// 受入上限のリミット数を宣言したsnapshotが、取込から経路ツリー生成まで全件を返すことを確認する。
+// ノード数とrelation数は、リミットを載せるために必要な最小限へ抑え、40万ノード級の受入上限をrace suiteへ持ち込まない。
+// relationは鎖より多く張り、分岐した経路をまたいでもリミットが欠けないことを同時に確認する。
+// リミット数以外の実規模の完遂はoperational profileの専用測定が担当する。
+func TestLimitCapacityBoundaryPipeline(t *testing.T) {
+	dataset := graphgen.CapacityBoundary(limits.MaxSnapshotLimits, limits.MaxSnapshotLimits*3/2, limits.MaxSnapshotLimits)
 	visitGeneratedPipelines(t, dataset, false, func(_ graphgen.Expectation, result pipelineResult) {
 		assertAllInputLimitsReturned(t, dataset.Nodes, result.Limits)
 	})

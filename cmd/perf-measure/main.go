@@ -26,6 +26,7 @@ type config struct {
 	PathologicalCases string
 	Nodes             int
 	Relations         int
+	Target            string
 	Runs              int
 	Concurrencies     []int
 }
@@ -44,6 +45,7 @@ type reportConfig struct {
 	Profile       string `json:"profile"`
 	Nodes         int    `json:"nodes,omitempty"`
 	Relations     int    `json:"relations,omitempty"`
+	Target        string `json:"target,omitempty"`
 	Runs          int    `json:"runs"`
 	Concurrencies []int  `json:"concurrencies,omitempty"`
 }
@@ -104,7 +106,7 @@ func run() error {
 		GeneratedAt:   time.Now().UTC(),
 		Configuration: reportConfig{
 			Mode: configured.Mode, Profile: configured.Profile, Nodes: configured.Nodes,
-			Relations: configured.Relations, Runs: configured.Runs,
+			Relations: configured.Relations, Target: configured.Target, Runs: configured.Runs,
 			Concurrencies: reportedConcurrencies,
 		},
 		Environment: reportEnv{
@@ -148,11 +150,12 @@ func run() error {
 func parseConfig(arguments []string) (config, error) {
 	flags := flag.NewFlagSet("perf-measure", flag.ContinueOnError)
 	mode := flags.String("mode", "pipeline", "measurement mode: pipeline, import, concurrent, connection-comparison, target-search, or limit-analysis")
-	profile := flags.String("profile", "small", "dataset profile: small, pathological, or a historical oversized generator (medium, scale, custom)")
+	profile := flags.String("profile", "small", "dataset profile: small, operational, pathological, or a historical oversized generator (medium, scale, custom)")
 	pathological := flags.String("pathological-cases", "all", "comma-separated pathological cases, or all")
 	nodes := flags.Int("nodes", 0, "custom profile node count")
 	relations := flags.Int("relations", 0, "custom profile relation count")
 	runs := flags.Int("runs", 5, "number of repeated runs or concurrent rounds")
+	target := flags.String("target", "", "analysis target ID for single-target modes; defaults to the dataset's first target")
 	concurrencyText := flags.String("concurrencies", "1,2,4,8", "comma-separated simultaneous search counts")
 	if err := flags.Parse(arguments); err != nil {
 		return config{}, err
@@ -168,6 +171,11 @@ func parseConfig(arguments []string) (config, error) {
 	}
 	if err := validateCustomSize(*profile, *nodes, *relations); err != nil {
 		return config{}, err
+	}
+	// pipelineとimportはdatasetの全targetを測り、target-searchは完全一致検索の問合せを測るため、対象を1件へ絞る指定を受け付けない。
+	// 指定を黙って無視すると、報告した対象と実際に測った対象が食い違う。
+	if *target != "" && *mode != "concurrent" && *mode != "connection-comparison" && *mode != "limit-analysis" {
+		return config{}, fmt.Errorf("target requires mode concurrent, connection-comparison, or limit-analysis, not %q", *mode)
 	}
 	concurrencyValue := *concurrencyText
 	concurrencyWasSet := false
@@ -185,7 +193,7 @@ func parseConfig(arguments []string) (config, error) {
 	}
 	return config{
 		Mode: *mode, Profile: *profile, PathologicalCases: *pathological,
-		Nodes: *nodes, Relations: *relations,
+		Nodes: *nodes, Relations: *relations, Target: *target,
 		Runs: *runs, Concurrencies: concurrencies,
 	}, nil
 }
@@ -233,6 +241,8 @@ func selectDatasets(configured config) ([]datasetSpec, error) {
 	switch configured.Profile {
 	case "small":
 		return []datasetSpec{{name: "small", build: graphgen.Small}}, nil
+	case "operational":
+		return []datasetSpec{{name: "operational-400k", build: graphgen.Operational400K}}, nil
 	case "medium":
 		// Medium and Scale are kept so historical measurement inputs remain identifiable.
 		// Current product validation still applies, so standard Make targets do not expose them.

@@ -202,38 +202,40 @@ func TestValidateRejectsManifestCapacityBeforeReadingNDJSON(t *testing.T) {
 }
 
 func TestValidateRejectsActualNDJSONCapacityWhileStreaming(t *testing.T) {
+	schemas, err := getSchemas()
+	if err != nil {
+		t.Fatal(err)
+	}
+
 	t.Run("nodes", func(t *testing.T) {
-		nodes := make([]string, limits.MaxSnapshotNodes+2)
-		for index := 0; index <= limits.MaxSnapshotNodes; index++ {
+		const maxNodes = 3
+		nodes := make([]string, maxNodes+2)
+		for index := 0; index <= maxNodes; index++ {
 			nodes[index] = fmt.Sprintf(`{"type":"job","id":"JOB-%d","name":"Job"}`, index)
 		}
-		// 末尾の不正な行は、境界を越えて走査が続いたことを検出するための番兵である。
-		// 走査が止まらなければcapacity_exceededではなくinvalid_jsonが返る。
+		// 末尾の不正な行は、境界を越えて走査が続いたことを検出する番兵である。
 		nodes[len(nodes)-1] = "{"
-
 		extracted := writeExtractedSnapshot(t, nodes, nil)
-		writeManifest(t, extracted.Manifest, 1, 0)
-		_, err := Validate(context.Background(), extracted)
-		assertValidationError(t, err, ErrorCapacityExceeded, nodesName, limits.MaxSnapshotNodes+1, "")
+		_, _, _, _, _, err := readNodes(context.Background(), extracted.Nodes, schemas.node, maxNodes, limits.MaxSnapshotLimits)
+		assertValidationError(t, err, ErrorCapacityExceeded, nodesName, maxNodes+1, "")
 	})
 
 	t.Run("relations", func(t *testing.T) {
-		nodes := []string{testNode("job", "JOB", nil, nil)}
-		relations := make([]string, limits.MaxSnapshotRelations+2)
-		for index := 0; index <= limits.MaxSnapshotRelations; index++ {
+		const maxRelations = 3
+		relations := make([]string, maxRelations+2)
+		for index := 0; index <= maxRelations; index++ {
 			relations[index] = fmt.Sprintf(
 				`{"fromId":"JOB","toId":"JOB","kind":"precedes","origin":"scheduler","certainty":"declared","evidence":[{"source":"%d"}]}`,
 				index,
 			)
 		}
-		// 末尾の不正な行は、境界を越えて走査が続いたことを検出するための番兵である。
-		// 走査が止まらなければcapacity_exceededではなくinvalid_jsonが返る。
+		// 末尾の不正な行は、境界を越えて走査が続いたことを検出する番兵である。
 		relations[len(relations)-1] = "{"
-
-		extracted := writeExtractedSnapshot(t, nodes, relations)
-		writeManifest(t, extracted.Manifest, len(nodes), 0)
-		_, err := Validate(context.Background(), extracted)
-		assertValidationError(t, err, ErrorCapacityExceeded, relationsName, limits.MaxSnapshotRelations+1, "")
+		extracted := writeExtractedSnapshot(t, []string{testNode("job", "JOB", nil, nil)}, relations)
+		nodes := map[string]nodeRecord{"JOB": {Type: nodeKindJob, Line: 1}}
+		graph := newSCCGraph([]string{"JOB"}, nodes)
+		_, err := readRelations(context.Background(), extracted.Relations, schemas.relation, nodes, graph, maxRelations)
+		assertValidationError(t, err, ErrorCapacityExceeded, relationsName, maxRelations+1, "")
 	})
 }
 

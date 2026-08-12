@@ -51,6 +51,32 @@ func TestParseConfigRequiresRepeatedRunsAndExactConcurrencies(t *testing.T) {
 	}
 }
 
+func TestParseConfigRestrictsTargetToSingleTargetModes(t *testing.T) {
+	configured, err := parseConfig([]string{"-mode", "limit-analysis", "-profile", "operational", "-runs", "2", "-target", "OPS-ROOT"})
+	if err != nil || configured.Target != "OPS-ROOT" {
+		t.Fatalf("parseConfig(limit-analysis target) = %#v, %v", configured, err)
+	}
+	if _, err := parseConfig([]string{"-runs", "2", "-target", "OPS-ROOT"}); err == nil {
+		t.Fatal("parseConfig() accepted a target for pipeline mode")
+	}
+	if _, err := parseConfig([]string{"-mode", "target-search", "-runs", "2", "-target", "OPS-ROOT"}); err == nil {
+		t.Fatal("parseConfig() accepted a target for target-search mode")
+	}
+}
+
+func TestSelectTargetRejectsUnknownTarget(t *testing.T) {
+	source := &fixture{Name: "operational-400k", TargetIDs: []string{"OPS-NET-0000", "OPS-ROOT"}}
+	if got, err := source.selectTarget(""); err != nil || got != "OPS-NET-0000" {
+		t.Fatalf("selectTarget(\"\") = %q, %v", got, err)
+	}
+	if got, err := source.selectTarget("OPS-ROOT"); err != nil || got != "OPS-ROOT" {
+		t.Fatalf("selectTarget(OPS-ROOT) = %q, %v", got, err)
+	}
+	if _, err := source.selectTarget("OPS-MISSING"); err == nil {
+		t.Fatal("selectTarget() accepted a target the dataset does not contain")
+	}
+}
+
 func TestParseConfigValidatesCustomSize(t *testing.T) {
 	configured, err := parseConfig([]string{
 		"-profile", "custom", "-nodes", "20000", "-relations", "55000", "-runs", "2",

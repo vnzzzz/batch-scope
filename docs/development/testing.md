@@ -73,7 +73,7 @@ make verify
 ```
 
 `make verify`はGoのformat、shell scriptの構文、`go vet`、race detector付きのテスト、生成OpenAPIと実装の差分を検査します。
-通常のテストは、初期対応規模の受入境界と軽量な病理グラフを件数の合否に使いますが、実行時間やメモリ量の性能閾値を合否に使いません。
+通常のテストは、完全解析のfailure modeを再現できる軽量な回帰境界と病理グラフを使い、実行時間やメモリ量の性能閾値を合否に使いません。40万ノード級の受入境界そのものは`go test -race ./...`へ持ち込まず、専用performance profileで検査します。
 
 local smoke testとRelease artifact checkは、実プロセスまたは生成済み成果物を検査するため、通常の`make verify`から分離します。
 それぞれの実行方法は[開発環境](development.md)と[ビルドと公開](build-and-release.md#公開成果物の確認)を参照してください。
@@ -85,11 +85,13 @@ local smoke testとRelease artifact checkは、実プロセスまたは生成済
 
 | プロファイル | 目的 | 現在の扱い |
 |---|---|---|
-| Small | 初期対応規模の取込と解析を確認する | Dev ContainerとCI、および現行の性能測定で使用する |
-| Pathological | 規模以外のグラフ形状を確認する | Dev ContainerとCI、および現行の性能測定で使用する |
-| Medium | 初期対応規模を超えた増加傾向を調べる | 過去の性能測定で使用した生成器として保持する |
-| Scale | Mediumより大きい規模の判断材料を作る | 過去の測定設計で使用した生成器として保持する |
+| Small | 軽量な回帰規模の取込と解析を確認する | Dev ContainerとCI、および通常の性能測定で使用する |
+| Operational | 400,000ノード / 300,000 relationの現行受入規模と、代表・全件到達targetの到達範囲を測る | 通常CIから分離した専用測定で使用する |
+| Pathological | 長鎖、fan-in/out、SCC、深いscopeなど規模以外の独立した特殊形状を確認する | Dev ContainerとCI、および現行の性能測定で使用する |
+| Medium | 100,000ノード / 300,000 relationの高密度な分岐・合流形状を測る | Issue #52の比較測定と並行HTTP測定に使用する |
+| Scale | 現行受入規模を超える将来候補を識別する | 過去の測定設計で使用した生成器として保持する |
 
+Operationalは実運用規模と一検索の到達範囲、Mediumは高密度relation形状、Pathologicalは個別の特殊形状を分担します。単一profileだけで実データの全トポロジを再現したとは扱いません。
 各プロファイルの件数、生成規則、期待値は`internal/testsupport/graphgen`を正本とします。
 初期対応規模は[運用](../operations.md#初期対応規模)、測定済みの条件と結果は[性能測定結果](performance-measurement.md)を参照してください。
 
@@ -107,16 +109,17 @@ local smoke testとRelease artifact checkは、実プロセスまたは生成済
 | コマンド | 測定内容 |
 |---|---|
 | `PERF_RUNS=3 make perf-small` | Smallの取込、二対象のcoldとwarmの静的解析 |
+| `go run ./cmd/perf-measure -profile operational -runs 2` | 現行受入規模の取込、代表targetと全件到達targetのcold/warm解析 |
 | `PERF_PATHOLOGICAL_RUNS=3 make perf-pathological` | 受入範囲内のPathologicalケースの取込と解析 |
 | `PERF_CONCURRENT_RUNS=2 make perf-concurrent` | Smallの`NET-TARGET`を並行度1、2、4、8で解析 |
 | `PERF_CONNECTION_COMPARISON_RUNS=5 make perf-connection-comparison` | Smallの`NET-TARGET`について単一接続と複数読み取り接続を並行度1、2、4、8で比較 |
 | `PERF_TARGET_SEARCH_RUNS=20 make perf-target-search` | Smallを使い、公開HTTPの完全一致検索を並行度1、4、cold、warm、検索ケース別に測定 |
 | `PERF_LIMIT_ANALYSIS_RUNS=20 make perf-limit-analysis` | Smallを使い、公開HTTPの後続リミット取得を並行度1、4、cold、warmで測定 |
+| `go run ./cmd/perf-measure -mode limit-analysis -profile medium -target NET-TARGET -runs 2 -concurrencies 1,4` | 現行受入規模内の高密度Mediumについて公開HTTPを並行度1、4で測定 |
 
-Medium、Scale、10,000ノードを超える中間規模の結果は、現在の受入上限を確定する前に行った測定履歴です。
-現行の製品validationは受入上限を超える入力を拒否するため、それらを現行の取込経路で測定するコマンドは標準入口として提供しません。
-過去の測定条件と結果は[性能測定結果](performance-measurement.md)に記録します。
-対応規模を見直す場合は、候補上限を測定できる再現可能な専用手順を先に用意し、製品validationを一時的に弱めて測定しません。
+OperationalとMediumは通常のrace suiteへ含めず、対応規模やアルゴリズム変更時だけ専用コマンドで測定します。Scaleは現行受入規模を超える履歴用generatorであり、製品validationを迂回して標準測定しません。
+過去と現在の測定条件・結果は[性能測定結果](performance-measurement.md)に記録します。
+対応規模を見直す場合は、候補上限を再現する専用profileを先に用意し、通常テストや製品validationを一時的に弱めて測定しません。
 
 取込後の静的解析における`cold`は、各実行前に`PRAGMA shrink_memory`でSQLite接続のページキャッシュを解放した状態です。
 同じ測定の`warm`は、直前の`cold`と同じSQLite接続を使い、接続のページキャッシュを解放せずに続けた状態です。

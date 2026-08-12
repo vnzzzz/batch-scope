@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net"
@@ -155,7 +156,10 @@ func TestSnapshotImportFailureMappingsAreSafe(t *testing.T) {
 	t.Run("capacity", func(t *testing.T) {
 		a := newTestApp(t)
 		archive := makeAppSnapshotArchive(t, map[string]string{
-			"manifest.json":    `{"schemaVersion":"0.5","snapshotId":"too-large","generatedAt":"2026-08-11T00:00:00Z","nodeCount":10001,"relationCount":0,"producer":{"name":"secret-input","version":"1"}}`,
+			"manifest.json": fmt.Sprintf(
+				`{"schemaVersion":"0.5","snapshotId":"too-large","generatedAt":"2026-08-11T00:00:00Z","nodeCount":%d,"relationCount":0,"producer":{"name":"secret-input","version":"1"}}`,
+				limits.MaxSnapshotNodes+1,
+			),
 			"nodes.ndjson":     "secret input that must not be returned\n",
 			"relations.ndjson": "",
 		})

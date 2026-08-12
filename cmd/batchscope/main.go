@@ -22,6 +22,10 @@ var (
 	commit  = "unknown"
 )
 
+// shutdownGraceは、後続リミット解析の異常時deadlineと同じ長さを確保する。
+// 受入上限の40万ノードへ到達する検索は正常でも十数秒かかるため、これより短いと停止要求のたびに正常応答を落とす。
+const shutdownGrace = 60 * time.Second
+
 func main() {
 	if err := run(os.Args[1:]); err != nil {
 		slog.Error("command failed", "error", err)
@@ -95,7 +99,7 @@ func serve(args []string) error {
 
 	select {
 	case <-ctx.Done():
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownGrace)
 		defer cancel()
 		err := server.Shutdown(shutdownCtx)
 		attrs := observability.Attrs(observability.Fields{Operation: "shutdown", BootID: application.BootID()})

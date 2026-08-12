@@ -142,7 +142,9 @@ func Validate(ctx context.Context, extracted Extracted) (ValidationResult, error
 		return ValidationResult{}, err
 	}
 
-	orderedNodeIDs, nodeByID, nodeCount, limitCount, duplicateErr, err := readNodes(ctx, extracted.Nodes, schemas.node)
+	orderedNodeIDs, nodeByID, nodeCount, limitCount, duplicateErr, err := readNodes(
+		ctx, extracted.Nodes, schemas.node, limits.MaxSnapshotNodes, limits.MaxSnapshotLimits,
+	)
 	if err != nil {
 		return ValidationResult{}, err
 	}
@@ -161,7 +163,9 @@ func Validate(ctx context.Context, extracted Extracted) (ValidationResult, error
 	}
 
 	graph := newSCCGraph(orderedNodeIDs, nodeByID)
-	relationCount, err := readRelations(ctx, extracted.Relations, schemas.relation, nodeByID, graph)
+	relationCount, err := readRelations(
+		ctx, extracted.Relations, schemas.relation, nodeByID, graph, limits.MaxSnapshotRelations,
+	)
 	if err != nil {
 		return ValidationResult{}, err
 	}
@@ -309,7 +313,13 @@ func jsonIntegerAsInt64(number json.Number) (int64, bool) {
 	return value.Num().Int64(), true
 }
 
-func readNodes(ctx context.Context, path string, schema *jsonschema.Schema) ([]string, map[string]nodeRecord, int, int, *Error, error) {
+func readNodes(
+	ctx context.Context,
+	path string,
+	schema *jsonschema.Schema,
+	maxNodes int,
+	maxLimits int,
+) ([]string, map[string]nodeRecord, int, int, *Error, error) {
 	orderedIDs := make([]string, 0)
 	byID := make(map[string]nodeRecord)
 	limitIDs := make(map[string]struct{})
@@ -322,10 +332,10 @@ func readNodes(ctx context.Context, path string, schema *jsonschema.Schema) ([]s
 		if err != nil {
 			return err
 		}
-		if count > limits.MaxSnapshotNodes {
+		if count > maxNodes {
 			return &Error{Kind: ErrorCapacityExceeded, File: nodesName, Line: line}
 		}
-		remaining := limits.MaxSnapshotLimits - limitCount
+		remaining := maxLimits - limitCount
 		if len(facts) > remaining {
 			// 重複ノードも行検証でリミットをparseするため、重複判定で破棄する行にも同じ容量上限を適用する。
 			limitCount += remaining + 1
@@ -418,7 +428,14 @@ func validateNodeLine(schema *jsonschema.Schema, line int, contents []byte) (str
 	return current.ID, record, current.LimitFacts, nil
 }
 
-func readRelations(ctx context.Context, path string, schema *jsonschema.Schema, nodes map[string]nodeRecord, graph *sccGraph) (int, error) {
+func readRelations(
+	ctx context.Context,
+	path string,
+	schema *jsonschema.Schema,
+	nodes map[string]nodeRecord,
+	graph *sccGraph,
+	maxRelations int,
+) (int, error) {
 	count := 0
 	seen := make(map[[sha256.Size]byte]struct{})
 	err := readNDJSON(ctx, path, relationsName, func(line int, contents []byte) error {
@@ -441,7 +458,7 @@ func readRelations(ctx context.Context, path string, schema *jsonschema.Schema, 
 		if _, exists := nodes[current.ToID]; !exists {
 			return &Error{Kind: ErrorMissingNode, File: relationsName, Line: line, Pointer: "/toId"}
 		}
-		if count > limits.MaxSnapshotRelations {
+		if count > maxRelations {
 			return &Error{Kind: ErrorCapacityExceeded, File: relationsName, Line: line}
 		}
 
