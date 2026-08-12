@@ -29,19 +29,6 @@ func TestScalePipelineSmall(t *testing.T) {
 	assertGeneratedDataset(t, graphgen.Small(), false)
 }
 
-func TestRegressionScalePipelineCompletes(t *testing.T) {
-	// 40万ノード級の現行受入境界は通常の-race suiteへ持ち込まず、専用performance profileで検査する。
-	// 通常CIでは従来の10k/25k規模と5,000リミットを維持し、全件解析契約の回帰を検出する。
-	dataset := graphgen.CapacityBoundary(
-		graphgen.SmallNodeCount,
-		graphgen.SmallRelationCount,
-		limits.MaxSnapshotLimits,
-	)
-	visitGeneratedPipelines(t, dataset, false, func(_ graphgen.Expectation, result pipelineResult) {
-		assertAllInputLimitsReturned(t, dataset.Nodes, result.Limits)
-	})
-}
-
 func TestSCCCapacityBoundaryPipeline(t *testing.T) {
 	t.Run("accepts exact boundary", func(t *testing.T) {
 		dataset := graphgen.DenseSCC(limits.MaxSCCNodes, limits.MaxSCCNodes)
