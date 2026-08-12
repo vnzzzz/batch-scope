@@ -80,8 +80,8 @@ func operationalDataset(nodeCount, relationCount, networkCount, limitCount int) 
 		for localIndex := 0; localIndex < use; localIndex++ {
 			relations = append(relations, Relation{
 				FromID: operationalJobID(jobIndex + localIndex),
-				ToID: operationalJobID(jobIndex + localIndex + 1),
-				Kind: "precedes", Origin: defaultOrigin, Certainty: defaultCertainty,
+				ToID:   operationalJobID(jobIndex + localIndex + 1),
+				Kind:   "precedes", Origin: defaultOrigin, Certainty: defaultCertainty,
 			})
 		}
 		remainingRelations -= use
@@ -93,8 +93,8 @@ func operationalDataset(nodeCount, relationCount, networkCount, limitCount int) 
 
 	representativeTarget := operationalNetworkID(0)
 	return Dataset{
-		Name: "operational-400k",
-		Nodes: nodes,
+		Name:      "operational-400k",
+		Nodes:     nodes,
 		Relations: relations,
 		Expectations: []Expectation{
 			{
