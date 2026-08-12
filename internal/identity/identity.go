@@ -11,7 +11,7 @@ const (
 	DefaultNamespace = "default"
 	// MaxNamespaceLength はcanonical snapshotとHTTP selectorで共有するnamespaceのUnicode文字数上限である。
 	MaxNamespaceLength = 256
-	canonicalPrefix     = "bsid1:"
+	canonicalPrefix    = "bsid1:"
 )
 
 // Encode はnamespaceとlocal IDから決定的なcanonical node IDを生成する。
