@@ -283,11 +283,11 @@ func registerRoutes(api huma.API, a *App) {
 	}}
 
 	huma.Register(api, huma.Operation{
-		OperationID: "search-targets",
-		Method:      http.MethodGet,
-		Path:        "/v1/targets",
-		Summary:     "Search jobs and job networks by local ID or legacy exact selector",
-		Errors:      []int{http.StatusBadRequest, http.StatusInternalServerError, http.StatusServiceUnavailable},
+		OperationID:        "search-targets",
+		Method:             http.MethodGet,
+		Path:               "/v1/targets",
+		Summary:            "Search jobs and job networks by local ID or legacy exact selector",
+		Errors:             []int{http.StatusBadRequest, http.StatusInternalServerError, http.StatusServiceUnavailable},
 		SkipValidateParams: true,
 	}, a.targets)
 	for _, parameter := range api.OpenAPI().Paths["/v1/targets"].Get.Parameters {
