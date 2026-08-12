@@ -9,7 +9,9 @@ import (
 const (
 	// DefaultNamespace はschema 0.5以前の単一定義セットをAPI上で表す暗黙namespaceである。
 	DefaultNamespace = "default"
-	canonicalPrefix  = "bsid1:"
+	// MaxNamespaceLength はcanonical snapshotとHTTP selectorで共有するnamespaceのUnicode文字数上限である。
+	MaxNamespaceLength = 256
+	canonicalPrefix     = "bsid1:"
 )
 
 // Encode はnamespaceとlocal IDから決定的なcanonical node IDを生成する。
