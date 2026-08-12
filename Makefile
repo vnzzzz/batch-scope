@@ -5,7 +5,7 @@ IMAGE ?= batchscope
 TAG ?= local
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 COMMIT ?= $(shell git rev-parse --short=12 HEAD 2>/dev/null || echo unknown)
-.PHONY: help bootstrap fmt fmt-check scripts-check vet test run smoke openapi openapi-check verify demo-view perf-small perf-pathological perf-concurrent perf-connection-comparison perf-target-search perf-limit-analysis release-artifacts release-artifacts-check image image-run check-docker
+.PHONY: help bootstrap fmt fmt-check scripts-check vet test run smoke openapi openapi-check verify issue52-medium-concurrency demo-view perf-small perf-pathological perf-concurrent perf-connection-comparison perf-target-search perf-limit-analysis release-artifacts release-artifacts-check image image-run check-docker
 
 PERF_RUNS ?= 5
 PERF_PATHOLOGICAL_RUNS ?= 3
@@ -58,7 +58,26 @@ openapi-check: ## [Dev Container/CI] OpenAPI生成物と実装の差分を確認
 		go run ./cmd/openapi-gen > "$$tmp"; \
 		diff -u docs/api/openapi.yaml "$$tmp"
 
-verify: fmt-check scripts-check vet test openapi-check ## [Dev Container/CI] 静的検査とテストを実行する
+issue52-medium-concurrency:
+	@set -Eeuo pipefail; \
+		report="$$(mktemp)"; \
+		trap 'rm -f "$$report"' EXIT; \
+		go run ./cmd/perf-measure \
+			-mode limit-analysis \
+			-profile medium \
+			-target NET-TARGET \
+			-runs 2 \
+			-concurrencies 1,4 \
+			> "$$report"; \
+		summary="$$(jq -c '{configuration,environment,dataset:(.datasets[0]|{name,nodes,relations,archive_bytes,archive_sha256,target:{target_id:.target.target_id,returned_limits:.target.returned_limits,returned_tree_nodes:.target.returned_tree_nodes,uncovered_routes:.target.uncovered_routes,cycles:.target.cycles,deterministic:.target.deterministic,measurements:[.target.measurements[]|{concurrency,cache_state,p95_ns:.latency_ns.p95,max_ns:.latency_ns.max}]}})}' "$$report")"; \
+		echo "::notice title=Issue52 high-density concurrency::$$summary"; \
+		max_concurrency4="$$(jq '[.datasets[0].target.measurements[] | select(.concurrency == 4) | .latency_ns.max] | max' "$$report")"; \
+		if (( max_concurrency4 >= 60000000000 )); then \
+			echo "concurrency=4 exceeded the 60s analysis deadline boundary: $${max_concurrency4}ns" >&2; \
+			exit 1; \
+		fi
+
+verify: fmt-check scripts-check vet test openapi-check issue52-medium-concurrency ## [Dev Container/CI] 静的検査とテストを実行する
 
 demo-view: ## [Dev Container] デモのAPIレスポンスを読みやすく表示する
 	./scripts/show-limit-analysis.sh examples/demo/responses/downstream-limit-analysis.json
