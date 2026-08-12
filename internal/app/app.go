@@ -98,17 +98,15 @@ type targetsInput struct {
 	RequestID string   `header:"X-Request-Id" doc:"Request identifier used in structured logs"`
 
 	queryProvided     bool
-	queryRepeated     bool
 	namespaceProvided bool
 	namespaceRepeated bool
 }
 
-// Resolveは、Humaのパラメーター束縛では区別できないquery/namespaceの未指定、空文字、重複を保持する。
+// Resolveは、Humaのパラメーター束縛では区別できないquery/namespaceの未指定と指定された空文字を区別する。
 func (input *targetsInput) Resolve(ctx huma.Context) []error {
 	requestURL := ctx.URL()
 	query := requestURL.Query()
 	input.queryProvided = query.Has("query")
-	input.queryRepeated = len(query["query"]) > 1
 	input.namespaceProvided = query.Has("namespace")
 	input.namespaceRepeated = len(query["namespace"]) > 1
 	return nil
@@ -438,17 +436,11 @@ func (a *App) targets(ctx context.Context, input *targetsInput) (*targetsOutput,
 }
 
 func validateTargetSelector(input *targetsInput) *huma.ErrorModel {
-	if input.queryRepeated {
-		return InvalidRequestProblem("query must be specified once")
-	}
 	if input.namespaceRepeated {
 		return InvalidRequestProblem("namespace must be specified once")
 	}
 	if !input.queryProvided {
 		return InvalidRequestProblem("query is required")
-	}
-	if input.Query == "" {
-		return InvalidRequestProblem("query must not be empty")
 	}
 	if input.namespaceProvided {
 		if input.Namespace == "" {
