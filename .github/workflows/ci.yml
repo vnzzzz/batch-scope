@@ -28,9 +28,6 @@ jobs:
           go-version-file: go.mod
           cache: false
 
-      - name: Verify
-        run: make verify
-
       - name: Measure operational scale
         shell: bash
         run: |
@@ -58,6 +55,9 @@ jobs:
               }]
             }]
           }' /tmp/operational.json
+
+      - name: Verify
+        run: make verify
 
       - name: Build production image
         run: make image TAG=ci
