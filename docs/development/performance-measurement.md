@@ -309,7 +309,6 @@ Issue #32では、この当時の測定結果に基づき、初期対応規模�
 後続リミット解析の公開HTTPは測定済みです。
 条件と結果は[後続リミット取得のHTTP性能測定結果](limit-analysis-performance.md)を参照してください。
 
-
 ## Issue #52: 実運用40万ノード級の再測定
 
 Issue #52では、実運用で確認された約400,000ノード / 300,000 relationを現行の受入規模へ取り込むため、GitHub Actions上で再測定しました。
@@ -320,7 +319,9 @@ Issue #52では、実運用で確認された約400,000ノード / 300,000 relat
 - OS: Ubuntu 24.04 / linux amd64
 - Go: 1.26.5
 - CPU: 4 vCPU、`GOMAXPROCS=4`
-- operational測定commit: `dda3a127ae67bcf5d81207045fd1c7caa8e41dca`
+- 取込・内部解析・代表targetのoperational測定commit: `dda3a127ae67bcf5d81207045fd1c7caa8e41dca`
+- 全件到達targetの並行HTTP測定commit: `019eaa2c8d1f8435d13569bb171081664920d938`
+- 並行HTTP測定: GitHub Actions CI #178
 
 ```bash
 go run ./cmd/perf-measure -profile operational -runs 2
@@ -336,11 +337,11 @@ go run ./cmd/perf-measure \
   -profile operational \
   -target OPS-ROOT \
   -runs 2 \
-  -concurrencies 1
+  -concurrencies 1,4
 ```
 
 `-target`を省略すると、公開HTTPの測定対象は代表target `OPS-NET-0000`です。
-全件到達targetの公開HTTPを測るときだけ`-target OPS-ROOT`を指定します。
+全件到達targetの公開HTTPを測るときだけ`-target OPS-ROOT`を指定します。`limit-analysis`の測定JSONには指定した`target`も`configuration.target`として記録します。
 
 `operational`は400,000ノード、300,000 relation、5,000リミット、4,000 job networkを生成します。
 同一snapshotに、約100ノードだけへ到達する代表target `OPS-NET-0000`と、全400,000ノードへ到達する`OPS-ROOT`を持ちます。
@@ -388,16 +389,19 @@ DTO組立て、JSON化、構造化ログ、`httptest.ResponseRecorder`への書�
 
 ### 公開HTTPの全件到達target
 
-`OPS-ROOT`も同じ製品`http.Handler`で並行度1、cold/warmを2反復測定しました。
+`OPS-ROOT`も同じ製品`http.Handler`で並行度1と4、cold/warmを2反復測定しました。
 400,000到達node、5,000リミット、700,000 tree node、95,949 `uncoveredRoutes`をDTO化し、JSON書込みまで完了しています。
 
-| 状態 | p95 | 最大 |
-|---|---:|---:|
-| cold | 16.04 s | 16.04 s |
-| warm | 15.23 s | 15.23 s |
+| 並行度 | 状態 | p95 | 最大 |
+|---:|---|---:|---:|
+| 1 | cold | 19.66 s | 19.66 s |
+| 1 | warm | 20.59 s | 20.59 s |
+| 4 | cold | 43.93 s | 43.93 s |
+| 4 | warm | 42.81 s | 42.81 s |
 
-応答digest `934c2f9aac01ff12c797b4a33cc20ff21977e190412324e54a785a7a5e7dfd64`は全要求で一致しました。
-60秒deadlineに対して十分な余裕を持ち、件数によるpartial successはありません。
+全要求で結果件数と応答の決定性を維持し、並行度4でも60秒deadline内に完遂しました。
+`/usr/bin/time -v`で測ったこのstress測定プロセスの最大RSSは9,402,744 KiB（約8.97 GiB）でした。
+測定ハーネスは`httptest.ResponseRecorder`で完全な応答bodyを保持するため、この値を本番HTTPサーバーの厳密な必要メモリとは扱いません。一方、8 GiBを全件到達target 4件同時実行の十分条件とも扱いません。
 
 ### `pathtree`メモリ削減の比較
 
@@ -420,6 +424,7 @@ CPU時間は約1割増えましたが、Heap/RSSを約90%削減しました。
 
 400,000ノード / 300,000 relationを取込時の対応規模へ引き上げます。
 代表targetは並行度4でもp95 1秒目標へ十分な余力があります。
+全件到達targetも4件同時に60秒deadline内で完遂しましたが、測定プロセス最大RSSは8 GiBを超えました。代表負荷向けの8 GiB推奨と、全件到達target 4件同時実行向けの12 GiB以上の推奨を運用上は分けます。
 一方、snapshot全体へ到達する最悪targetや高密度relation形状を1秒以内に処理することは性能目標に含めず、完全解析を優先します。
 旧10秒deadlineでは測定済みの正常な全件解析を途中で失敗させるため、異常時deadlineを60秒へ変更します。
 
