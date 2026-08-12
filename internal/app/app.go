@@ -102,7 +102,8 @@ type targetsInput struct {
 
 // Resolveは、Humaのパラメーター束縛では区別できないquery parameterの未指定と指定値を区別する。
 func (input *targetsInput) Resolve(ctx huma.Context) []error {
-	query := ctx.URL().Query()
+	requestURL := ctx.URL()
+	query := requestURL.Query()
 	input.queryProvided = query.Has("query")
 	input.jobIDProvided = query.Has("jobId")
 	input.nsProvided = query.Has("namespace")
@@ -315,8 +316,8 @@ func (a *App) ready(context.Context, *struct{}) (*readyOutput, error) {
 		Body: ReadyResponse{
 			Status: "not_ready",
 			Reason: "snapshot_not_loaded",
-		},
-	}, nil
+		}, nil
+	}
 }
 
 func (a *App) status(context.Context, *struct{}) (*statusOutput, error) {
@@ -331,8 +332,7 @@ func (a *App) status(context.Context, *struct{}) (*statusOutput, error) {
 				Version: a.config.Version,
 				Commit:  a.config.Commit,
 			},
-		},
-	}, nil
+		}, nil
 }
 
 func (a *App) currentSnapshotInfo() *SnapshotInfo {
