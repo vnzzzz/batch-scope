@@ -115,7 +115,8 @@ Mediumは100,000ノード、300,000 relationであり、この測定を行った
 
 測定コマンドは`manifest.json/nodeCount: capacity_exceeded`で終了しました。
 HTTPハンドラーを呼び出していないため、Mediumの中央値、p95、最大値はありません。
-これは性能上の異常終了ではなく、公開する入力条件による拒否です。
+これは性能上の異常終了ではなく、当時公開していた入力条件による拒否です。
+Issue #52で受入規模を400,000ノード / 300,000 relationへ更新した後のMedium再測定は、後述の[高密度Medium並行測定](#issue-52の高密度medium並行測定)に分けて記録します。
 
 ## 目標に対する判定
 
@@ -131,11 +132,10 @@ Pathologicalの全ケースも同じ目標を満たしました。
 `httptest`による測定は製品のHTTPハンドラーを通りますが、TCP接続、OSのHTTPソケット処理、外部ロードバランサー、ネットワーク遅延を含みません。
 coldでもOSのページキャッシュを保持するため、ストレージからの完全な初回読込を表しません。
 
-結果は一つのDev Containerで20ラウンドを実行した値です。
+結果は一つのDev Containerまたは各GitHub Actions runnerで測定した値です。
 CPU数、利用可能メモリ、同居プロセスが異なる環境で同じp95を保証しません。
 
 `includeEvidence=true`によるrelation evidenceの追加と、5,000件のリミットをすべて大きな文字列として返す最悪応答サイズは測定していません。
-Mediumはこの測定時点では受入上限外だったため、当時の公開HTTP分布を取得していません。Issue #52で対応規模を更新した後の結果は[取込と静的解析の性能測定結果](performance-measurement.md#issue-52-実運用40万ノード級の再測定)を参照してください。
 
 ## Issue #52のoperational profile
 
@@ -148,8 +148,41 @@ Mediumはこの測定時点では受入上限外だったため、当時の公�
 公開HTTPでは700,000 tree nodeと95,949 `uncoveredRoutes`を含む応答をJSONまで返し、並行度1のp95はcold 19.66秒、warm 20.59秒、並行度4のp95はcold 43.93秒、warm 42.81秒でした。
 全要求が60秒deadline内で完遂し、結果の決定性を維持しました。
 
-並行度1/4の全件到達target測定はcommit `019eaa2c8d1f8435d13569bb171081664920d938`のGitHub Actions CI #178で実行しました。測定プロセスの最大RSSは9,402,744 KiB（約8.97 GiB）です。
+並行度1/4の全件到達target測定はPR head `019eaa2c8d1f8435d13569bb171081664920d938`に対するGitHub Actions CI #178で実行しました。`pull_request`イベントで実際にcheckoutしたtest merge commitは`2cbe494f5e106ae4b7ccee7636217dad47daa6ee`です。
+測定プロセスの最大RSSは9,402,744 KiB（約8.97 GiB）でした。
 測定ハーネスは`httptest.ResponseRecorder`で完全な応答bodyを保持するため、本番HTTPサーバーの厳密な必要メモリ値とは扱いません。一方、8 GiBを全件到達target 4件同時実行の十分条件とも扱いません。
 
 これは完全解析保証のstress caseであり、1秒以内に切り捨てる対象にはしません。
 詳細な取込、メモリ、段階別測定と運用資源の判定は[Issue #52の再測定](performance-measurement.md#issue-52-実運用40万ノード級の再測定)を参照してください。
+
+## Issue #52の高密度Medium並行測定
+
+現在の受入規模内にある100,000ノード / 300,000 relationのMediumは、Operationalよりノード数が少ない一方、平方根幅の前向き辺による分岐・合流を多数含み、`pathtree`の高密度stress shapeとして使います。
+Operationalは40万ノード級の入力規模と一検索の到達範囲、Mediumは高密度な分岐・合流、Pathologicalは長鎖、fan-in/out、SCC、深いscopeなどの独立した特殊形状を担当します。単一profileだけで実データの全トポロジを再現したとは扱いません。
+
+2026-08-12に、Mediumの`NET-TARGET`を製品の`http.Handler`で並行度1と4、cold/warmを各2反復測定しました。
+環境はGitHub ActionsのUbuntu 24.04、linux/amd64、Go 1.26.5、4 CPU（`GOMAXPROCS=4`）です。
+入力アーカイブは2,223,686 bytes、SHA-256は`b14d436dafe9822cbec7f63c3ebd93d867fa4e4ff79a215f29e2b79f9b613ea3`です。
+`NET-TARGET`は99,998ノードへ到達し、432リミット、291,506 tree node、1 `uncoveredRoutes`、3 cyclesを返しました。
+
+```bash
+go run ./cmd/perf-measure \
+  -mode limit-analysis \
+  -profile medium \
+  -target NET-TARGET \
+  -runs 2 \
+  -concurrencies 1,4
+```
+
+| 並行度 | 状態 | p95 | 最大 |
+|---:|---|---:|---:|
+| 1 | cold | 23.18 s | 23.18 s |
+| 1 | warm | 21.83 s | 21.83 s |
+| 4 | cold | 40.03 s | 40.03 s |
+| 4 | warm | 40.93 s | 40.93 s |
+
+全条件で結果digestは一致し、`deterministic=true`でした。並行度4の全要求も60秒deadline内に完遂しました。
+2反復のためnearest-rank p95は各条件の最大値と一致します。
+
+この測定はPR head `b98d039440a03a7c1857d641d8818bd55513c75e`に対するGitHub Actions CI #185で実行しました。`pull_request`イベントで実際にcheckoutしたtest merge commitは`fd99f9f52dc74715387eec28d53d6c2904d863c6`です。
+これにより、40万ノード全件到達のOperationalだけでなく、現在の受入規模内にある高密度Mediumでも想定同時検索数4の全要求が60秒以内に完遂することを確認しました。
