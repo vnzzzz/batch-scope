@@ -147,8 +147,12 @@ func loadNodes(ctx context.Context, path string, nodes, identities, limits *sql.
 		); err != nil {
 			return fmt.Errorf("insert %s:%d: %w", nodesName, line, err)
 		}
-		if _, err := identities.ExecContext(ctx, current.ID, namespace, localID); err != nil {
-			return &Error{Kind: ErrorInvalidIdentity, File: nodesName, Line: line, Pointer: "/localId", Err: err}
+		// schema 0.5は従来のID/name/path検索へfallbackさせ、公開matchedByを変えない。
+		// namespace-awareなnode_identityはschema 0.6だけへ登録する。
+		if schemaVersion == "0.6" {
+			if _, err := identities.ExecContext(ctx, current.ID, namespace, localID); err != nil {
+				return &Error{Kind: ErrorInvalidIdentity, File: nodesName, Line: line, Pointer: "/localId", Err: err}
+			}
 		}
 
 		for factIndex, fact := range current.LimitFacts {
