@@ -1,0 +1,43 @@
+name: Issue 52 refactor
+
+on:
+  push:
+    branches:
+      - feature/support-400k-snapshots
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: ${{ !contains(github.event.head_commit.message, '[issue52-refactor]') }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout feature branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: feature/support-400k-snapshots
+          persist-credentials: true
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - name: Apply guarded refactor
+        run: |
+          python3 scripts/issue52-refactor.py
+          gofmt -w internal/pathtree/pathtree.go internal/snapshot/validate.go internal/snapshot/validate_test.go internal/app/snapshot_imports_test.go internal/app/analysis.go
+          go test ./internal/pathtree ./internal/snapshot ./internal/app
+
+      - name: Commit refactor
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add internal/pathtree/pathtree.go internal/snapshot/validate.go internal/snapshot/validate_test.go internal/app/snapshot_imports_test.go internal/app/analysis.go
+          git commit -m "perf: reduce large graph analysis memory [issue52-refactor]"
+          git push origin HEAD:feature/support-400k-snapshots
