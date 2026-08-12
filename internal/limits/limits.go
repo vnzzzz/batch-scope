@@ -15,9 +15,13 @@ const (
 	MaxManifestBytes int64 = 1 << 20
 	// MaxNDJSONLineBytes は、一件の検査で保持するメモリ量を制限する。
 	MaxNDJSONLineBytes int64 = 16 << 20
-	// MaxNodeIDLengthはcanonical node IDのJSON SchemaとHTTP検索境界を一致させる。
-	// 受入済みスナップショットに存在し得ない長さのIDをSQLiteへ渡さない。
-	MaxNodeIDLength = 1_024
+	// MaxLocalNodeIDLengthは、元定義セット内のlocal IDとjobId検索に適用するUnicode文字数上限である。
+	MaxLocalNodeIDLength = 1_024
+	// MaxCanonicalNodeIDLengthは、namespaceを含むcanonical node IDとその参照に適用するUnicode文字数上限である。
+	// schema 0.6では最大256文字のnamespaceと最大1,024文字のlocal IDを長さprefix形式で保持できる余地を確保する。
+	MaxCanonicalNodeIDLength = 4_096
+	// MaxNodeIDLengthは既存のcanonical ID検査コードとの互換名である。
+	MaxNodeIDLength = MaxCanonicalNodeIDLength
 
 	// MaxSnapshotNodesは、実運用で確認された40万ノード級を受け入れる境界とする。
 	// 検索時の打切り値にはせず、この規模を超える入力を取込時に拒否して全件解析を保証する。
