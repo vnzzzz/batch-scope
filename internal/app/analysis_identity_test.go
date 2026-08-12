@@ -22,7 +22,7 @@ func TestAnalysisNodeJSONIncludesNamespaceIdentity(t *testing.T) {
 	}
 }
 
-func TestAnalysisNodeJSONUsesDefaultNamespaceForLegacyID(t *testing.T) {
+func TestAnalysisNodeJSONKeepsLegacyShape(t *testing.T) {
 	node := analysisNode{ID: "LEGACY-JOB", Type: "job", Name: "Legacy Job"}
 	contents, err := json.Marshal(node)
 	if err != nil {
@@ -32,7 +32,13 @@ func TestAnalysisNodeJSONUsesDefaultNamespaceForLegacyID(t *testing.T) {
 	if err := json.Unmarshal(contents, &decoded); err != nil {
 		t.Fatal(err)
 	}
-	if decoded["namespace"] != identity.DefaultNamespace || decoded["localId"] != "LEGACY-JOB" {
+	if _, ok := decoded["namespace"]; ok {
+		t.Fatalf("legacy analysis node unexpectedly has namespace: %v", decoded)
+	}
+	if _, ok := decoded["localId"]; ok {
+		t.Fatalf("legacy analysis node unexpectedly has localId: %v", decoded)
+	}
+	if decoded["id"] != "LEGACY-JOB" {
 		t.Fatalf("legacy analysis node = %v", decoded)
 	}
 }
