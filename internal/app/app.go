@@ -316,8 +316,8 @@ func (a *App) ready(context.Context, *struct{}) (*readyOutput, error) {
 		Body: ReadyResponse{
 			Status: "not_ready",
 			Reason: "snapshot_not_loaded",
-		}, nil
-	}
+		},
+	}, nil
 }
 
 func (a *App) status(context.Context, *struct{}) (*statusOutput, error) {
@@ -332,7 +332,8 @@ func (a *App) status(context.Context, *struct{}) (*statusOutput, error) {
 				Version: a.config.Version,
 				Commit:  a.config.Commit,
 			},
-		}, nil
+		},
+	}, nil
 }
 
 func (a *App) currentSnapshotInfo() *SnapshotInfo {
