@@ -320,8 +320,12 @@ Issue #52では、実運用で確認された約400,000ノード / 300,000 relat
 - Go: 1.26.5
 - CPU: 4 vCPU、`GOMAXPROCS=4`
 - 取込・内部解析・代表targetのoperational測定commit: `dda3a127ae67bcf5d81207045fd1c7caa8e41dca`
-- 全件到達targetの並行HTTP測定commit: `019eaa2c8d1f8435d13569bb171081664920d938`
-- 並行HTTP測定: GitHub Actions CI #178
+- 全件到達targetの並行HTTP測定PR head: `019eaa2c8d1f8435d13569bb171081664920d938`
+- 全件到達targetの並行HTTP測定test merge: `2cbe494f5e106ae4b7ccee7636217dad47daa6ee`
+- 全件到達targetの並行HTTP測定: GitHub Actions CI #178
+- 高密度Mediumの並行HTTP測定PR head: `b98d039440a03a7c1857d641d8818bd55513c75e`
+- 高密度Mediumの並行HTTP測定test merge: `fd99f9f52dc74715387eec28d53d6c2904d863c6`
+- 高密度Mediumの並行HTTP測定: GitHub Actions CI #185
 
 ```bash
 go run ./cmd/perf-measure -profile operational -runs 2
@@ -338,6 +342,13 @@ go run ./cmd/perf-measure \
   -target OPS-ROOT \
   -runs 2 \
   -concurrencies 1,4
+
+go run ./cmd/perf-measure \
+  -mode limit-analysis \
+  -profile medium \
+  -target NET-TARGET \
+  -runs 2 \
+  -concurrencies 1,4
 ```
 
 `-target`を省略すると、公開HTTPの測定対象は代表target `OPS-NET-0000`です。
@@ -346,6 +357,8 @@ go run ./cmd/perf-measure \
 `operational`は400,000ノード、300,000 relation、5,000リミット、4,000 job networkを生成します。
 同一snapshotに、約100ノードだけへ到達する代表target `OPS-NET-0000`と、全400,000ノードへ到達する`OPS-ROOT`を持ちます。
 アーカイブは3,617,541 bytes、SHA-256は`43a9b9062351aeb08be43cf2b273900311dc14fab5328668ec5a64f4c0a28dfa`です。
+
+Operationalは現行の入力規模と一検索の到達範囲、Mediumは100,000ノード / 300,000 relationの高密度な分岐・合流、Pathologicalは長鎖、fan-in/out、SCC、深いscopeなどの独立した特殊形状を分担します。単一profileだけで実データの全トポロジを再現したとは扱いません。
 
 ### 取込
 
@@ -420,11 +433,26 @@ DTO組立て、JSON化、構造化ログ、`httptest.ResponseRecorder`への書�
 CPU時間は約1割増えましたが、Heap/RSSを約90%削減しました。
 検索結果、代表経路規則、リミット、`uncoveredRoutes`は切り詰めていません。
 
+### 高密度Mediumの公開HTTP並行測定
+
+現在の受入規模内にある100,000ノード / 300,000 relationのMediumで、`NET-TARGET`を並行度1と4、cold/warmで各2反復測定しました。
+`NET-TARGET`は99,998ノードへ到達し、432リミット、291,506 tree node、1 `uncoveredRoutes`、3 cyclesを返しました。
+
+| 並行度 | 状態 | p95 | 最大 |
+|---:|---|---:|---:|
+| 1 | cold | 23.18 s | 23.18 s |
+| 1 | warm | 21.83 s | 21.83 s |
+| 4 | cold | 40.03 s | 40.03 s |
+| 4 | warm | 40.93 s | 40.93 s |
+
+全条件で結果digestは一致し、並行度4の全要求も60秒deadline内に完遂しました。
+
 ### 判定
 
 400,000ノード / 300,000 relationを取込時の対応規模へ引き上げます。
 代表targetは並行度4でもp95 1秒目標へ十分な余力があります。
-全件到達targetも4件同時に60秒deadline内で完遂しましたが、測定プロセス最大RSSは8 GiBを超えました。代表負荷向けの8 GiB推奨と、全件到達target 4件同時実行向けの12 GiB以上の推奨を運用上は分けます。
+全件到達targetと高密度Mediumの双方で、4件同時の公開HTTP要求が60秒deadline内に完遂しました。これにより、現行対応規模の入力規模stressと高密度relation stressの両方で想定同時検索数4を確認しました。
+全件到達targetの測定プロセス最大RSSは8 GiBを超えたため、代表負荷向けの8 GiB推奨と、全件到達target 4件同時実行向けの12 GiB以上の推奨を運用上は分けます。
 一方、snapshot全体へ到達する最悪targetや高密度relation形状を1秒以内に処理することは性能目標に含めず、完全解析を優先します。
 旧10秒deadlineでは測定済みの正常な全件解析を途中で失敗させるため、異常時deadlineを60秒へ変更します。
 
