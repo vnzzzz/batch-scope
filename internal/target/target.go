@@ -6,21 +6,27 @@ import (
 	"database/sql"
 	"fmt"
 	"strings"
+
+	"batchscope/internal/identity"
 )
 
 // Node はAPIで公開する対象ノードの共通表現である。
 type Node struct {
-	ID   string  `json:"id"`
-	Type string  `json:"type" enum:"job,job_network"`
-	Name string  `json:"name"`
-	Path *string `json:"path,omitempty"`
+	ID        string  `json:"id"`
+	Namespace string  `json:"namespace"`
+	LocalID   string  `json:"localId"`
+	Type      string  `json:"type" enum:"job,job_network"`
+	Name      string  `json:"name"`
+	Path      *string `json:"path,omitempty"`
 }
 
 // Ancestor は対象ノードの親子階層を構成する祖先の公開表現である。
 type Ancestor struct {
-	ID   string `json:"id"`
-	Type string `json:"type" enum:"management_unit,job_network"`
-	Name string `json:"name"`
+	ID        string `json:"id"`
+	Namespace string `json:"namespace"`
+	LocalID   string `json:"localId"`
+	Type      string `json:"type" enum:"management_unit,job_network"`
+	Name      string `json:"name"`
 }
 
 // Details は対象ノードと、最上位から直近の親までの祖先を保持する。
@@ -29,7 +35,7 @@ type Details struct {
 	AncestorPath []Ancestor `json:"ancestorPath" nullable:"false"`
 }
 
-// LoadOne は一件のノードIDから公開表現とancestorPathを組み立てる。
+// LoadOne は一件のcanonical node IDから公開表現とancestorPathを組み立てる。
 func LoadOne(ctx context.Context, db *sql.DB, nodeID string) (Details, error) {
 	details, err := LoadMany(ctx, db, []string{nodeID})
 	if err != nil {
@@ -43,19 +49,56 @@ func LoadOne(ctx context.Context, db *sql.DB, nodeID string) (Details, error) {
 }
 
 // LoadMany は複数のノード詳細とancestorPathを一回のSQLiteクエリで取得する。
-// idsは重複のない既存ノードIDでなければならない。
+// idsは重複のない既存canonical node IDでなければならない。
 func LoadMany(ctx context.Context, db *sql.DB, ids []string) (map[string]Details, error) {
 	if len(ids) == 0 {
 		return map[string]Details{}, nil
 	}
 
+	withIdentity, err := hasIdentityTable(ctx, db)
+	if err != nil {
+		return nil, err
+	}
 	values := make([]string, len(ids))
 	args := make([]any, len(ids))
 	for index, id := range ids {
 		values[index] = "(?)"
 		args[index] = id
 	}
+
+	identityJoin := ""
+	namespaceColumn := "?"
+	localIDColumn := "node.node_id"
+	argsPrefix := []any{identity.DefaultNamespace}
+	if withIdentity {
+		identityJoin = "LEFT JOIN node_identity AS identity ON identity.node_id = node.node_id"
+		namespaceColumn = "COALESCE(identity.namespace, ?)"
+		localIDColumn = "COALESCE(identity.local_id, node.node_id)"
+	}
+	allArgs := append(argsPrefix, args...)
 	query := fmt.Sprintf(`
+WITH RECURSIVE requested(target_id) AS (
+	VALUES %s
+), lineage(target_id, node_id, node_type, name, path, parent_id, namespace, local_id, depth) AS (
+	SELECT requested.target_id, node.node_id, node.node_type, node.name, node.path, node.parent_id,
+		%s, %s, 0
+	FROM requested
+	JOIN node ON node.node_id = requested.target_id
+	%s
+	UNION ALL
+	SELECT lineage.target_id, parent.node_id, parent.node_type, parent.name, parent.path, parent.parent_id,
+		COALESCE(parent_identity.namespace, ?), COALESCE(parent_identity.local_id, parent.node_id), lineage.depth + 1
+	FROM lineage
+	JOIN node AS parent ON parent.node_id = lineage.parent_id
+	LEFT JOIN node_identity AS parent_identity ON parent_identity.node_id = parent.node_id
+)
+SELECT target_id, node_id, node_type, name, path, namespace, local_id, depth
+FROM lineage
+ORDER BY target_id COLLATE BINARY, depth DESC`, strings.Join(values, ","), namespaceColumn, localIDColumn, identityJoin)
+
+	if !withIdentity {
+		// legacy test databases may predate node_identity. Their complete lineage uses the implicit default namespace.
+		query = fmt.Sprintf(`
 WITH RECURSIVE requested(target_id) AS (
 	VALUES %s
 ), lineage(target_id, node_id, node_type, name, path, parent_id, depth) AS (
@@ -67,11 +110,17 @@ WITH RECURSIVE requested(target_id) AS (
 	FROM lineage
 	JOIN node AS parent ON parent.node_id = lineage.parent_id
 )
-SELECT target_id, node_id, node_type, name, path, depth
+SELECT target_id, node_id, node_type, name, path, ?, node_id, depth
 FROM lineage
 ORDER BY target_id COLLATE BINARY, depth DESC`, strings.Join(values, ","))
+		allArgs = append([]any{identity.DefaultNamespace}, args...)
+	} else {
+		// recursive parent lookup also needs the legacy fallback namespace.
+		allArgs = append([]any{identity.DefaultNamespace}, args...)
+		allArgs = append(allArgs, identity.DefaultNamespace)
+	}
 
-	rows, err := db.QueryContext(ctx, query, args...)
+	rows, err := db.QueryContext(ctx, query, allArgs...)
 	if err != nil {
 		return nil, fmt.Errorf("load target details: %w", err)
 	}
@@ -79,15 +128,15 @@ ORDER BY target_id COLLATE BINARY, depth DESC`, strings.Join(values, ","))
 
 	result := make(map[string]Details, len(ids))
 	for rows.Next() {
-		var targetID, nodeID, nodeType, name string
+		var targetID, nodeID, nodeType, name, namespace, localID string
 		var path sql.NullString
 		var depth int
-		if err := rows.Scan(&targetID, &nodeID, &nodeType, &name, &path, &depth); err != nil {
+		if err := rows.Scan(&targetID, &nodeID, &nodeType, &name, &path, &namespace, &localID, &depth); err != nil {
 			return nil, fmt.Errorf("scan target details: %w", err)
 		}
 		if depth == 0 {
 			detail := result[targetID]
-			detail.Node = Node{ID: nodeID, Type: nodeType, Name: name, Path: optionalString(path)}
+			detail.Node = Node{ID: nodeID, Namespace: namespace, LocalID: localID, Type: nodeType, Name: name, Path: optionalString(path)}
 			if detail.AncestorPath == nil {
 				detail.AncestorPath = []Ancestor{}
 			}
@@ -98,7 +147,7 @@ ORDER BY target_id COLLATE BINARY, depth DESC`, strings.Join(values, ","))
 		if detail.AncestorPath == nil {
 			detail.AncestorPath = []Ancestor{}
 		}
-		detail.AncestorPath = append(detail.AncestorPath, Ancestor{ID: nodeID, Type: nodeType, Name: name})
+		detail.AncestorPath = append(detail.AncestorPath, Ancestor{ID: nodeID, Namespace: namespace, LocalID: localID, Type: nodeType, Name: name})
 		result[targetID] = detail
 	}
 	if err := rows.Err(); err != nil {
@@ -112,6 +161,16 @@ ORDER BY target_id COLLATE BINARY, depth DESC`, strings.Join(values, ","))
 		}
 	}
 	return result, nil
+}
+
+func hasIdentityTable(ctx context.Context, db *sql.DB) (bool, error) {
+	var exists bool
+	if err := db.QueryRowContext(ctx, `SELECT EXISTS(
+		SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'node_identity'
+	)`).Scan(&exists); err != nil {
+		return false, fmt.Errorf("inspect node identity table: %w", err)
+	}
+	return exists, nil
 }
 
 func optionalString(value sql.NullString) *string {
