@@ -14,7 +14,6 @@ import (
 	"unicode/utf8"
 
 	"batchscope/internal/identity"
-	"batchscope/internal/limits"
 	"batchscope/internal/observability"
 	"batchscope/internal/store"
 	"batchscope/internal/target"
