@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -113,11 +114,15 @@ type targetsOutput struct {
 }
 
 func New(config Config) (*App, error) {
-	storage, err := store.New(config.DataDir)
+	resolvedConfig, err := resolveConfig(config)
+	if err != nil {
+		return nil, err
+	}
+	storage, err := store.New(resolvedConfig.DataDir)
 	if err != nil {
 		return nil, fmt.Errorf("open SQLite store: %w", err)
 	}
-	a, err := NewWithStore(config, storage)
+	a, err := newWithStore(resolvedConfig, storage)
 	if err != nil {
 		_ = storage.Close()
 		return nil, err
@@ -128,6 +133,14 @@ func New(config Config) (*App, error) {
 // NewWithStoreは、準備済みのStoreを使って製品と同じHTTPルートを組み立てる。
 // 返したAppがStoreを所有するため、呼出側はApp.Closeで両方を閉じる。
 func NewWithStore(config Config, storage *store.Store) (*App, error) {
+	resolvedConfig, err := resolveConfig(config)
+	if err != nil {
+		return nil, err
+	}
+	return newWithStore(resolvedConfig, storage)
+}
+
+func newWithStore(config Config, storage *store.Store) (*App, error) {
 	if storage == nil {
 		return nil, errors.New("store is nil")
 	}
@@ -151,6 +164,18 @@ func NewWithStore(config Config, storage *store.Store) (*App, error) {
 	return a, nil
 }
 
+func resolveConfig(config Config) (Config, error) {
+	if config.DataDir == "" {
+		return config, nil
+	}
+	resolved, err := filepath.Abs(config.DataDir)
+	if err != nil {
+		return Config{}, fmt.Errorf("resolve data directory: %w", err)
+	}
+	config.DataDir = resolved
+	return config, nil
+}
+
 // OpenAPISpecは、サーバーと同じConfigおよびルート登録からOpenAPIを組み立てる。
 // 返す内容はApp設定に依存せず、常に同じになる。
 func OpenAPISpec() *huma.OpenAPI {
@@ -166,6 +191,11 @@ func (a *App) Handler() http.Handler {
 // BootIDは、プロセス寿命をまたぐログと応答を対応付ける識別子を返す。
 func (a *App) BootID() string {
 	return a.bootID
+}
+
+// DataDirectoryは、アプリケーションが実際に使用する絶対パスのデータディレクトリを返す。
+func (a *App) DataDirectory() string {
+	return a.config.DataDir
 }
 
 // Closeは非同期取込の終了を待ってから、Appが所有するSQLiteストアを閉じる。
