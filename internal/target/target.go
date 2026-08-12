@@ -13,8 +13,8 @@ import (
 // Node はAPIで公開する対象ノードの共通表現である。
 type Node struct {
 	ID        string  `json:"id"`
-	Namespace string  `json:"namespace"`
-	LocalID   string  `json:"localId"`
+	Namespace string  `json:"namespace,omitempty"`
+	LocalID   string  `json:"localId,omitempty"`
 	Type      string  `json:"type" enum:"job,job_network"`
 	Name      string  `json:"name"`
 	Path      *string `json:"path,omitempty"`
@@ -23,8 +23,8 @@ type Node struct {
 // Ancestor は対象ノードの親子階層を構成する祖先の公開表現である。
 type Ancestor struct {
 	ID        string `json:"id"`
-	Namespace string `json:"namespace"`
-	LocalID   string `json:"localId"`
+	Namespace string `json:"namespace,omitempty"`
+	LocalID   string `json:"localId,omitempty"`
 	Type      string `json:"type" enum:"management_unit,job_network"`
 	Name      string `json:"name"`
 }
@@ -73,13 +73,13 @@ WITH RECURSIVE requested(target_id) AS (
 	VALUES %s
 ), lineage(target_id, node_id, node_type, name, path, parent_id, namespace, local_id, depth) AS (
 	SELECT requested.target_id, node.node_id, node.node_type, node.name, node.path, node.parent_id,
-		COALESCE(identity.namespace, ?), COALESCE(identity.local_id, node.node_id), 0
+		COALESCE(identity.namespace, ''), COALESCE(identity.local_id, ''), 0
 	FROM requested
 	JOIN node ON node.node_id = requested.target_id
 	LEFT JOIN node_identity AS identity ON identity.node_id = node.node_id
 	UNION ALL
 	SELECT lineage.target_id, parent.node_id, parent.node_type, parent.name, parent.path, parent.parent_id,
-		COALESCE(parent_identity.namespace, ?), COALESCE(parent_identity.local_id, parent.node_id), lineage.depth + 1
+		COALESCE(parent_identity.namespace, ''), COALESCE(parent_identity.local_id, ''), lineage.depth + 1
 	FROM lineage
 	JOIN node AS parent ON parent.node_id = lineage.parent_id
 	LEFT JOIN node_identity AS parent_identity ON parent_identity.node_id = parent.node_id
@@ -87,9 +87,8 @@ WITH RECURSIVE requested(target_id) AS (
 SELECT target_id, node_id, node_type, name, path, namespace, local_id, depth
 FROM lineage
 ORDER BY target_id COLLATE BINARY, depth DESC`, strings.Join(values, ","))
-		args = append(args, identity.DefaultNamespace, identity.DefaultNamespace)
 	} else {
-		// 旧テストfixture等、node_identity導入前のSQLiteは単一default namespaceとして読む。
+		// 旧テストfixture等、node_identity導入前のSQLiteは従来JSONを維持する。
 		query = fmt.Sprintf(`
 WITH RECURSIVE requested(target_id) AS (
 	VALUES %s
@@ -102,10 +101,9 @@ WITH RECURSIVE requested(target_id) AS (
 	FROM lineage
 	JOIN node AS parent ON parent.node_id = lineage.parent_id
 )
-SELECT target_id, node_id, node_type, name, path, ?, node_id, depth
+SELECT target_id, node_id, node_type, name, path, '', '', depth
 FROM lineage
 ORDER BY target_id COLLATE BINARY, depth DESC`, strings.Join(values, ","))
-		args = append(args, identity.DefaultNamespace)
 	}
 
 	rows, err := db.QueryContext(ctx, query, args...)
@@ -121,6 +119,9 @@ ORDER BY target_id COLLATE BINARY, depth DESC`, strings.Join(values, ","))
 		var depth int
 		if err := rows.Scan(&targetID, &nodeID, &nodeType, &name, &path, &namespace, &localID, &depth); err != nil {
 			return nil, fmt.Errorf("scan target details: %w", err)
+		}
+		if namespace == identity.DefaultNamespace {
+			namespace, localID = "", ""
 		}
 		if depth == 0 {
 			detail := result[targetID]
