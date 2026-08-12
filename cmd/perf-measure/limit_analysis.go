@@ -126,7 +126,7 @@ func runLimitAnalysis(configured config, output io.Writer) error {
 		GeneratedAt:   time.Now().UTC(),
 		Configuration: reportConfig{
 			Mode: configured.Mode, Profile: configured.Profile, Nodes: configured.Nodes,
-			Relations: configured.Relations, Runs: configured.Runs,
+			Relations: configured.Relations, Target: configured.Target, Runs: configured.Runs,
 			Concurrencies: slices.Clone(configured.Concurrencies),
 		},
 		Environment: reportEnv{
