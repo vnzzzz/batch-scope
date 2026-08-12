@@ -70,7 +70,7 @@ issue52-medium-concurrency:
 			-concurrencies 1,4 \
 			> "$$report"; \
 		summary="$$(jq -c '{configuration,environment,dataset:(.datasets[0]|{name,nodes,relations,archive_bytes,archive_sha256,target:{target_id:.target.target_id,returned_limits:.target.returned_limits,returned_tree_nodes:.target.returned_tree_nodes,uncovered_routes:.target.uncovered_routes,cycles:.target.cycles,deterministic:.target.deterministic,measurements:[.target.measurements[]|{concurrency,cache_state,p95_ns:.latency_ns.p95,max_ns:.latency_ns.max}]}})}' "$$report")"; \
-		echo "::notice title=Issue52 high-density concurrency::$$summary"; \
+		echo "::warning file=Makefile,line=1,title=Issue52 high-density concurrency::$$summary"; \
 		max_concurrency4="$$(jq '[.datasets[0].target.measurements[] | select(.concurrency == 4) | .latency_ns.max] | max' "$$report")"; \
 		if (( max_concurrency4 >= 60000000000 )); then \
 			echo "concurrency=4 exceeded the 60s analysis deadline boundary: $${max_concurrency4}ns" >&2; \
