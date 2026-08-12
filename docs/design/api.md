@@ -36,40 +36,65 @@ Humaが生成したAPIドキュメントを`/docs`、OpenAPIを`/openapi.json`�
 
 ## 対象の検索
 
-`GET /v1/targets`は、`query`をID、名前、完全パスと照合します。
+`GET /v1/targets`は、利用者が入力する`query`を最初に**local ID**として完全一致検索します。
+`namespace`を指定した場合は、そのnamespaceのlocal IDだけを検索します。
+`namespace`を省略した場合は、同じlocal IDを持つ全namespaceを検索し、複数namespaceに同じIDが存在しても一件へ絞りません。
 `type`を指定した場合は、`job`または`job_network`へ絞ります。
 
 `query`の指定は必須です。
-明示的に指定された空文字と空白だけの値も検索値として扱います。
+明示的に指定された空文字と空白だけの値も従来どおり検索値として扱います。
+`namespace`は任意ですが、指定する場合は空文字にできず、256文字以内です。
+namespaceとlocal IDは入力どおり完全一致で比較し、正規化しません。
 
-IDは入力どおり比較します。
+namespace未指定でlocal IDに一件以上一致した場合は、その一致結果だけを返します。
+local IDに一件も一致しなかった場合だけ、従来互換として`query`をcanonical ID、名前、完全パスと照合します。
+`namespace`を指定した検索ではcanonical ID、名前、完全パスへのfallbackを行いません。
+
+従来互換検索では、canonical IDは入力どおり比較します。
 名前はUnicode NFKC、前後空白の除去、Unicodeケースフォールディングを適用して比較します。
 パスはUnicode NFKCと前後空白の除去を適用し、大文字と小文字を区別して比較します。
 前方一致、部分一致、曖昧検索は行いません。
 
-同じノードが複数の検索対象で一致しても一件だけ返し、`matchedBy`で一致した対象を示します。
-`ancestorPath`は、対象の所属を最上位から直接の親までの順に示します。
+schema `0.6`由来の検索結果は、内部参照用のcanonical `id`に加えて`namespace`と`localId`を返します。
+local ID一致では`matchedBy=["localId"]`です。
+`ancestorPath`もnamespaced snapshotでは各祖先に`namespace`と`localId`を持ちます。
+schema `0.5`由来の従来レスポンスでは`namespace`と`localId`を省略し、既存JSON形状を維持します。
 
-結果は、最初に一致した対象をID、名前、パスの順で比較し、次に完全パス、最後にIDをバイト順で比較して並べます。
+local ID一致の結果は、namespace、完全パス、canonical IDの順にバイト順で比較して並べます。
 完全パスがないノードは、完全パスがあるノードより後に並べます。
+従来互換検索へfallbackした場合は、最初に一致した対象をID、名前、パスの順で比較し、次に完全パス、最後にIDをバイト順で比較する従来順序を維持します。
 同じ入力と検索条件には同じ順序の結果を返します。
 
 一回の検索では最大1,000件を返します。
 1,001件目の存在を確認した場合は先頭1,000件を返し、`truncated=true`で全件結果ではないことを示します。
 
+利用者がジョブIDだけを指定し、複数namespaceの候補が返った場合、APIは候補の一つを選びません。
+呼出側は必要な候補をそれぞれのcanonical `id`で解析できます。Public Skillは`truncated=false`であれば全候補を解析し、namespaceごとに結果を分けて提示します。
+
 ## 後続リミットの取得
 
 `GET /v1/downstream-limit-analysis`は、`targetId`で指定したジョブまたはジョブネットから後続リミットと依存経路を解析します。
+`targetId`には`GET /v1/targets`が返したcanonical IDを指定します。
+同じlocal IDが複数namespaceに存在してもcanonical IDは一意なので、解析対象は曖昧になりません。
 `includeEvidence`は、経路を構成するrelationの根拠情報を含めるかを指定します。
 
 受入済みスナップショットでは、該当するリミットを全件返します。
 検索を完了できない場合は、不完全な結果を部分成功として返しません。
 リミットの抽出範囲、閲覧順、循環、代表経路の意味は[後続リミットの検索](dependency-analysis.md)で定めます。
 
+namespaceはidentityの境界であり、依存解析の境界ではありません。
+明示されたrelationがnamespaceを跨ぐ場合も通常の有向辺として探索します。
+namespaceの違いやlocal IDの一致だけから、APIや探索処理が新しい依存関係を推測して追加することはありません。
+
 ### レスポンスの構成
 
 `bootId`と`snapshotId`は、サービス起動と解析に使用した世代を識別します。
 `target`は検索対象を示します。
+
+schema `0.6`由来の解析nodeは、canonical `id`、`type`、`name`に加えて`namespace`と`localId`を返します。
+このnode表現は`target`、リミットの`limitOwner`と`scopeRoot`、tree node、cycle node、`uncoveredRoutes.boundary`で共通です。
+schema `0.5`由来のnodeでは`namespace`と`localId`を省略し、既存JSON形状を維持します。
+人向け表示では`[namespace] localId`を主表示にし、canonical IDは内部参照用として扱います。
 
 リミットは、対象自身の`target`、指定したジョブネット配下の`contained`、依存関係をたどった`downstream`に分けます。
 各区分では、`finish_by`をタイムゾーン別に、`max_elapsed`と`raw`を種類別に返します。
