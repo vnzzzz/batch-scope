@@ -10,11 +10,11 @@ fi
 
 jq -r '
   def node_label:
-    "\(.id)  \(.name)";
+    "[\(.namespace // "default")] \(.localId // .id)  \(.name)";
 
   def limit_label:
-    "    \(.limitOwner.id)  \(.limitOwner.name)  \(.fact.sourceText // .fact.duration // .fact.kind)" +
-    (if .scopeRoot != null then "  スコープルート=\(.scopeRoot.id)" else "" end) +
+    "    " + (.limitOwner | node_label) + "  \(.fact.sourceText // .fact.duration // .fact.kind)" +
+    (if .scopeRoot != null then "  スコープルート=" + (.scopeRoot | node_label) else "" end) +
     "  確実性=\(.fact.certainty)  経路=\(.treeNodeId)" +
     (if .alternatePathCount > 0 then "  代替経路=\(.alternatePathCount)" else "" end);
 
@@ -71,7 +71,7 @@ jq -r '
     (if .viaScope then "scope"
      else ([.viaRelations[] | relation_label] | join(", ")) end);
 
-  "対象: \(.target.id)  \(.target.name)",
+  "対象: " + (.target | node_label),
   "スナップショット: \(.snapshotId)",
   "",
   limit_section("対象のリミット"; .limits.target),
@@ -86,12 +86,12 @@ jq -r '
   "リミット未通過経路",
   (if (.uncoveredRoutes | length) == 0 then "  なし"
    else (.uncoveredRoutes[] |
-     "  \(.reason): 境界=\(.boundary.id)  経路=\(.treeNodeId)" +
+     "  \(.reason): 境界=" + (.boundary | node_label) + "  経路=\(.treeNodeId)" +
      (if .cycleId != null then "  循環=\(.cycleId)" else "" end)) end),
   "",
   "循環",
   (if (.cycles | length) == 0 then "  なし"
-   else (.cycles[] | "  \(.cycleId): " + ([.nodes[].id] | join(", ")) +
+   else (.cycles[] | "  \(.cycleId): " + ([.nodes[] | node_label] | join(", ")) +
      (if .containsImplicitRelation then "  [暗黙的な依存関係を含む]" else "" end) +
      (if .containsUncertainRelation then "  [未確認の依存関係を含む]" else "" end),
      "  一周分の表示経路",
