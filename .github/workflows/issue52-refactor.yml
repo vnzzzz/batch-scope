@@ -52,7 +52,23 @@ jobs:
           path.write_text(text.replace(old, new, 1))
           PY
           fi
-          gofmt -w internal/pathtree/pathtree.go internal/snapshot/validate.go internal/snapshot/validate_test.go internal/app/snapshot_imports_test.go internal/app/analysis.go
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path("internal/app/analysis_test.go")
+          text = path.read_text()
+          old = '''\tif analysisDeadline != 10*time.Second {
+          \t\tt.Fatalf("analysisDeadline = %s, want 10s", analysisDeadline)
+          \t}
+          '''
+          new = '''\tif analysisDeadline != 60*time.Second {
+          \t\tt.Fatalf("analysisDeadline = %s, want 60s", analysisDeadline)
+          \t}
+          '''
+          if text.count(old) != 1:
+              raise SystemExit(f"analysis deadline test block count = {text.count(old)}")
+          path.write_text(text.replace(old, new, 1))
+          PY
+          gofmt -w internal/pathtree/pathtree.go internal/snapshot/validate.go internal/snapshot/validate_test.go internal/app/snapshot_imports_test.go internal/app/analysis.go internal/app/analysis_test.go
           go test ./internal/pathtree ./internal/snapshot ./internal/app
 
       - name: Commit refactor
@@ -61,6 +77,6 @@ jobs:
           set -Eeuo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add internal/pathtree/pathtree.go internal/snapshot/validate.go internal/snapshot/validate_test.go internal/app/snapshot_imports_test.go internal/app/analysis.go
+          git add internal/pathtree/pathtree.go internal/snapshot/validate.go internal/snapshot/validate_test.go internal/app/snapshot_imports_test.go internal/app/analysis.go internal/app/analysis_test.go
           git commit -m "perf: reduce large graph analysis memory [issue52-refactor]"
           git push origin HEAD:feature/support-400k-snapshots
