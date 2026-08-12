@@ -127,6 +127,30 @@ examples/demo/
 Releaseの`batchscope_demo_snapshot.tar.gz`は`examples/demo/snapshot/`から機械的に生成します。
 データの内容は[`../../examples/demo/README.md`](../../examples/demo/README.md)を参照してください。
 
+### namespace対応とデモの互換性
+
+既存デモはschema `0.5`の単一定義セットとして維持します。
+BatchScopeはこの入力を暗黙の`default` namespaceとして取り込みますが、0.5の公開レスポンスでは`namespace`と`localId`を追加せず、既存のデモJSONをそのまま維持します。
+
+namespace対応の新規snapshotはschema `0.6`を使用します。
+例えば`main`と`dr`の両方に`JOB-A`がある場合、namespaceを省略した次の検索は両方を返します。
+
+```bash
+curl -fsS \
+  'http://127.0.0.1:8080/v1/targets?query=JOB-A&type=job' \
+  | jq '.items[] | {namespace, localId, id, name}'
+```
+
+一方、namespaceを指定すると一つの定義セットへ絞れます。
+
+```bash
+curl -fsS \
+  'http://127.0.0.1:8080/v1/targets?query=JOB-A&namespace=main&type=job' \
+  | jq '.items[] | {namespace, localId, id, name}'
+```
+
+複数namespaceを含む実データ向けの回帰fixtureは通常テストで管理し、Releaseの最小デモへMain/DRの重複定義を追加して既存利用手順を複雑にしません。
+
 ## 開発時の確認
 
 Dev Containerでは、固定したレスポンス例を整形して表示できます。
@@ -144,5 +168,9 @@ curl -fsS \
   'http://127.0.0.1:8080/v1/downstream-limit-analysis?targetId=JOB-A' \
   | ./scripts/show-limit-analysis.sh
 ```
+
+schema `0.6`の解析結果では、表示スクリプトはnodeを`[namespace] localId`で表示します。
+namespaceを跨ぐ経路も同じtree内で表示し、relationの種類・生成元・確実性は既存どおり保持します。
+schema `0.5`では`[default] id`として表示します。
 
 このスクリプトは開発時の確認にだけ使用し、本番用コンテナイメージには含めません。
