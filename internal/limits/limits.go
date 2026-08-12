@@ -19,12 +19,12 @@ const (
 	// 受入済みスナップショットに存在し得ない長さのIDをSQLiteへ渡さない。
 	MaxNodeIDLength = 1_024
 
-	// MaxSnapshotNodesは、単一検索と想定同時検索数で初期性能目標を満たした測定規模を採用する。
+	// MaxSnapshotNodesは、実運用で確認された40万ノード級を受け入れる境界とする。
 	// 検索時の打切り値にはせず、この規模を超える入力を取込時に拒否して全件解析を保証する。
-	MaxSnapshotNodes = 10_000
-	// MaxSnapshotRelationsは、MaxSnapshotNodesと組み合わせて初期性能目標を満たした測定条件を採用する。
-	// より大きいノード数とrelation数の測定では内部処理が目標を超えたため、未測定の中間値を推測で受け入れない。
-	MaxSnapshotRelations = 25_000
+	MaxSnapshotNodes = 400_000
+	// MaxSnapshotRelationsは、同じ実運用snapshotで確認された30万relation級を受け入れる境界とする。
+	// ノード数とは独立に取込時に検査し、検索途中でrelationを切り捨てない。
+	MaxSnapshotRelations = 300_000
 	// MaxSnapshotLimitsは、ノード数とrelation数が受入上限の条件で全件返却を確認した最大の測定値を採用する。
 	// リミット数による検索時の打切りは行わず、超過する入力を取込時に拒否する。
 	MaxSnapshotLimits = 5_000
