@@ -28,50 +28,6 @@ jobs:
           go-version-file: go.mod
           cache: false
 
-      - name: Measure Issue 52 full-target concurrency
-        shell: bash
-        run: |
-          set -Eeuo pipefail
-          echo 'Runner memory:'
-          free -b
-          echo 'Runner CPUs:'
-          nproc
-          /usr/bin/time -v -o /tmp/issue52-time.txt \
-            go run ./cmd/perf-measure \
-              -mode limit-analysis \
-              -profile operational \
-              -target OPS-ROOT \
-              -runs 2 \
-              -concurrencies 1,4 \
-              > /tmp/issue52-ops-root.json
-          cat /tmp/issue52-time.txt
-          jq '{
-            environment,
-            configuration,
-            datasets: [.datasets[] | {
-              name,
-              nodes,
-              relations,
-              archive_bytes,
-              archive_sha256,
-              target: {
-                target_id: .target.target_id,
-                returned_limits: .target.returned_limits,
-                returned_tree_nodes: .target.returned_tree_nodes,
-                uncovered_routes: .target.uncovered_routes,
-                cycles: .target.cycles,
-                deterministic: .target.deterministic,
-                measurements: [.target.measurements[] | {
-                  concurrency,
-                  cache_state,
-                  runs,
-                  requests,
-                  latency_ns
-                }]
-              }
-            }]
-          }' /tmp/issue52-ops-root.json
-
       - name: Verify
         run: make verify
 
