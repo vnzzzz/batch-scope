@@ -47,7 +47,7 @@ CREATE INDEX idx_node_identity_local ON node_identity(local_id, namespace, node_
 		t.Fatal(err)
 	}
 
-	all := serveRequest(a, "/v1/targets?jobId=JOB-A&type=job")
+	all := serveRequest(a, "/v1/targets?query=JOB-A&type=job")
 	assertStatus(t, all, http.StatusOK)
 	items := decodeObject(t, all)["items"].([]any)
 	if len(items) != 2 {
@@ -67,7 +67,7 @@ CREATE INDEX idx_node_identity_local ON node_identity(local_id, namespace, node_
 		}
 	}
 
-	mainOnly := serveRequest(a, "/v1/targets?jobId=JOB-A&namespace=main&type=job")
+	mainOnly := serveRequest(a, "/v1/targets?query=JOB-A&namespace=main&type=job")
 	assertStatus(t, mainOnly, http.StatusOK)
 	mainItems := decodeObject(t, mainOnly)["items"].([]any)
 	if len(mainItems) != 1 || mainItems[0].(map[string]any)["namespace"] != "main" {
@@ -75,15 +75,13 @@ CREATE INDEX idx_node_identity_local ON node_identity(local_id, namespace, node_
 	}
 }
 
-func TestTargetsRejectAmbiguousSelectorParameters(t *testing.T) {
+func TestTargetsRejectInvalidNamespaceSelectors(t *testing.T) {
 	a := newTestApp(t)
 	paths := []string{
-		"/v1/targets?jobId=",
 		"/v1/targets?namespace=main",
-		"/v1/targets?query=JOB&jobId=JOB",
-		"/v1/targets?query=JOB&namespace=main",
-		"/v1/targets?jobId=JOB&jobId=JOB",
-		"/v1/targets?jobId=JOB&namespace=main&namespace=dr",
+		"/v1/targets?query=JOB&query=JOB",
+		"/v1/targets?query=JOB&namespace=",
+		"/v1/targets?query=JOB&namespace=main&namespace=dr",
 	}
 	for _, path := range paths {
 		recorder := serveRequest(a, path)
