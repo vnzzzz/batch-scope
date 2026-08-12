@@ -5,7 +5,7 @@
   "additionalProperties": false,
   "required": ["schemaVersion", "snapshotId", "generatedAt", "nodeCount", "relationCount", "producer"],
   "properties": {
-    "schemaVersion": {"const": "0.5"},
+    "schemaVersion": {"enum": ["0.5", "0.6"]},
     "snapshotId": {"type": "string", "minLength": 1, "maxLength": 256},
     "generatedAt": {"type": "string", "format": "date-time"},
     "nodeCount": {"type": "integer", "minimum": 0, "maximum": 10000000},
