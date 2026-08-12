@@ -42,6 +42,33 @@ batchscope-snapshot.tar.gz
 同じ`snapshotId`を再送できるのは、展開後の`manifest.json`、`nodes.ndjson`、`relations.ndjson`のbyte内容がすべて同じ場合だけである。
 JSONとして意味が同じでも、空白、改行、objectのキー順などでbyte内容が変わる場合は同じ`snapshotId`を再利用しない。
 
+## namespaceとID
+
+namespaceは、同じジョブID体系を共有する意味上の定義セットである。本番/DR、独立環境、管理上別の定義領域などを表す。
+ファイルの分割単位だけをnamespaceにしない。資料からnamespaceを判断できない場合は推測しない。
+
+新しくnamespace対応データを作る場合、各ノードに次を持たせる。
+
+- `namespace`: 意味上の定義セット
+- `localId`: 元システム内のID
+- `id`: BatchScope内部で参照するcanonical ID
+
+`namespace`と`localId`は必ず両方指定する。
+canonical IDは次の式で生成する。
+
+```text
+id = "bs1." + base64url-no-padding(UTF-8(namespace))
+             + "." + base64url-no-padding(UTF-8(localId))
+```
+
+base64urlはRFC 4648のURL-safe alphabetを使い、末尾の`=`paddingを付けない。
+同じ`namespace + localId`から常に同じ`id`を生成し、ファイル名、行順、表示名、親階層をIDへ含めない。
+
+同じnamespace内の同じ`localId`は同じcanonical IDになるため、二重に生成しない。
+異なるnamespaceでは同じ`localId`を使用できる。
+
+schema version 0.5の従来データは`namespace`と`localId`を省略できる。その場合、API表示上はnamespace=`default`、localId=`id`として扱われる。複数namespaceを新しく生成するときは従来形式へ依存しない。
+
 ## ノード種別
 
 | 種別 | 意味 | 許可する親 |
@@ -54,7 +81,7 @@ JSONとして意味が同じでも、空白、改行、objectのキー順など�
 | `job_status` | ジョブの完了状態または結果状態 | なし |
 | `external_event` | 外部システムから届くイベント | なし |
 
-ジョブIDは入力値を変更せず、全環境を通じて重複しない値として使う。
+`parentId`はcanonical IDを使う。namespace対応ノードの親は同じnamespace内に限る。
 そのほかのノードIDも、一つのスナップショット内で重複させない。
 
 ## リミット
@@ -83,6 +110,7 @@ BatchScopeは、ジョブネットの配下にあるリミット設定済みジ�
 ## 依存関係の向き
 
 `fromId`側の処理や状態が成立した後に、`toId`側の処理や状態が成立できる向きで記録する。
+`fromId`と`toId`はcanonical IDを使う。
 
 | 種類 | 代表的な使い方 |
 |---|---|
@@ -91,6 +119,22 @@ BatchScopeは、ジョブネットの配下にあるリミット設定済みジ�
 | `triggers` | ファイル、状態、イベントがジョブまたはジョブネットの起動条件になる |
 | `consumed_by` | ファイルなどをジョブまたはジョブネットが入力として使う |
 | `observed_by` | 状態またはイベントをジョブまたはジョブネットが監視する |
+
+### namespaceを跨ぐ依存
+
+namespaceはidentityと親子階層の境界であり、依存解析の境界ではない。relationは明示的に別namespaceのcanonical IDを参照できる。
+
+例えばmainのジョブ終了をDRのジョブが状態チェックして起動するなら、資料に合わせて次のように表す。
+
+```text
+main / JOB-A --produces--> main / JOB-A.done
+main / JOB-A.done --triggers--> dr / JOB-B
+```
+
+中間ノードには`file`、`file_pattern`、`job_status`、`external_event`など根拠に合う種別を使う。
+直接の終了チェックが確認できる場合は、別namespaceのjobをendpointに持つrelationを使ってよい。
+
+namespaceが違うという事実だけからrelationを生成しない。入力資料から検出した依存だけを出力し、`origin`と`certainty`を付ける。取得できる場合は`evidence`も残す。
 
 ## 生成元と確実性
 
@@ -114,8 +158,11 @@ BatchScopeは、ジョブネットの配下にあるリミット設定済みジ�
 ## 生成前の確認
 
 - ノードIDが重複していない。
-- `parentId`、`fromId`、`toId`が存在するノードを参照している。
+- namespace対応ノードでは`id`が`namespace + localId`から決定規則どおり生成されている。
+- `parentId`が同じnamespaceの存在するノードを参照している。
+- `fromId`、`toId`が存在するcanonical node IDを参照している。
 - 親ノードの種別が許可されている。
 - 親子関係に循環がない。
 - 内容が同じ依存関係を重複して出力していない。
+- namespaceを跨ぐrelationには、入力資料に基づく生成元と確実性が付いている。
 - マニフェストの件数が実データと一致している。
