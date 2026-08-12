@@ -93,29 +93,23 @@ type statusOutput struct {
 }
 
 type targetsInput struct {
-	// Queryはcanonical ID/name/pathによる旧検索契約を互換維持する。新規利用者はJobIDを使う。
-	Query     string   `query:"query" doc:"Legacy exact canonical ID, name, or full path selector; mutually exclusive with jobId"`
-	JobID     string   `query:"jobId" doc:"Exact local job or job network ID; returns matches from every namespace when namespace is omitted"`
-	Namespace string   `query:"namespace" doc:"Exact namespace used with jobId"`
+	Query     string   `query:"query" doc:"Exact local ID, canonical ID, name, or full path to search for"`
+	Namespace string   `query:"namespace" doc:"Exact namespace for local-ID search; when omitted, all namespaces are searched"`
 	Types     []string `query:"type,explode" doc:"Target type filter; may be repeated" enum:"job,job_network"`
 	RequestID string   `header:"X-Request-Id" doc:"Request identifier used in structured logs"`
 
 	queryProvided     bool
 	queryRepeated     bool
-	jobIDProvided     bool
-	jobIDRepeated     bool
 	namespaceProvided bool
 	namespaceRepeated bool
 }
 
-// Resolveは、Humaのパラメーター束縛では区別できないselectorの未指定、空文字、重複を保持する。
+// Resolveは、Humaのパラメーター束縛では区別できないquery/namespaceの未指定、空文字、重複を保持する。
 func (input *targetsInput) Resolve(ctx huma.Context) []error {
 	requestURL := ctx.URL()
 	query := requestURL.Query()
 	input.queryProvided = query.Has("query")
 	input.queryRepeated = len(query["query"]) > 1
-	input.jobIDProvided = query.Has("jobId")
-	input.jobIDRepeated = len(query["jobId"]) > 1
 	input.namespaceProvided = query.Has("namespace")
 	input.namespaceRepeated = len(query["namespace"]) > 1
 	return nil
@@ -270,8 +264,6 @@ func registerRoutes(api huma.API, a *App) {
 		Summary:       "Check snapshot readiness",
 		DefaultStatus: http.StatusServiceUnavailable,
 	}, a.ready)
-	// Humaは動的なStatusフィールドを実行時には使うが、既定値以外の応答は自動生成しない。
-	// 既存データがある場合の200にも、503と同じレスポンス形式を明示する。
 	readinessResponses := api.OpenAPI().Paths["/readyz"].Get.Responses
 	readinessResponses["200"] = &huma.Response{
 		Description: http.StatusText(http.StatusOK),
@@ -284,7 +276,6 @@ func registerRoutes(api huma.API, a *App) {
 		Path:        "/v1/status",
 		Summary:     "Get service status",
 	}, a.status)
-	// SnapshotInfoを使う他の応答は非nullのまま、未取込を表すstatusのプロパティだけnullを許可する。
 	statusSchema := api.OpenAPI().Components.Schemas.Map()["StatusResponse"]
 	statusSchema.Properties["snapshot"] = &huma.Schema{AnyOf: []*huma.Schema{
 		{Ref: "#/components/schemas/SnapshotInfo"},
@@ -297,15 +288,12 @@ func registerRoutes(api huma.API, a *App) {
 		Path:        "/v1/targets",
 		Summary:     "Search jobs and job networks by local ID or legacy exact selector",
 		Errors:      []int{http.StatusBadRequest, http.StatusInternalServerError, http.StatusServiceUnavailable},
-		// selectorの排他条件と空値はAPI固有のinvalid-requestへ写像するため、Humaの422検査を使わない。
 		SkipValidateParams: true,
 	}, a.targets)
 	for _, parameter := range api.OpenAPI().Paths["/v1/targets"].Get.Parameters {
 		switch parameter.Name {
-		case "jobId":
-			minimum, maximum := 1, limits.MaxNodeIDLength
-			parameter.Schema.MinLength = &minimum
-			parameter.Schema.MaxLength = &maximum
+		case "query":
+			parameter.Required = true
 		case "namespace":
 			minimum, maximum := 1, identity.MaxNamespaceLength
 			parameter.Schema.MinLength = &minimum
@@ -407,10 +395,9 @@ func (a *App) targets(ctx context.Context, input *targetsInput) (*targetsOutput,
 		}
 	}
 
-	selectorProblem := validateTargetSelector(input)
-	if selectorProblem != nil {
+	if problem := validateTargetSelector(input); problem != nil {
 		errorType = "invalid-request"
-		return nil, selectorProblem
+		return nil, problem
 	}
 	types, problem := targetTypes(input.Types)
 	if problem != nil {
@@ -431,14 +418,13 @@ func (a *App) targets(ctx context.Context, input *targetsInput) (*targetsOutput,
 	snapshotID = generation.SnapshotID
 
 	var result target.SearchResult
-	if input.jobIDProvided {
-		var namespace *string
-		if input.namespaceProvided {
-			namespace = &input.Namespace
-		}
-		result, err = target.SearchLocalID(ctx, db, input.JobID, namespace, types)
+	if input.namespaceProvided {
+		result, err = target.SearchLocalID(ctx, db, input.Query, &input.Namespace, types)
 	} else {
-		result, err = target.Search(ctx, db, input.Query, types)
+		result, err = target.SearchLocalID(ctx, db, input.Query, nil, types)
+		if err == nil && len(result.Items) == 0 && !result.Truncated {
+			result, err = target.Search(ctx, db, input.Query, types)
+		}
 	}
 	if err != nil {
 		errorType = "internal-error"
@@ -456,32 +442,21 @@ func validateTargetSelector(input *targetsInput) *huma.ErrorModel {
 	if input.queryRepeated {
 		return InvalidRequestProblem("query must be specified once")
 	}
-	if input.jobIDRepeated {
-		return InvalidRequestProblem("jobId must be specified once")
-	}
 	if input.namespaceRepeated {
 		return InvalidRequestProblem("namespace must be specified once")
 	}
-	if input.queryProvided == input.jobIDProvided {
-		return InvalidRequestProblem("specify exactly one of jobId or query")
+	if !input.queryProvided {
+		return InvalidRequestProblem("query is required")
 	}
-	if input.namespaceProvided && !input.jobIDProvided {
-		return InvalidRequestProblem("namespace can only be specified with jobId")
+	if input.Query == "" {
+		return InvalidRequestProblem("query must not be empty")
 	}
-	if input.jobIDProvided {
-		if input.JobID == "" {
-			return InvalidRequestProblem("jobId must not be empty")
+	if input.namespaceProvided {
+		if input.Namespace == "" {
+			return InvalidRequestProblem("namespace must not be empty")
 		}
-		if utf8.RuneCountInString(input.JobID) > limits.MaxNodeIDLength {
-			return InvalidRequestProblem("jobId must not exceed 1024 characters")
-		}
-		if input.namespaceProvided {
-			if input.Namespace == "" {
-				return InvalidRequestProblem("namespace must not be empty")
-			}
-			if utf8.RuneCountInString(input.Namespace) > identity.MaxNamespaceLength {
-				return InvalidRequestProblem("namespace must not exceed 256 characters")
-			}
+		if utf8.RuneCountInString(input.Namespace) > identity.MaxNamespaceLength {
+			return InvalidRequestProblem("namespace must not exceed 256 characters")
 		}
 	}
 	return nil
