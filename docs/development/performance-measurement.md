@@ -330,7 +330,17 @@ go run ./cmd/perf-measure \
   -profile operational \
   -runs 2 \
   -concurrencies 1,4
+
+go run ./cmd/perf-measure \
+  -mode limit-analysis \
+  -profile operational \
+  -target OPS-ROOT \
+  -runs 2 \
+  -concurrencies 1
 ```
+
+`-target`を省略すると、公開HTTPの測定対象は代表target `OPS-NET-0000`です。
+全件到達targetの公開HTTPを測るときだけ`-target OPS-ROOT`を指定します。
 
 `operational`は400,000ノード、300,000 relation、5,000リミット、4,000 job networkを生成します。
 同一snapshotに、約100ノードだけへ到達する代表target `OPS-NET-0000`と、全400,000ノードへ到達する`OPS-ROOT`を持ちます。

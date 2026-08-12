@@ -163,8 +163,9 @@ func runLimitAnalysis(configured config, output io.Writer) error {
 }
 
 func measureLimitAnalysisFixture(configured config, fixture *fixture) (limitAnalysisDatasetReport, error) {
-	if len(fixture.TargetIDs) == 0 {
-		return limitAnalysisDatasetReport{}, fmt.Errorf("dataset %s has no analysis target", fixture.Name)
+	targetID, err := fixture.selectTarget(configured.Target)
+	if err != nil {
+		return limitAnalysisDatasetReport{}, err
 	}
 	setup, err := importOnce(fixture, 1)
 	if err != nil {
@@ -178,7 +179,7 @@ func measureLimitAnalysisFixture(configured config, fixture *fixture) (limitAnal
 	}
 
 	targetReport, measureErr := measureLimitAnalysisTarget(
-		application.Handler(), setup.active.storage, fixture.TargetIDs[0], configured.Concurrencies, configured.Runs,
+		application.Handler(), setup.active.storage, targetID, configured.Concurrencies, configured.Runs,
 	)
 	closeErr := application.Close()
 	removeErr := os.RemoveAll(setup.active.workspace)

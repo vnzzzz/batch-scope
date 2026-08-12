@@ -13,6 +13,7 @@ import (
 	"runtime"
 	"runtime/debug"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -33,6 +34,23 @@ type fixture struct {
 	RelationCount int
 	TargetIDs     []string
 	Directory     string
+}
+
+// selectTarget は、単一targetだけを測る各modeが使う対象を決める。
+// 記録済みの測定を再現できるよう、代表targetと最悪targetのどちらを測ったかを引数で固定できる。
+// 生成器が持たないIDを黙って先頭targetへ読み替えると、別の対象の値を同じ条件として記録してしまうため拒否する。
+func (fixture *fixture) selectTarget(requested string) (string, error) {
+	if len(fixture.TargetIDs) == 0 {
+		return "", fmt.Errorf("dataset %s has no analysis target", fixture.Name)
+	}
+	if requested == "" {
+		return fixture.TargetIDs[0], nil
+	}
+	if !slices.Contains(fixture.TargetIDs, requested) {
+		return "", fmt.Errorf("dataset %s has no target %q; available targets: %s",
+			fixture.Name, requested, strings.Join(fixture.TargetIDs, ", "))
+	}
+	return requested, nil
 }
 
 type datasetReport struct {
@@ -256,13 +274,17 @@ func measureDataset(configured config, fixture *fixture) (datasetReport, error) 
 		return result, nil
 	}
 
+	targetID, err := fixture.selectTarget(configured.Target)
+	if err != nil {
+		return datasetReport{}, err
+	}
 	setup, err := importOnce(fixture, 1)
 	if err != nil {
 		return datasetReport{}, err
 	}
 	result.Import = &importReport{Runs: []importRun{setup.measurement}, Summary: summarizeImports([]importRun{setup.measurement})}
 	if configured.Mode == "connection-comparison" {
-		comparison, measureErr := measureConnectionComparison(&setup.active, fixture.TargetIDs[0], configured.Concurrencies, configured.Runs)
+		comparison, measureErr := measureConnectionComparison(&setup.active, targetID, configured.Concurrencies, configured.Runs)
 		closeErr := setup.active.close()
 		if measureErr != nil || closeErr != nil {
 			return datasetReport{}, errors.Join(measureErr, closeErr)
@@ -270,7 +292,7 @@ func measureDataset(configured config, fixture *fixture) (datasetReport, error) 
 		result.ConnectionComparison = comparison
 		return result, nil
 	}
-	concurrency, measureErr := measureConcurrency(setup.active.storage, fixture.TargetIDs[0], configured.Concurrencies, configured.Runs)
+	concurrency, measureErr := measureConcurrency(setup.active.storage, targetID, configured.Concurrencies, configured.Runs)
 	closeErr := setup.active.close()
 	if measureErr != nil || closeErr != nil {
 		return datasetReport{}, errors.Join(measureErr, closeErr)
