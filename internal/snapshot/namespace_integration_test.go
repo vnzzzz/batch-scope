@@ -68,38 +68,70 @@ func TestNamespacedSnapshotKeepsDuplicateLocalIDsAndCrossNamespaceDependency(t *
 	}
 	defer release()
 
-	result, err := target.SearchLocalID(ctx, db, "JOB-A", nil, []string{"job"})
+	jobs, err := target.SearchLocalID(ctx, db, "JOB-A", nil, []string{"job"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(result.Items) != 2 {
-		t.Fatalf("JOB-A matches = %d, want 2: %#v", len(result.Items), result.Items)
+	if len(jobs.Items) != 2 {
+		t.Fatalf("JOB-A matches = %d, want 2: %#v", len(jobs.Items), jobs.Items)
 	}
-	if result.Items[0].Namespace != "dr" || result.Items[1].Namespace != "main" {
-		t.Fatalf("namespaces = %q, %q, want dr, main", result.Items[0].Namespace, result.Items[1].Namespace)
+	if jobs.Items[0].Namespace != "dr" || jobs.Items[1].Namespace != "main" {
+		t.Fatalf("job namespaces = %q, %q, want dr, main", jobs.Items[0].Namespace, jobs.Items[1].Namespace)
 	}
-	for _, item := range result.Items {
+	for _, item := range jobs.Items {
 		if item.LocalID != "JOB-A" || len(item.MatchedBy) != 1 || item.MatchedBy[0] != "localId" {
-			t.Fatalf("search item = %#v", item)
+			t.Fatalf("job search item = %#v", item)
 		}
 	}
+
+	networks, err := target.SearchLocalID(ctx, db, "NET", nil, []string{"job_network"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(networks.Items) != 2 || networks.Items[0].ID != drNetwork || networks.Items[1].ID != mainNetwork {
+		t.Fatalf("NET matches = %#v", networks.Items)
+	}
+
 	mainOnly, err := target.SearchLocalID(ctx, db, "JOB-A", stringPointer("main"), []string{"job"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(mainOnly.Items) != 1 || mainOnly.Items[0].ID != mainJob {
+	if len(mainOnly.Items) != 1 || mainOnly.Items[0].ID != mainJob || mainOnly.Items[0].Name != "Main JOB-A" {
 		t.Fatalf("main JOB-A = %#v", mainOnly.Items)
 	}
 
-	traversed, err := traversal.Traverse(ctx, db, mainJob)
+	fromMain, err := traversal.Traverse(ctx, db, mainJob)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !reachedNode(traversed.Nodes, drJob) {
+	if !reachedNode(fromMain.Nodes, drJob) {
 		t.Fatalf("cross-namespace downstream job %q was not reached", drJob)
 	}
-	if !reachedNode(traversed.Nodes, sharedFile) {
+	if !reachedNode(fromMain.Nodes, sharedFile) {
 		t.Fatalf("shared resource %q was not reached", sharedFile)
+	}
+
+	fromDR, err := traversal.Traverse(ctx, db, drJob)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reachedNode(fromDR.Nodes, mainJob) || reachedNode(fromDR.Nodes, sharedFile) {
+		t.Fatalf("DR traversal mixed upstream namespace: %#v", fromDR.Nodes)
+	}
+}
+
+func TestNamespacedSnapshotRejectsDuplicateLocalIDWithinNamespace(t *testing.T) {
+	ctx := context.Background()
+	directory := t.TempDir()
+	duplicateID := identity.Encode("main", "DUP")
+	extracted := writeNamespacedFixture(t, directory,
+		[]string{
+			nodeJSON("job_network", duplicateID, "main", "DUP", "Duplicate Network", ""),
+			nodeJSON("job", duplicateID, "main", "DUP", "Duplicate Job", ""),
+		}, nil,
+	)
+	if _, err := snapshot.Validate(ctx, extracted); err == nil {
+		t.Fatal("Validate succeeded with duplicate local ID in one namespace")
 	}
 }
 
