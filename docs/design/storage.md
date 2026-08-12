@@ -7,17 +7,28 @@ SQLiteは、検査済みスナップショットを検索しやすい形で保�
 
 | データ | 保存上の役割 |
 |---|---|
-| ノード | ID、種別、表示情報、単一親の所属関係を保持する |
+| ノード | canonical ID、種別、表示情報、単一親の所属関係を保持する |
+| node identity | canonical IDに対応するnamespaceとlocal IDを保持する |
 | relation | 実行順に影響する有向の依存関係を保持する |
 | リミット | ジョブに設定された完了条件を種類ごとに保持する |
 
 親子関係とrelationは別のデータとして保存します。
 親子関係は所属を表し、relationは実行順の到達可能性を表すためです。
 
+`node_identity`は`node_id`を主キーとしてnodeへ対応し、`namespace + local_id`を一意にします。
+local IDから全namespaceの候補を取得できるよう、`local_id, namespace, node_id`の順で索引します。
+schema `0.5`のnodeは`namespace=default`、`local_id=node_id`として登録します。
+schema `0.6`では取込時にcanonical IDとの対応を検査してから登録します。
+
 同じ二つのノード間でも、種類、生成元、確実性、根拠が異なるrelationは区別します。
 内容がすべて同じrelationは取込時に拒否します。
+relationはnamespaceを跨げます。namespaceを理由にSQLite検索や後続探索を分割しません。
 
 ## 検索方式
+
+利用者向けのtarget検索は、`namespace + local ID`またはlocal IDだけを`node_identity`で完全一致検索します。
+namespaceを省略した場合は、同じlocal IDを持つ全namespaceの候補を返します。
+canonical ID、名前、完全パスを使う旧`query`検索も互換契約として維持します。
 
 完全一致検索、親から直接の子を得るscope展開、外向きrelationの取得、ノードに属するリミットの取得に索引を使います。
 名前とパスは、取込時に検索用の値を保存し、検索時にも同じ変換を適用します。
