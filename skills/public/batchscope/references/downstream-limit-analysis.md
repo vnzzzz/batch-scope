@@ -3,7 +3,11 @@
 ## 要求
 
 `GET /v1/downstream-limit-analysis`が受け取るクエリパラメーターは、必須の`targetId`と任意の`includeEvidence`だけである。
+`targetId`には`GET /v1/targets`が返した**canonical ID**を指定する。曖昧なlocal IDを直接指定しない。
 `includeEvidence`の既定値は`false`である。
+
+利用者がlocal job IDだけを指定し、`GET /v1/targets?query=<local-id>`が複数namespaceのcandidateを返した場合は、各candidateのcanonical IDを個別に解析する。
+一件を勝手に選ばない。
 
 成功レスポンスは、受入済みスナップショットに対する全件解析の結果である。
 処理を完了できない場合はProblem Detailsが返るため、成功レスポンスに部分結果、処理上限到達、未解析範囲を表す項目はない。
@@ -11,12 +15,30 @@
 `analysis-timeout`が返った場合は部分結果を推測で補わない。
 再試行するかは利用者が判断する。
 
+## namespaceとnode表示
+
+schema `0.6`由来の解析nodeは、内部参照用の`id`に加えて`namespace`と`localId`を持つ。
+チャットや人向けの表示ではcanonical IDではなく、原則として`[namespace] localId`を主表示にする。
+
+```text
+[main] JOB-A
+[dr] JOB-A
+[shared] /exchange/ready.flag
+```
+
+schema `0.5`のlegacy snapshotでは`namespace`/`localId`がレスポンスから省略される。この場合は表示上だけ`[default] <id>`として扱う。
+
+namespaceはidentityの境界であり依存解析の境界ではない。
+経路が`main`から`shared`、`dr`へ跨いでも、明示されたrelationを通常どおりたどった結果である。
+namespaceが変わったこと自体を依存の根拠として説明しない。
+
 ## リミット
 
 `limits.target`、`limits.contained`、`limits.downstream`を区別する。
 各区分では`finishByGroups`、`maxElapsed`、`raw`をAPIの返却順のまま読む。
 
 各リミットの`limitOwner`は設定先ジョブ、`scopeRoot`は後続ジョブネットの配下を展開した場合の起点である。
+`limitOwner`と`scopeRoot`もschema `0.6`ではnamespace/localIdを持つため、同じlocal IDを別namespaceのnodeと取り違えない。
 `treeNodeId`は設定先を表す経路ツリーのノードを参照し、`alternatePathCount`は採用した経路以外の経路数を表す。
 `maxElapsed.items[].fact.duration`は、取込時に固定秒数へ変換した値をcanonicalなISO 8601 Durationで表すため、入力時の表記と異なる場合がある。
 
@@ -33,6 +55,9 @@
 `referenceType=shared`は別経路との合流、`referenceType=cycle`は循環への回帰である。
 どちらも`referenceTo`で既出の`treeNodeId`を参照し、参照ノード自身は子を持たない。
 循環参照の`cycleId`は`cycles`の要素を参照する。
+
+経路を人向けに表示するときは、tree nodeの`node.namespace`/`node.localId`を使う。
+`hiddenConnections`は接続の完全性を保つためcanonical IDを持つので、必要に応じて同レスポンス内のnode情報と対応付ける。
 
 ## 循環
 
@@ -55,3 +80,5 @@
 
 `includeEvidence=true`が追加する`evidence`は、treeの通常接続、`hiddenConnections`、cycle `route`に含まれるrelationだけに適用する。
 リミットの`fact`には`evidence`を追加しない。
+
+cross-namespace経路を説明するときは、relationの`kind`、`origin`、`certainty`、必要なら`evidence`を根拠として提示する。
