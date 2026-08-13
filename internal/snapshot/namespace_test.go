@@ -1,7 +1,9 @@
 package snapshot
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 
@@ -59,5 +61,36 @@ func TestNodeInputKeepsLegacyCompatibility(t *testing.T) {
 	}
 	if node.ID != "JOB-A" {
 		t.Fatalf("node ID = %q", node.ID)
+	}
+}
+
+func TestValidateRejectsLegacyChildWithNamespacedParent(t *testing.T) {
+	parentID := identity.Canonical("main", "NET-A")
+	extracted := writeExtractedSnapshot(t, []string{
+		`{"type":"job_network","id":"` + parentID + `","namespace":"main","localId":"NET-A","name":"Main network"}`,
+		`{"type":"job","id":"LEGACY-JOB","name":"Legacy job","parentId":"` + parentID + `"}`,
+	}, nil)
+
+	_, err := Validate(context.Background(), extracted)
+	assertParentNamespaceError(t, err)
+}
+
+func TestValidateRejectsNamespacedChildWithCanonicalLookingLegacyParent(t *testing.T) {
+	parentID := identity.Canonical("main", "NET-A")
+	childID := identity.Canonical("main", "JOB-A")
+	extracted := writeExtractedSnapshot(t, []string{
+		`{"type":"job_network","id":"` + parentID + `","name":"Legacy-looking network"}`,
+		`{"type":"job","id":"` + childID + `","namespace":"main","localId":"JOB-A","name":"Main job","parentId":"` + parentID + `"}`,
+	}, nil)
+
+	_, err := Validate(context.Background(), extracted)
+	assertParentNamespaceError(t, err)
+}
+
+func assertParentNamespaceError(t *testing.T, err error) {
+	t.Helper()
+	var snapshotErr *Error
+	if !errors.As(err, &snapshotErr) || snapshotErr.Kind != ErrorInvalidParentType || snapshotErr.Pointer != "/parentId" {
+		t.Fatalf("error = %#v, want invalid_parent_type at /parentId", err)
 	}
 }
