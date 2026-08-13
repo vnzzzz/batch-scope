@@ -1,0 +1,151 @@
+name: Issue 53 finalize
+
+on:
+  push:
+    branches:
+      - agent/issue-53-namespaces
+
+permissions:
+  contents: write
+
+jobs:
+  finalize:
+    if: ${{ !contains(github.event.head_commit.message, '[issue53-finalize]') }}
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: agent/issue-53-namespaces
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: Patch final namespace invariants
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('internal/snapshot/validate.go')
+          text = path.read_text()
+          replacements = [
+              (
+                  '''type nodeRecord struct {
+          \tType      nodeKind
+          \tParentID  string
+          \tHasParent bool
+          \tLine      int
+          }
+          ''',
+                  '''type nodeRecord struct {
+          \tType      nodeKind
+          \tNamespace string
+          \tParentID  string
+          \tHasParent bool
+          \tLine      int
+          }
+          ''',
+              ),
+              (
+                  '''\trecord := nodeRecord{Type: nodeKindOf(current.Type), Line: line}
+          ''',
+                  '''\trecord := nodeRecord{Type: nodeKindOf(current.Type), Namespace: effectiveNodeNamespace(value), Line: line}
+          ''',
+              ),
+              (
+                  '''\t\tif !allowedParent(current.Type, parent.Type) {
+          \t\t\treturn &Error{Kind: ErrorInvalidParentType, File: nodesName, Line: current.Line, Pointer: "/parentId"}
+          \t\t}
+          ''',
+                  '''\t\tif current.Namespace != parent.Namespace {
+          \t\t\treturn &Error{Kind: ErrorInvalidParentType, File: nodesName, Line: current.Line, Pointer: "/parentId"}
+          \t\t}
+          \t\tif !allowedParent(current.Type, parent.Type) {
+          \t\t\treturn &Error{Kind: ErrorInvalidParentType, File: nodesName, Line: current.Line, Pointer: "/parentId"}
+          \t\t}
+          ''',
+              ),
+          ]
+          for old, new in replacements:
+              if text.count(old) != 1:
+                  raise SystemExit('validate.go replacement did not match exactly once')
+              text = text.replace(old, new)
+          marker = '''func isNodeType(kind string) bool {
+          '''
+          helper = '''func effectiveNodeNamespace(value any) string {
+          \tobject, ok := value.(map[string]any)
+          \tif !ok {
+          \t\treturn "default"
+          \t}
+          \tnamespace, ok := object["namespace"].(string)
+          \tif !ok || namespace == "" {
+          \t\treturn "default"
+          \t}
+          \treturn namespace
+          }
+          
+          func isNodeType(kind string) bool {
+          '''
+          if text.count(marker) != 1:
+              raise SystemExit('validate.go helper marker did not match exactly once')
+          path.write_text(text.replace(marker, helper))
+
+          path = Path('internal/app/analysis.go')
+          text = path.read_text()
+          old = '''type analysisHiddenConnection struct {
+          \tFromID       string             `json:"fromId"`
+          \tToID         string             `json:"toId"`
+          \tViaRelations []analysisRelation `json:"viaRelations" nullable:"false"`
+          \tViaScope     bool               `json:"viaScope"`
+          }
+          '''
+          new = '''type analysisHiddenConnection struct {
+          \tFromID       string              `json:"fromId"`
+          \tFromIdentity analysisIdentityRef `json:"fromIdentity"`
+          \tToID         string              `json:"toId"`
+          \tToIdentity   analysisIdentityRef `json:"toIdentity"`
+          \tViaRelations []analysisRelation  `json:"viaRelations" nullable:"false"`
+          \tViaScope     bool                `json:"viaScope"`
+          }
+          '''
+          if text.count(old) != 1:
+              raise SystemExit('analysis.go hidden connection block did not match exactly once')
+          path.write_text(text.replace(old, new))
+
+          replacements = {
+              'docs/design/api.md': (
+                  '`tree`は、返却したリミットとリミット未通過経路を説明する接続を共有して表します。',
+                  '`tree`は、返却したリミットとリミット未通過経路を説明する接続を共有して表します。圧縮区間の`hiddenConnections`は`fromId` / `toId`に加えて`fromIdentity` / `toIdentity`へnamespaceとlocalIdを持ち、canonical IDを復号せず経路途中のnamespace境界を表示できます。',
+              ),
+              'skills/public/batchscope/SKILL.md': (
+                  '11. 圧縮区間は`hiddenConnections`の各接続を順にたどり、省略されたジョブ数だけで経路を説明しない。',
+                  '11. 圧縮区間は`hiddenConnections`の各接続を順にたどり、`fromIdentity` / `toIdentity`のnamespaceとlocalIdを使って表示する。省略されたジョブ数だけで経路を説明せず、canonical IDを表示用に推測復号しない。',
+              ),
+              'skills/public/batchscope/references/downstream-limit-analysis.md': (
+                  '各要素の`fromId`、`toId`、`viaRelations`、`viaScope`を配列順にたどると、親ノードから表示ノードまでの接続を復元できる。',
+                  '各要素の`fromId`、`toId`、`fromIdentity`、`toIdentity`、`viaRelations`、`viaScope`を配列順にたどると、親ノードから表示ノードまでの接続を復元できる。`fromIdentity`と`toIdentity`のnamespace / localIdを表示に使い、canonical IDの文字列表現を推測復号しない。',
+              ),
+          }
+          for filename, (old, new) in replacements.items():
+              path = Path(filename)
+              text = path.read_text()
+              if text.count(old) != 1:
+                  raise SystemExit(f'{filename}: documentation replacement did not match exactly once')
+              path.write_text(text.replace(old, new))
+          PY
+          gofmt -w internal/snapshot/validate.go internal/app/analysis.go internal/app/analysis_public_identity.go internal/app/analysis_cross_namespace_test.go internal/snapshot/namespace_test.go
+      - name: Regenerate public artifacts
+        shell: bash
+        run: |
+          BATCHSCOPE_UPDATE_DEMO=1 go test ./internal/app -run '^TestGenerateDemoDownstreamLimitAnalysisResponse$' -count=1
+          make openapi
+      - name: Verify
+        run: make verify
+      - name: Commit synchronized changes
+        shell: bash
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add internal/snapshot/validate.go internal/app/analysis.go internal/app/analysis_public_identity.go internal/app/analysis_cross_namespace_test.go internal/snapshot/namespace_test.go docs/design/api.md skills/public/batchscope/SKILL.md skills/public/batchscope/references/downstream-limit-analysis.md examples/demo/responses/downstream-limit-analysis.json docs/api/openapi.yaml
+          git commit -m 'fix: namespace境界と圧縮経路identityを完結させる [issue53-finalize]'
+          git push origin HEAD:agent/issue-53-namespaces
