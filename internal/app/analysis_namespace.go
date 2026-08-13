@@ -17,9 +17,14 @@ type analysisNodePublic struct {
 	Name      string `json:"name"`
 }
 
-// MarshalJSON はlegacy snapshotを含め、解析レスポンス中の全nodeへ利用者向けidentityを付与する。
+// MarshalJSON は解析レスポンス組立時に同じ世代のSQLiteから解決した公開identityを出力する。
+// 手作りtest DTOなどidentity未設定の場合だけlegacy defaultへfallbackし、ID文字列を暗黙復号しない。
 func (node analysisNode) MarshalJSON() ([]byte, error) {
-	namespace, localID := identity.PublicFromID(node.ID)
+	namespace, localID := node.Namespace, node.LocalID
+	if namespace == "" || localID == "" {
+		legacy := identity.LegacyPublic(node.ID)
+		namespace, localID = legacy.Namespace, legacy.LocalID
+	}
 	return json.Marshal(analysisNodePublic{
 		ID: node.ID, Namespace: namespace, LocalID: localID, Type: node.Type, Name: node.Name,
 	})
