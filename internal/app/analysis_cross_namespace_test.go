@@ -12,7 +12,7 @@ func TestDownstreamLimitAnalysisTraversesCrossNamespaceIndirectDependency(t *tes
 	mainJob := identity.Canonical("main", "JOB-A")
 	mainStatus := identity.Canonical("main", "JOB-A.done")
 	drJob := identity.Canonical("dr", "JOB-B")
-	completeAnalysisGeneration(t, a, "cross-namespace", analysisTestData{
+	completeNamespacedAnalysisGeneration(t, a, "cross-namespace", analysisTestData{
 		nodes: []appTestNode{
 			{id: mainJob, typeName: "job", name: "Main job"},
 			{id: mainStatus, typeName: "job_status", name: "Main job done"},
