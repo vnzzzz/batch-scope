@@ -12,7 +12,7 @@ func TestTargetsJobIDReturnsAllNamespaces(t *testing.T) {
 	a := newTestApp(t)
 	mainID := identity.Canonical("main", "JOB-A")
 	drID := identity.Canonical("dr", "JOB-A")
-	completeAppGeneration(t, a, "snapshot-namespaces", []appTestNode{
+	completeNamespacedAppGeneration(t, a, "snapshot-namespaces", []appTestNode{
 		{id: mainID, typeName: "job", name: "Main A"},
 		{id: drID, typeName: "job", name: "DR A"},
 	})
@@ -40,7 +40,7 @@ func TestTargetsJobIDReturnsAllNamespaces(t *testing.T) {
 func TestTargetsJobIDCanSelectNamespace(t *testing.T) {
 	a := newTestApp(t)
 	mainID := identity.Canonical("main", "JOB-A")
-	completeAppGeneration(t, a, "snapshot-namespace-filter", []appTestNode{
+	completeNamespacedAppGeneration(t, a, "snapshot-namespace-filter", []appTestNode{
 		{id: mainID, typeName: "job", name: "Main A"},
 		{id: identity.Canonical("dr", "JOB-A"), typeName: "job", name: "DR A"},
 	})
