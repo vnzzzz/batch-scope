@@ -8,6 +8,11 @@ import (
 	"batchscope/internal/traversal"
 )
 
+type analysisIdentityRef struct {
+	Namespace string `json:"namespace"`
+	LocalID   string `json:"localId"`
+}
+
 func loadAnalysisPublicIdentities(ctx context.Context, db *sql.DB, result traversal.Result) (map[string]identity.Public, error) {
 	ids := make([]string, 0, len(result.Nodes)+len(result.Endpoints))
 	seen := make(map[string]struct{}, cap(ids))
@@ -28,11 +33,19 @@ func loadAnalysisPublicIdentities(ctx context.Context, db *sql.DB, result traver
 }
 
 func applyAnalysisPublicIdentities(response *analysisResponse, identities map[string]identity.Public) {
-	applyNode := func(node *analysisNode) {
-		value, ok := identities[node.ID]
+	publicIdentity := func(id string) identity.Public {
+		value, ok := identities[id]
 		if !ok {
-			value = identity.LegacyPublic(node.ID)
+			return identity.LegacyPublic(id)
 		}
+		return value
+	}
+	identityRef := func(id string) analysisIdentityRef {
+		value := publicIdentity(id)
+		return analysisIdentityRef{Namespace: value.Namespace, LocalID: value.LocalID}
+	}
+	applyNode := func(node *analysisNode) {
+		value := publicIdentity(node.ID)
 		node.Namespace = value.Namespace
 		node.LocalID = value.LocalID
 	}
@@ -68,6 +81,11 @@ func applyAnalysisPublicIdentities(response *analysisResponse, identities map[st
 	var applyTree func(*analysisTreeNode)
 	applyTree = func(tree *analysisTreeNode) {
 		applyNode(&tree.Node)
+		for index := range tree.HiddenConnections {
+			connection := &tree.HiddenConnections[index]
+			connection.FromIdentity = identityRef(connection.FromID)
+			connection.ToIdentity = identityRef(connection.ToID)
+		}
 		for index := range tree.Children {
 			applyTree(&tree.Children[index])
 		}
