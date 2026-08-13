@@ -11,10 +11,12 @@ import (
 func TestLoadStoresNamespaceIdentityIndex(t *testing.T) {
 	mainID := identity.Canonical("main", "JOB-A")
 	drID := identity.Canonical("dr", "JOB-A")
+	canonicalLookingLegacyID := identity.Canonical("legacy-looking", "JOB-X")
 	nodes := []string{
 		`{"type":"job","id":"` + mainID + `","namespace":"main","localId":"JOB-A","name":"Main A"}`,
 		`{"type":"job","id":"` + drID + `","namespace":"dr","localId":"JOB-A","name":"DR A"}`,
 		`{"type":"job","id":"LEGACY","name":"Legacy"}`,
+		`{"type":"job","id":"` + canonicalLookingLegacyID + `","name":"Canonical looking legacy"}`,
 	}
 	extracted := writeExtractedSnapshot(t, nodes, nil)
 	validated, err := Validate(context.Background(), extracted)
@@ -53,6 +55,7 @@ func TestLoadStoresNamespaceIdentityIndex(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := [][3]string{
+		{canonicalLookingLegacyID, "default", canonicalLookingLegacyID},
 		{"LEGACY", "default", "LEGACY"},
 		{drID, "dr", "JOB-A"},
 		{mainID, "main", "JOB-A"},
