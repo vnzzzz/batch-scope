@@ -114,9 +114,9 @@ func TestLoadOneBuildsAncestorPathFromParentsOnly(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := []Ancestor{
-		{ID: "ROOT", Type: "management_unit", Name: "Root"},
-		{ID: "UNIT", Type: "management_unit", Name: "Unit"},
-		{ID: "NET", Type: "job_network", Name: "Network"},
+		{ID: "ROOT", Namespace: "default", LocalID: "ROOT", Type: "management_unit", Name: "Root"},
+		{ID: "UNIT", Namespace: "default", LocalID: "UNIT", Type: "management_unit", Name: "Unit"},
+		{ID: "NET", Namespace: "default", LocalID: "NET", Type: "job_network", Name: "Network"},
 	}
 	if !reflect.DeepEqual(detail.AncestorPath, want) {
 		t.Fatalf("ancestorPath = %#v, want %#v", detail.AncestorPath, want)
