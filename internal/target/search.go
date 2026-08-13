@@ -7,7 +7,6 @@ import (
 	"slices"
 	"strings"
 
-	"batchscope/internal/identity"
 	"batchscope/internal/normalize"
 )
 
@@ -49,9 +48,9 @@ func Search(ctx context.Context, db *sql.DB, query string, types []string) (Sear
 func SearchByLocalID(ctx context.Context, db *sql.DB, localID, namespace string, types []string) (SearchResult, error) {
 	candidates, truncated, err := searchIndexedLocalIDCandidates(ctx, db, localID, namespace, types)
 	if err != nil && strings.Contains(err.Error(), "no such table: node_identity") {
-		// namespace導入前に直接組み立てたテストDBや旧世代を読む場合だけcanonical IDから復元する。
-		// 製品の新規取込世代はnode_identity indexを持つため、このfallbackでは全node scanしない。
-		candidates, truncated, err = searchCanonicalLocalIDCandidates(ctx, db, localID, namespace, types)
+		// namespace導入前のSQLiteにはnamespaced identityが存在しない。
+		// 旧node_idは文字列の見た目にかかわらず常にdefault namespaceのlocal IDそのものとして扱う。
+		candidates, truncated, err = searchLegacyLocalIDCandidates(ctx, db, localID, namespace, types)
 	}
 	if err != nil {
 		return SearchResult{}, err
@@ -127,38 +126,26 @@ LIMIT ?`, condition, strings.Join(typePlaceholders, ","))
 	return readLocalIDCandidates(ctx, db, statement, args...)
 }
 
-func searchCanonicalLocalIDCandidates(ctx context.Context, db *sql.DB, localID, namespace string, types []string) ([]candidate, bool, error) {
+func searchLegacyLocalIDCandidates(ctx context.Context, db *sql.DB, localID, namespace string, types []string) ([]candidate, bool, error) {
+	if namespace != "" && namespace != "default" {
+		return []candidate{}, false, nil
+	}
 	typePlaceholders := make([]string, len(types))
-	args := make([]any, 0, len(types)+4)
+	args := make([]any, 0, len(types)+2)
+	args = append(args, localID)
 	for index, nodeType := range types {
 		typePlaceholders[index] = "?"
 		args = append(args, nodeType)
-	}
-
-	var identityCondition string
-	if namespace != "" {
-		canonicalID := identity.Canonical(namespace, localID)
-		if namespace == "default" {
-			identityCondition = "(node.node_id = ? OR node.node_id = ?)"
-			args = append(args, canonicalID, localID)
-		} else {
-			identityCondition = "node.node_id = ?"
-			args = append(args, canonicalID)
-		}
-	} else {
-		suffix := identity.LocalIDSuffix(localID)
-		identityCondition = "(node.node_id = ? OR (node.node_id LIKE 'bs1.%' AND substr(node.node_id, -length(?)) = ?))"
-		args = append(args, localID, suffix, suffix)
 	}
 	args = append(args, MaxSearchResults+1)
 
 	statement := fmt.Sprintf(`
 SELECT node.node_id
 FROM node
-WHERE node.node_type IN (%s)
-	AND %s
-ORDER BY node.node_id COLLATE BINARY
-LIMIT ?`, strings.Join(typePlaceholders, ","), identityCondition)
+WHERE node.node_id = ?
+	AND node.node_type IN (%s)
+ORDER BY node.node_type COLLATE BINARY, node.node_id COLLATE BINARY
+LIMIT ?`, strings.Join(typePlaceholders, ","))
 	return readLocalIDCandidates(ctx, db, statement, args...)
 }
 
