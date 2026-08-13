@@ -43,18 +43,26 @@ func TestDownstreamLimitAnalysisTraversesCrossNamespaceIndirectDependency(t *tes
 		t.Fatalf("cross-namespace limit owner = %v", owner)
 	}
 
-	foundStatus := false
 	foundDR := false
+	foundCompressedStatus := false
 	for _, treeNode := range flattenResponseTree(body["tree"].(map[string]any)) {
 		node := treeNode["node"].(map[string]any)
-		switch node["id"] {
-		case mainStatus:
-			foundStatus = node["namespace"] == "main" && node["localId"] == "JOB-A.done"
-		case drJob:
+		if node["id"] == drJob {
 			foundDR = node["namespace"] == "dr" && node["localId"] == "JOB-B"
 		}
+		for _, rawID := range anySlice(treeNode["hiddenNodeIds"]) {
+			if rawID == mainStatus {
+				foundCompressedStatus = true
+			}
+		}
+		for _, rawConnection := range anySlice(treeNode["hiddenConnections"]) {
+			connection := rawConnection.(map[string]any)
+			if connection["fromId"] == mainJob && connection["toId"] == mainStatus {
+				foundCompressedStatus = true
+			}
+		}
 	}
-	if !foundStatus || !foundDR {
-		t.Fatalf("tree omitted namespaced nodes: status=%v dr=%v", foundStatus, foundDR)
+	if !foundCompressedStatus || !foundDR {
+		t.Fatalf("cross-namespace path is incomplete: compressedStatus=%v dr=%v", foundCompressedStatus, foundDR)
 	}
 }
