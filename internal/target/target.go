@@ -84,6 +84,7 @@ ORDER BY target_id COLLATE BINARY, depth DESC`, strings.Join(values, ","))
 	defer rows.Close()
 
 	result := make(map[string]Details, len(ids))
+	identityIDs := make(map[string]struct{})
 	for rows.Next() {
 		var targetID, nodeID, nodeType, name string
 		var path sql.NullString
@@ -91,13 +92,10 @@ ORDER BY target_id COLLATE BINARY, depth DESC`, strings.Join(values, ","))
 		if err := rows.Scan(&targetID, &nodeID, &nodeType, &name, &path, &depth); err != nil {
 			return nil, fmt.Errorf("scan target details: %w", err)
 		}
-		namespace, localID := identity.PublicFromID(nodeID)
+		identityIDs[nodeID] = struct{}{}
 		if depth == 0 {
 			detail := result[targetID]
-			detail.Node = Node{
-				ID: nodeID, Namespace: namespace, LocalID: localID,
-				Type: nodeType, Name: name, Path: optionalString(path),
-			}
+			detail.Node = Node{ID: nodeID, Type: nodeType, Name: name, Path: optionalString(path)}
 			if detail.AncestorPath == nil {
 				detail.AncestorPath = []Ancestor{}
 			}
@@ -108,13 +106,34 @@ ORDER BY target_id COLLATE BINARY, depth DESC`, strings.Join(values, ","))
 		if detail.AncestorPath == nil {
 			detail.AncestorPath = []Ancestor{}
 		}
-		detail.AncestorPath = append(detail.AncestorPath, Ancestor{
-			ID: nodeID, Namespace: namespace, LocalID: localID, Type: nodeType, Name: name,
-		})
+		detail.AncestorPath = append(detail.AncestorPath, Ancestor{ID: nodeID, Type: nodeType, Name: name})
 		result[targetID] = detail
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate target details: %w", err)
+	}
+
+	publicIDs := make([]string, 0, len(identityIDs))
+	for id := range identityIDs {
+		publicIDs = append(publicIDs, id)
+	}
+	public, err := identity.LoadPublic(ctx, db, publicIDs)
+	if err != nil {
+		return nil, fmt.Errorf("load target public identities: %w", err)
+	}
+	for targetID, detail := range result {
+		if value, ok := public[detail.ID]; ok {
+			detail.Namespace = value.Namespace
+			detail.LocalID = value.LocalID
+		}
+		for index := range detail.AncestorPath {
+			ancestor := &detail.AncestorPath[index]
+			if value, ok := public[ancestor.ID]; ok {
+				ancestor.Namespace = value.Namespace
+				ancestor.LocalID = value.LocalID
+			}
+		}
+		result[targetID] = detail
 	}
 
 	for _, id := range ids {
