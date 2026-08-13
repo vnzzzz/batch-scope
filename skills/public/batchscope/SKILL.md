@@ -19,7 +19,7 @@ description: ジョブマネージャーの定義をBatchScopeの入力形式へ
 8. 経路を説明するときは、`tree[].viaRelations`の種類、生成元、確実性を省略しない。
 9. 後続リミットはAPIの返却順を維持し、返却順が緊急度を表すとは説明しない。
 10. `declared`と`confirmed`を、`inferred`と`candidate`から区別する。
-11. 圧縮区間は`hiddenConnections`の各接続を順にたどり、省略されたジョブ数だけで経路を説明しない。
+11. 圧縮区間は`hiddenConnections`の各接続を順にたどり、`fromIdentity` / `toIdentity`のnamespaceとlocalIdを使って表示する。省略されたジョブ数だけで経路を説明せず、canonical IDを表示用に推測復号しない。
 12. 循環は`cycles[].nodes`の強連結成分と、`cycles[].route`の一周分の表示経路を区別して説明する。
 13. `uncoveredRoutes`は境界ノード単体ではなく、その境界へ至るリミット未通過経路の判定として説明する。
 14. 成功レスポンスは全件解析済みとして扱い、Problem Detailsが返った場合は部分結果を補わない。`analysis-timeout`の場合は、再試行するかを利用者に判断してもらう。

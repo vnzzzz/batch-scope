@@ -131,7 +131,7 @@ namespaceを跨いだ結果でも`limitOwner.namespace`と`limitOwner.localId`�
 | `PT1.5H` | `PT1H30M` |
 | `P1DT2H3M4S` | `P1DT2H3M4S` |
 
-`tree`は、返却したリミットとリミット未通過経路を説明する接続を共有して表します。
+`tree`は、返却したリミットとリミット未通過経路を説明する接続を共有して表します。圧縮区間の`hiddenConnections`は`fromId` / `toId`に加えて`fromIdentity` / `toIdentity`へnamespaceとlocalIdを持ち、canonical IDを復号せず経路途中のnamespace境界を表示できます。
 `uncoveredRoutes`は、リミット設定先を通らずに終端、循環、探索対象外の種別へ達した経路を示します。
 `cycles`は、到達可能な探索グラフで検出した強連結成分と、その成分を説明する一周分の経路を示します。
 

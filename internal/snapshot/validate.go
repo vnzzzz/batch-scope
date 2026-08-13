@@ -95,6 +95,7 @@ const (
 
 type nodeRecord struct {
 	Type      nodeKind
+	Namespace string
 	ParentID  string
 	HasParent bool
 	Line      int
@@ -419,7 +420,7 @@ func validateNodeLine(schema *jsonschema.Schema, line int, contents []byte) (str
 		return "", nodeRecord{}, nil, schemaError(nodesName, line, err)
 	}
 
-	record := nodeRecord{Type: nodeKindOf(current.Type), Line: line}
+	record := nodeRecord{Type: nodeKindOf(current.Type), Namespace: effectiveNodeNamespace(value), Line: line}
 	if current.ParentID != nil {
 		// 親なしをポインターで保持すると全ノード分の参照領域が増えるため、値と有無を分ける。
 		record.ParentID = *current.ParentID
@@ -720,6 +721,18 @@ func jsonPointer(parts []string) string {
 	return "/" + strings.Join(escaped, "/")
 }
 
+func effectiveNodeNamespace(value any) string {
+	object, ok := value.(map[string]any)
+	if !ok {
+		return "default"
+	}
+	namespace, ok := object["namespace"].(string)
+	if !ok || namespace == "" {
+		return "default"
+	}
+	return namespace
+}
+
 func isNodeType(kind string) bool {
 	return nodeKindOf(kind) != nodeKindUnknown
 }
@@ -784,6 +797,9 @@ func validateNodeReferences(orderedIDs []string, nodes map[string]nodeRecord, du
 		parent, exists := nodes[current.ParentID]
 		if !exists {
 			return &Error{Kind: ErrorMissingParent, File: nodesName, Line: current.Line, Pointer: "/parentId"}
+		}
+		if current.Namespace != parent.Namespace {
+			return &Error{Kind: ErrorInvalidParentType, File: nodesName, Line: current.Line, Pointer: "/parentId"}
 		}
 		if !allowedParent(current.Type, parent.Type) {
 			return &Error{Kind: ErrorInvalidParentType, File: nodesName, Line: current.Line, Pointer: "/parentId"}

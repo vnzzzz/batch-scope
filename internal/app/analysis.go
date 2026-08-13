@@ -154,10 +154,12 @@ type analysisTreeNode struct {
 }
 
 type analysisHiddenConnection struct {
-	FromID       string             `json:"fromId"`
-	ToID         string             `json:"toId"`
-	ViaRelations []analysisRelation `json:"viaRelations" nullable:"false"`
-	ViaScope     bool               `json:"viaScope"`
+	FromID       string              `json:"fromId"`
+	FromIdentity analysisIdentityRef `json:"fromIdentity"`
+	ToID         string              `json:"toId"`
+	ToIdentity   analysisIdentityRef `json:"toIdentity"`
+	ViaRelations []analysisRelation  `json:"viaRelations" nullable:"false"`
+	ViaScope     bool                `json:"viaScope"`
 }
 
 type analysisRelation struct {

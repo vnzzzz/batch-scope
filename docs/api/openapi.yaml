@@ -130,8 +130,12 @@ components:
       properties:
         fromId:
           type: string
+        fromIdentity:
+          $ref: "#/components/schemas/AnalysisIdentityRef"
         toId:
           type: string
+        toIdentity:
+          $ref: "#/components/schemas/AnalysisIdentityRef"
         viaRelations:
           items:
             $ref: "#/components/schemas/AnalysisRelation"
@@ -140,9 +144,22 @@ components:
           type: boolean
       required:
         - fromId
+        - fromIdentity
         - toId
+        - toIdentity
         - viaRelations
         - viaScope
+      type: object
+    AnalysisIdentityRef:
+      additionalProperties: false
+      properties:
+        localId:
+          type: string
+        namespace:
+          type: string
+      required:
+        - namespace
+        - localId
       type: object
     AnalysisLimitGroup:
       additionalProperties: false

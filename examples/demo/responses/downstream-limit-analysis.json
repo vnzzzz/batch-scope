@@ -457,7 +457,15 @@
         "hiddenConnections": [
           {
             "fromId": "JOB-A",
+            "fromIdentity": {
+              "localId": "JOB-A",
+              "namespace": "default"
+            },
             "toId": "JOB-HIDDEN-1",
+            "toIdentity": {
+              "localId": "JOB-HIDDEN-1",
+              "namespace": "default"
+            },
             "viaRelations": [
               {
                 "certainty": "declared",
@@ -469,7 +477,15 @@
           },
           {
             "fromId": "JOB-HIDDEN-1",
+            "fromIdentity": {
+              "localId": "JOB-HIDDEN-1",
+              "namespace": "default"
+            },
             "toId": "JOB-HIDDEN-2",
+            "toIdentity": {
+              "localId": "JOB-HIDDEN-2",
+              "namespace": "default"
+            },
             "viaRelations": [
               {
                 "certainty": "declared",
@@ -481,7 +497,15 @@
           },
           {
             "fromId": "JOB-HIDDEN-2",
+            "fromIdentity": {
+              "localId": "JOB-HIDDEN-2",
+              "namespace": "default"
+            },
             "toId": "JOB-HIDDEN-LIMIT",
+            "toIdentity": {
+              "localId": "JOB-HIDDEN-LIMIT",
+              "namespace": "default"
+            },
             "viaRelations": [
               {
                 "certainty": "declared",
@@ -511,7 +535,15 @@
         "hiddenConnections": [
           {
             "fromId": "JOB-A",
+            "fromIdentity": {
+              "localId": "JOB-A",
+              "namespace": "default"
+            },
             "toId": "JOB-SHARED-A",
+            "toIdentity": {
+              "localId": "JOB-SHARED-A",
+              "namespace": "default"
+            },
             "viaRelations": [
               {
                 "certainty": "declared",
@@ -523,7 +555,15 @@
           },
           {
             "fromId": "JOB-SHARED-A",
+            "fromIdentity": {
+              "localId": "JOB-SHARED-A",
+              "namespace": "default"
+            },
             "toId": "JOB-SHARED-LIMIT",
+            "toIdentity": {
+              "localId": "JOB-SHARED-LIMIT",
+              "namespace": "default"
+            },
             "viaRelations": [
               {
                 "certainty": "declared",
@@ -552,7 +592,15 @@
         "hiddenConnections": [
           {
             "fromId": "JOB-A",
+            "fromIdentity": {
+              "localId": "JOB-A",
+              "namespace": "default"
+            },
             "toId": "JOB-SHARED-B",
+            "toIdentity": {
+              "localId": "JOB-SHARED-B",
+              "namespace": "default"
+            },
             "viaRelations": [
               {
                 "certainty": "declared",
@@ -564,7 +612,15 @@
           },
           {
             "fromId": "JOB-SHARED-B",
+            "fromIdentity": {
+              "localId": "JOB-SHARED-B",
+              "namespace": "default"
+            },
             "toId": "JOB-SHARED-LIMIT",
+            "toIdentity": {
+              "localId": "JOB-SHARED-LIMIT",
+              "namespace": "default"
+            },
             "viaRelations": [
               {
                 "certainty": "declared",
