@@ -55,8 +55,8 @@ func TestLoadStoresNamespaceIdentityIndex(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := [][3]string{
-		{canonicalLookingLegacyID, "default", canonicalLookingLegacyID},
 		{"LEGACY", "default", "LEGACY"},
+		{canonicalLookingLegacyID, "default", canonicalLookingLegacyID},
 		{drID, "dr", "JOB-A"},
 		{mainID, "main", "JOB-A"},
 	}
