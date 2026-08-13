@@ -59,7 +59,7 @@ id = "bs1." + base64url-no-padding(UTF-8(namespace))
 同じnamespace内で同じ`localId`を持つ二つのノードは同じcanonical IDになるため、一つのスナップショット内では重複ノードとして受け入れません。
 異なるnamespaceなら同じ`localId`を持てます。
 
-schema version 0.5では既存スナップショットとの互換性を維持します。`namespace`と`localId`を持たない従来ノードは、その`id`をそのままcanonical IDとして受け入れ、API表示上はnamespace=`default`、localId=`id`として扱います。新しく複数namespaceを生成する変換では、この従来形式へ依存せず`namespace`と`localId`を明示します。
+schema version 0.5では既存スナップショットとの互換性を維持します。`namespace`と`localId`を持たない従来ノードは、その`id`をそのままcanonical IDとして受け入れ、API表示上はnamespace=`default`、localId=`id`として扱います。`default`はこの互換表示専用に予約し、新しいnamespace対応ノードへ明示指定してはいけません。新しく複数namespaceを生成する変換では、この従来形式へ依存せず`namespace`と`localId`を明示します。
 
 ## ノード
 

@@ -67,7 +67,7 @@ base64urlはRFC 4648のURL-safe alphabetを使い、末尾の`=`paddingを付け
 同じnamespace内の同じ`localId`は同じcanonical IDになるため、二重に生成しない。
 異なるnamespaceでは同じ`localId`を使用できる。
 
-schema version 0.5の従来データは`namespace`と`localId`を省略できる。その場合、API表示上はnamespace=`default`、localId=`id`として扱われる。複数namespaceを新しく生成するときは従来形式へ依存しない。
+schema version 0.5の従来データは`namespace`と`localId`を省略できる。その場合、API表示上はnamespace=`default`、localId=`id`として扱われる。`default`はこの互換表示専用の予約namespaceであり、新しいnamespace対応ノードへ明示指定しない。複数namespaceを新しく生成するときは従来形式へ依存しない。
 
 ## ノード種別
 
