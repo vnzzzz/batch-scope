@@ -50,16 +50,15 @@ func TestDownstreamLimitAnalysisTraversesCrossNamespaceIndirectDependency(t *tes
 		if node["id"] == drJob {
 			foundDR = node["namespace"] == "dr" && node["localId"] == "JOB-B"
 		}
-		for _, rawID := range anySlice(treeNode["hiddenNodeIds"]) {
-			if rawID == mainStatus {
-				foundCompressedStatus = true
-			}
-		}
 		for _, rawConnection := range anySlice(treeNode["hiddenConnections"]) {
 			connection := rawConnection.(map[string]any)
-			if connection["fromId"] == mainJob && connection["toId"] == mainStatus {
-				foundCompressedStatus = true
+			if connection["fromId"] != mainJob || connection["toId"] != mainStatus {
+				continue
 			}
+			fromIdentity := connection["fromIdentity"].(map[string]any)
+			toIdentity := connection["toIdentity"].(map[string]any)
+			foundCompressedStatus = fromIdentity["namespace"] == "main" && fromIdentity["localId"] == "JOB-A" &&
+				toIdentity["namespace"] == "main" && toIdentity["localId"] == "JOB-A.done"
 		}
 	}
 	if !foundCompressedStatus || !foundDR {
