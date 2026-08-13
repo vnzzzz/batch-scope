@@ -173,14 +173,20 @@ func TestOpenAPISpec(t *testing.T) {
 		t.Error("OpenAPI unexpectedly contains ProblemDetails")
 	}
 	targets := spec.Paths["/v1/targets"].Get
-	queryRequired := false
+	foundTargetsParameters := map[string]bool{}
 	for _, parameter := range targets.Parameters {
-		if parameter.Name == "query" {
-			queryRequired = parameter.Required
+		switch parameter.Name {
+		case "query", "jobId", "namespace":
+			foundTargetsParameters[parameter.Name] = true
+			if parameter.Required {
+				t.Errorf("GET /v1/targets parameter %q must be optional in OpenAPI; handler enforces jobId/query exclusivity", parameter.Name)
+			}
 		}
 	}
-	if !queryRequired {
-		t.Error("GET /v1/targets query parameter is not required")
+	for _, name := range []string{"query", "jobId", "namespace"} {
+		if !foundTargetsParameters[name] {
+			t.Errorf("GET /v1/targets parameter %q is missing", name)
+		}
 	}
 	if targets.Responses["422"] != nil {
 		t.Error("GET /v1/targets exposes an unmapped 422 response")
