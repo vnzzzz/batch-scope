@@ -1,0 +1,87 @@
+name: Issue 53 sync
+
+on:
+  push:
+    branches:
+      - agent/issue-53-namespaces
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    if: ${{ !contains(github.event.head_commit.message, '[issue53-sync]') }}
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: agent/issue-53-namespaces
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: Patch analysis identity propagation
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('internal/app/analysis.go')
+          text = path.read_text()
+          old = '''type analysisNode struct {
+          \tID   string `json:"id"`
+          \tType string `json:"type" enum:"management_unit,job_network,job,file,file_pattern,job_status,external_event"`
+          \tName string `json:"name"`
+          }
+          '''
+          new = '''type analysisNode struct {
+          \tID        string `json:"id"`
+          \tNamespace string `json:"-"`
+          \tLocalID   string `json:"-"`
+          \tType      string `json:"type" enum:"management_unit,job_network,job,file,file_pattern,job_status,external_event"`
+          \tName      string `json:"name"`
+          }
+          '''
+          if text.count(old) != 1:
+              raise SystemExit('analysisNode block did not match exactly once')
+          text = text.replace(old, new)
+
+          marker = '''\treturnedTreeNodes = countAnalysisTreeNodes(response.Tree)
+          '''
+          insertion = '''\tpublicIdentities, err := loadAnalysisPublicIdentities(ctx, db, traversalResult)
+          \tif analysisTimedOut(ctx, err) {
+          \t\terrorType = "analysis-timeout"
+          \t\treturn nil, AnalysisTimeoutProblem("analysis did not complete within its time limit")
+          \t}
+          \tif err != nil {
+          \t\terrorType = "internal-error"
+          \t\treturn nil, InternalErrorProblem("analysis identity lookup failed")
+          \t}
+          \tapplyAnalysisPublicIdentities(&response, publicIdentities)
+          \treturnedTreeNodes = countAnalysisTreeNodes(response.Tree)
+          '''
+          if text.count(marker) != 1:
+              raise SystemExit('analysis response marker did not match exactly once')
+          text = text.replace(marker, insertion)
+          path.write_text(text)
+          PY
+          gofmt -w internal/app/analysis.go internal/app/analysis_public_identity.go internal/app/analysis_namespace.go internal/identity/identity.go internal/target/target.go internal/app/demo_response_generate_test.go
+      - name: Regenerate public artifacts
+        shell: bash
+        run: |
+          BATCHSCOPE_UPDATE_DEMO=1 go test ./internal/app -run '^TestGenerateDemoDownstreamLimitAnalysisResponse$' -count=1
+          make openapi
+      - name: Verify
+        run: make verify
+      - name: Commit generated changes
+        shell: bash
+        run: |
+          if git diff --quiet; then
+            echo 'No generated changes'
+            exit 0
+          fi
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add internal/app/analysis.go examples/demo/responses/downstream-limit-analysis.json docs/api/openapi.yaml
+          git commit -m 'chore: namespace対応の生成物を同期する [issue53-sync]'
+          git push origin HEAD:agent/issue-53-namespaces
