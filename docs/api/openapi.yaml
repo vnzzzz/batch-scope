@@ -11,7 +11,7 @@ components:
           type: string
         nodes:
           items:
-            $ref: "#/components/schemas/AnalysisNode"
+            $ref: "#/components/schemas/AnalysisNodePublic"
           type: array
         route:
           items:
@@ -176,9 +176,9 @@ components:
             - $ref: "#/components/schemas/AnalysisMaxElapsedFact"
             - $ref: "#/components/schemas/AnalysisRawFact"
         limitOwner:
-          $ref: "#/components/schemas/AnalysisNode"
+          $ref: "#/components/schemas/AnalysisNodePublic"
         scopeRoot:
-          $ref: "#/components/schemas/AnalysisNode"
+          $ref: "#/components/schemas/AnalysisNodePublic"
         treeNodeId:
           type: string
       required:
@@ -251,12 +251,16 @@ components:
         - origin
         - certainty
       type: object
-    AnalysisNode:
+    AnalysisNodePublic:
       additionalProperties: false
       properties:
         id:
           type: string
+        localId:
+          type: string
         name:
+          type: string
+        namespace:
           type: string
         type:
           enum:
@@ -270,6 +274,8 @@ components:
           type: string
       required:
         - id
+        - namespace
+        - localId
         - type
         - name
       type: object
@@ -392,7 +398,7 @@ components:
         hiddenNodeIdsTruncated:
           type: boolean
         node:
-          $ref: "#/components/schemas/AnalysisNode"
+          $ref: "#/components/schemas/AnalysisNodePublic"
         referenceTo:
           type: string
         referenceType:
@@ -417,7 +423,7 @@ components:
       additionalProperties: false
       properties:
         boundary:
-          $ref: "#/components/schemas/AnalysisNode"
+          $ref: "#/components/schemas/AnalysisNodePublic"
         cycleId:
           type: string
         reason:
@@ -438,7 +444,11 @@ components:
       properties:
         id:
           type: string
+        localId:
+          type: string
         name:
+          type: string
+        namespace:
           type: string
         type:
           enum:
@@ -447,6 +457,8 @@ components:
           type: string
       required:
         - id
+        - namespace
+        - localId
         - type
         - name
       type: object
@@ -470,7 +482,11 @@ components:
           type: array
         id:
           type: string
+        localId:
+          type: string
         name:
+          type: string
+        namespace:
           type: string
         path:
           type: string
@@ -482,6 +498,8 @@ components:
       required:
         - ancestorPath
         - id
+        - namespace
+        - localId
         - type
         - name
       type: object
@@ -619,15 +637,20 @@ components:
           type: array
         id:
           type: string
+        localId:
+          type: string
         matchedBy:
           items:
             enum:
               - id
+              - localId
               - name
               - path
             type: string
           type: array
         name:
+          type: string
+        namespace:
           type: string
         path:
           type: string
@@ -640,6 +663,8 @@ components:
         - matchedBy
         - ancestorPath
         - id
+        - namespace
+        - localId
         - type
         - name
       type: object
@@ -941,13 +966,26 @@ paths:
     get:
       operationId: search-targets
       parameters:
-        - description: Exact ID, name, or full path to search for
+        - description: Legacy exact canonical ID, name, or full path search; use jobId for namespace-aware job ID search
           explode: false
           in: query
           name: query
-          required: true
           schema:
-            description: Exact ID, name, or full path to search for
+            description: Legacy exact canonical ID, name, or full path search; use jobId for namespace-aware job ID search
+            type: string
+        - description: Exact source-local job or job network ID
+          explode: false
+          in: query
+          name: jobId
+          schema:
+            description: Exact source-local job or job network ID
+            type: string
+        - description: Optional semantic definition-set namespace used with jobId
+          explode: false
+          in: query
+          name: namespace
+          schema:
+            description: Optional semantic definition-set namespace used with jobId
             type: string
         - description: Target type filter; may be repeated
           explode: true
@@ -994,4 +1032,4 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorModel"
           description: Service Unavailable
-      summary: Search jobs and job networks by exact match
+      summary: Search jobs and job networks by local job ID or legacy exact match
