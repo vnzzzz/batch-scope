@@ -9,7 +9,7 @@
       "enum": ["management_unit", "job_network", "job", "file", "file_pattern", "job_status", "external_event"]
     },
     "id": {"type": "string", "minLength": 1, "maxLength": 1024},
-    "namespace": {"type": "string", "minLength": 1, "maxLength": 256},
+    "namespace": {"type": "string", "minLength": 1, "maxLength": 256, "not": {"const": "default"}},
     "localId": {"type": "string", "minLength": 1, "maxLength": 512},
     "name": {"type": "string", "minLength": 1, "maxLength": 2048},
     "path": {"type": "string", "maxLength": 8192},
