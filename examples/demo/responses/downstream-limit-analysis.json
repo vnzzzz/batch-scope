@@ -8,32 +8,44 @@
       "nodes": [
         {
           "id": "JOB-A",
+          "localId": "JOB-A",
           "name": "売上抽出",
+          "namespace": "default",
           "type": "job"
         },
         {
           "id": "JOB-B",
+          "localId": "JOB-B",
           "name": "売上集計",
+          "namespace": "default",
           "type": "job"
         },
         {
           "id": "JOB-C",
+          "localId": "JOB-C",
           "name": "会計連携ファイル作成",
+          "namespace": "default",
           "type": "job"
         },
         {
           "id": "NET-CLOSE",
+          "localId": "NET-CLOSE",
           "name": "会計締め処理",
+          "namespace": "default",
           "type": "job_network"
         },
         {
           "id": "event:vendor:ack",
+          "localId": "event:vendor:ack",
           "name": "外部ベンダー受信完了",
+          "namespace": "default",
           "type": "external_event"
         },
         {
           "id": "file:nfs-prod:sales.done",
+          "localId": "file:nfs-prod:sales.done",
           "name": "sales.done",
+          "namespace": "default",
           "type": "file"
         }
       ],
@@ -149,12 +161,16 @@
       "nodes": [
         {
           "id": "JOB-CYCLE-A",
+          "localId": "JOB-CYCLE-A",
           "name": "リミットなし循環A",
+          "namespace": "default",
           "type": "job"
         },
         {
           "id": "JOB-CYCLE-B",
+          "localId": "JOB-CYCLE-B",
           "name": "リミットなし循環B",
+          "namespace": "default",
           "type": "job"
         }
       ],
@@ -216,12 +232,16 @@
               },
               "limitOwner": {
                 "id": "JOB-C",
+                "localId": "JOB-C",
                 "name": "会計連携ファイル作成",
+                "namespace": "default",
                 "type": "job"
               },
               "scopeRoot": {
                 "id": "NET-CLOSE",
+                "localId": "NET-CLOSE",
                 "name": "会計締め処理",
+                "namespace": "default",
                 "type": "job_network"
               },
               "treeNodeId": "tree-10"
@@ -240,7 +260,9 @@
               },
               "limitOwner": {
                 "id": "JOB-B",
+                "localId": "JOB-B",
                 "name": "売上集計",
+                "namespace": "default",
                 "type": "job"
               },
               "treeNodeId": "tree-15"
@@ -265,7 +287,9 @@
               },
               "limitOwner": {
                 "id": "JOB-SHARED-LIMIT",
+                "localId": "JOB-SHARED-LIMIT",
                 "name": "合流後のリミット設定先",
+                "namespace": "default",
                 "type": "job"
               },
               "treeNodeId": "tree-6"
@@ -289,7 +313,9 @@
             },
             "limitOwner": {
               "id": "JOB-B",
+              "localId": "JOB-B",
               "name": "売上集計",
+              "namespace": "default",
               "type": "job"
             },
             "treeNodeId": "tree-15"
@@ -310,7 +336,9 @@
             },
             "limitOwner": {
               "id": "JOB-HIDDEN-LIMIT",
+              "localId": "JOB-HIDDEN-LIMIT",
               "name": "圧縮経路のリミット設定先",
+              "namespace": "default",
               "type": "job"
             },
             "treeNodeId": "tree-5"
@@ -336,22 +364,30 @@
     "ancestorPath": [
       {
         "id": "UNIT-OPS",
+        "localId": "UNIT-OPS",
         "name": "運用管理",
+        "namespace": "default",
         "type": "management_unit"
       },
       {
         "id": "NET-DAILY",
+        "localId": "NET-DAILY",
         "name": "日次処理",
+        "namespace": "default",
         "type": "job_network"
       },
       {
         "id": "NET-SALES",
+        "localId": "NET-SALES",
         "name": "売上処理",
+        "namespace": "default",
         "type": "job_network"
       }
     ],
     "id": "JOB-A",
+    "localId": "JOB-A",
     "name": "売上抽出",
+    "namespace": "default",
     "path": "/DAILY/SALES/JOB-A",
     "type": "job"
   },
@@ -366,7 +402,9 @@
                 "cycleId": "cycle-2",
                 "node": {
                   "id": "JOB-CYCLE-A",
+                  "localId": "JOB-CYCLE-A",
                   "name": "リミットなし循環A",
+                  "namespace": "default",
                   "type": "job"
                 },
                 "referenceTo": "tree-2",
@@ -383,7 +421,9 @@
             ],
             "node": {
               "id": "JOB-CYCLE-B",
+              "localId": "JOB-CYCLE-B",
               "name": "リミットなし循環B",
+              "namespace": "default",
               "type": "job"
             },
             "treeNodeId": "tree-3",
@@ -398,7 +438,9 @@
         ],
         "node": {
           "id": "JOB-CYCLE-A",
+          "localId": "JOB-CYCLE-A",
           "name": "リミットなし循環A",
+          "namespace": "default",
           "type": "job"
         },
         "treeNodeId": "tree-2",
@@ -415,7 +457,15 @@
         "hiddenConnections": [
           {
             "fromId": "JOB-A",
+            "fromIdentity": {
+              "localId": "JOB-A",
+              "namespace": "default"
+            },
             "toId": "JOB-HIDDEN-1",
+            "toIdentity": {
+              "localId": "JOB-HIDDEN-1",
+              "namespace": "default"
+            },
             "viaRelations": [
               {
                 "certainty": "declared",
@@ -427,7 +477,15 @@
           },
           {
             "fromId": "JOB-HIDDEN-1",
+            "fromIdentity": {
+              "localId": "JOB-HIDDEN-1",
+              "namespace": "default"
+            },
             "toId": "JOB-HIDDEN-2",
+            "toIdentity": {
+              "localId": "JOB-HIDDEN-2",
+              "namespace": "default"
+            },
             "viaRelations": [
               {
                 "certainty": "declared",
@@ -439,7 +497,15 @@
           },
           {
             "fromId": "JOB-HIDDEN-2",
+            "fromIdentity": {
+              "localId": "JOB-HIDDEN-2",
+              "namespace": "default"
+            },
             "toId": "JOB-HIDDEN-LIMIT",
+            "toIdentity": {
+              "localId": "JOB-HIDDEN-LIMIT",
+              "namespace": "default"
+            },
             "viaRelations": [
               {
                 "certainty": "declared",
@@ -457,7 +523,9 @@
         ],
         "node": {
           "id": "JOB-HIDDEN-LIMIT",
+          "localId": "JOB-HIDDEN-LIMIT",
           "name": "圧縮経路のリミット設定先",
+          "namespace": "default",
           "type": "job"
         },
         "treeNodeId": "tree-5"
@@ -467,7 +535,15 @@
         "hiddenConnections": [
           {
             "fromId": "JOB-A",
+            "fromIdentity": {
+              "localId": "JOB-A",
+              "namespace": "default"
+            },
             "toId": "JOB-SHARED-A",
+            "toIdentity": {
+              "localId": "JOB-SHARED-A",
+              "namespace": "default"
+            },
             "viaRelations": [
               {
                 "certainty": "declared",
@@ -479,7 +555,15 @@
           },
           {
             "fromId": "JOB-SHARED-A",
+            "fromIdentity": {
+              "localId": "JOB-SHARED-A",
+              "namespace": "default"
+            },
             "toId": "JOB-SHARED-LIMIT",
+            "toIdentity": {
+              "localId": "JOB-SHARED-LIMIT",
+              "namespace": "default"
+            },
             "viaRelations": [
               {
                 "certainty": "declared",
@@ -496,7 +580,9 @@
         ],
         "node": {
           "id": "JOB-SHARED-LIMIT",
+          "localId": "JOB-SHARED-LIMIT",
           "name": "合流後のリミット設定先",
+          "namespace": "default",
           "type": "job"
         },
         "treeNodeId": "tree-6"
@@ -506,7 +592,15 @@
         "hiddenConnections": [
           {
             "fromId": "JOB-A",
+            "fromIdentity": {
+              "localId": "JOB-A",
+              "namespace": "default"
+            },
             "toId": "JOB-SHARED-B",
+            "toIdentity": {
+              "localId": "JOB-SHARED-B",
+              "namespace": "default"
+            },
             "viaRelations": [
               {
                 "certainty": "declared",
@@ -518,7 +612,15 @@
           },
           {
             "fromId": "JOB-SHARED-B",
+            "fromIdentity": {
+              "localId": "JOB-SHARED-B",
+              "namespace": "default"
+            },
             "toId": "JOB-SHARED-LIMIT",
+            "toIdentity": {
+              "localId": "JOB-SHARED-LIMIT",
+              "namespace": "default"
+            },
             "viaRelations": [
               {
                 "certainty": "declared",
@@ -535,7 +637,9 @@
         ],
         "node": {
           "id": "JOB-SHARED-LIMIT",
+          "localId": "JOB-SHARED-LIMIT",
           "name": "合流後のリミット設定先",
+          "namespace": "default",
           "type": "job"
         },
         "referenceTo": "tree-6",
@@ -546,7 +650,9 @@
         "children": [],
         "node": {
           "id": "JOB-TERMINAL",
+          "localId": "JOB-TERMINAL",
           "name": "リミットなし終端",
+          "namespace": "default",
           "type": "job"
         },
         "treeNodeId": "tree-8",
@@ -569,7 +675,9 @@
                     "cycleId": "cycle-1",
                     "node": {
                       "id": "JOB-A",
+                      "localId": "JOB-A",
                       "name": "売上抽出",
+                      "namespace": "default",
                       "type": "job"
                     },
                     "referenceTo": "tree-1",
@@ -586,7 +694,9 @@
                 ],
                 "node": {
                   "id": "event:vendor:ack",
+                  "localId": "event:vendor:ack",
                   "name": "外部ベンダー受信完了",
+                  "namespace": "default",
                   "type": "external_event"
                 },
                 "treeNodeId": "tree-11",
@@ -601,7 +711,9 @@
             ],
             "node": {
               "id": "JOB-C",
+              "localId": "JOB-C",
               "name": "会計連携ファイル作成",
+              "namespace": "default",
               "type": "job"
             },
             "treeNodeId": "tree-10",
@@ -610,7 +722,9 @@
         ],
         "node": {
           "id": "NET-CLOSE",
+          "localId": "NET-CLOSE",
           "name": "会計締め処理",
+          "namespace": "default",
           "type": "job_network"
         },
         "treeNodeId": "tree-9",
@@ -626,7 +740,9 @@
         "children": [],
         "node": {
           "id": "UNIT-BOUNDARY",
+          "localId": "UNIT-BOUNDARY",
           "name": "探索対象外の管理単位",
+          "namespace": "default",
           "type": "management_unit"
         },
         "treeNodeId": "tree-13",
@@ -647,7 +763,9 @@
                 "cycleId": "cycle-1",
                 "node": {
                   "id": "JOB-C",
+                  "localId": "JOB-C",
                   "name": "会計連携ファイル作成",
+                  "namespace": "default",
                   "type": "job"
                 },
                 "referenceTo": "tree-10",
@@ -666,7 +784,9 @@
                 "cycleId": "cycle-1",
                 "node": {
                   "id": "NET-CLOSE",
+                  "localId": "NET-CLOSE",
                   "name": "会計締め処理",
+                  "namespace": "default",
                   "type": "job_network"
                 },
                 "referenceTo": "tree-9",
@@ -683,7 +803,9 @@
             ],
             "node": {
               "id": "JOB-B",
+              "localId": "JOB-B",
               "name": "売上集計",
+              "namespace": "default",
               "type": "job"
             },
             "treeNodeId": "tree-15",
@@ -698,7 +820,9 @@
         ],
         "node": {
           "id": "file:nfs-prod:sales.done",
+          "localId": "file:nfs-prod:sales.done",
           "name": "sales.done",
+          "namespace": "default",
           "type": "file"
         },
         "treeNodeId": "tree-14",
@@ -713,7 +837,9 @@
     ],
     "node": {
       "id": "JOB-A",
+      "localId": "JOB-A",
       "name": "売上抽出",
+      "namespace": "default",
       "type": "job"
     },
     "treeNodeId": "tree-1"
@@ -722,7 +848,9 @@
     {
       "boundary": {
         "id": "JOB-CYCLE-A",
+        "localId": "JOB-CYCLE-A",
         "name": "リミットなし循環A",
+        "namespace": "default",
         "type": "job"
       },
       "cycleId": "cycle-2",
@@ -732,7 +860,9 @@
     {
       "boundary": {
         "id": "JOB-TERMINAL",
+        "localId": "JOB-TERMINAL",
         "name": "リミットなし終端",
+        "namespace": "default",
         "type": "job"
       },
       "reason": "terminal_without_limit",
@@ -741,7 +871,9 @@
     {
       "boundary": {
         "id": "UNIT-BOUNDARY",
+        "localId": "UNIT-BOUNDARY",
         "name": "探索対象外の管理単位",
+        "namespace": "default",
         "type": "management_unit"
       },
       "reason": "non_traversable_node_type",

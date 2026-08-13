@@ -68,9 +68,11 @@ type analysisOutput struct {
 }
 
 type analysisNode struct {
-	ID   string `json:"id"`
-	Type string `json:"type" enum:"management_unit,job_network,job,file,file_pattern,job_status,external_event"`
-	Name string `json:"name"`
+	ID        string `json:"id"`
+	Namespace string `json:"-"`
+	LocalID   string `json:"-"`
+	Type      string `json:"type" enum:"management_unit,job_network,job,file,file_pattern,job_status,external_event"`
+	Name      string `json:"name"`
 }
 
 type analysisLimitSections struct {
@@ -152,10 +154,12 @@ type analysisTreeNode struct {
 }
 
 type analysisHiddenConnection struct {
-	FromID       string             `json:"fromId"`
-	ToID         string             `json:"toId"`
-	ViaRelations []analysisRelation `json:"viaRelations" nullable:"false"`
-	ViaScope     bool               `json:"viaScope"`
+	FromID       string              `json:"fromId"`
+	FromIdentity analysisIdentityRef `json:"fromIdentity"`
+	ToID         string              `json:"toId"`
+	ToIdentity   analysisIdentityRef `json:"toIdentity"`
+	ViaRelations []analysisRelation  `json:"viaRelations" nullable:"false"`
+	ViaScope     bool                `json:"viaScope"`
 }
 
 type analysisRelation struct {
@@ -381,6 +385,16 @@ func (a *App) downstreamLimitAnalysis(ctx context.Context, input *analysisInput)
 		errorType = "internal-error"
 		return nil, InternalErrorProblem("analysis response construction failed")
 	}
+	publicIdentities, err := loadAnalysisPublicIdentities(ctx, db, traversalResult)
+	if analysisTimedOut(ctx, err) {
+		errorType = "analysis-timeout"
+		return nil, AnalysisTimeoutProblem("analysis did not complete within its time limit")
+	}
+	if err != nil {
+		errorType = "internal-error"
+		return nil, InternalErrorProblem("analysis identity lookup failed")
+	}
+	applyAnalysisPublicIdentities(&response, publicIdentities)
 	returnedTreeNodes = countAnalysisTreeNodes(response.Tree)
 	returnedLimits = countAnalysisLimits(response.Limits)
 	cyclesDetected = len(response.Cycles)

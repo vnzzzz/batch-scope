@@ -26,7 +26,7 @@
 `viaScope=true`はジョブネットから直接の論理子ノードへの親子関係であり、依存relationではない。
 
 圧縮区間は`hiddenConnections`で表す。
-各要素の`fromId`、`toId`、`viaRelations`、`viaScope`を配列順にたどると、親ノードから表示ノードまでの接続を復元できる。
+各要素の`fromId`、`toId`、`fromIdentity`、`toIdentity`、`viaRelations`、`viaScope`を配列順にたどると、親ノードから表示ノードまでの接続を復元できる。`fromIdentity`と`toIdentity`のnamespace / localIdを表示に使い、canonical IDの文字列表現を推測復号しない。
 `hiddenJobCount`は省略したジョブ数、`hiddenNodeIds`は省略したノードIDの先頭1,000件を表す。
 `hiddenNodeIdsTruncated=true`でも`hiddenConnections`は切り詰められない。
 

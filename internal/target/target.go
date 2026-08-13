@@ -6,21 +6,27 @@ import (
 	"database/sql"
 	"fmt"
 	"strings"
+
+	"batchscope/internal/identity"
 )
 
 // Node はAPIで公開する対象ノードの共通表現である。
 type Node struct {
-	ID   string  `json:"id"`
-	Type string  `json:"type" enum:"job,job_network"`
-	Name string  `json:"name"`
-	Path *string `json:"path,omitempty"`
+	ID        string  `json:"id"`
+	Namespace string  `json:"namespace"`
+	LocalID   string  `json:"localId"`
+	Type      string  `json:"type" enum:"job,job_network"`
+	Name      string  `json:"name"`
+	Path      *string `json:"path,omitempty"`
 }
 
 // Ancestor は対象ノードの親子階層を構成する祖先の公開表現である。
 type Ancestor struct {
-	ID   string `json:"id"`
-	Type string `json:"type" enum:"management_unit,job_network"`
-	Name string `json:"name"`
+	ID        string `json:"id"`
+	Namespace string `json:"namespace"`
+	LocalID   string `json:"localId"`
+	Type      string `json:"type" enum:"management_unit,job_network"`
+	Name      string `json:"name"`
 }
 
 // Details は対象ノードと、最上位から直近の親までの祖先を保持する。
@@ -78,6 +84,7 @@ ORDER BY target_id COLLATE BINARY, depth DESC`, strings.Join(values, ","))
 	defer rows.Close()
 
 	result := make(map[string]Details, len(ids))
+	identityIDs := make(map[string]struct{})
 	for rows.Next() {
 		var targetID, nodeID, nodeType, name string
 		var path sql.NullString
@@ -85,6 +92,7 @@ ORDER BY target_id COLLATE BINARY, depth DESC`, strings.Join(values, ","))
 		if err := rows.Scan(&targetID, &nodeID, &nodeType, &name, &path, &depth); err != nil {
 			return nil, fmt.Errorf("scan target details: %w", err)
 		}
+		identityIDs[nodeID] = struct{}{}
 		if depth == 0 {
 			detail := result[targetID]
 			detail.Node = Node{ID: nodeID, Type: nodeType, Name: name, Path: optionalString(path)}
@@ -103,6 +111,29 @@ ORDER BY target_id COLLATE BINARY, depth DESC`, strings.Join(values, ","))
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate target details: %w", err)
+	}
+
+	publicIDs := make([]string, 0, len(identityIDs))
+	for id := range identityIDs {
+		publicIDs = append(publicIDs, id)
+	}
+	public, err := identity.LoadPublic(ctx, db, publicIDs)
+	if err != nil {
+		return nil, fmt.Errorf("load target public identities: %w", err)
+	}
+	for targetID, detail := range result {
+		if value, ok := public[detail.ID]; ok {
+			detail.Namespace = value.Namespace
+			detail.LocalID = value.LocalID
+		}
+		for index := range detail.AncestorPath {
+			ancestor := &detail.AncestorPath[index]
+			if value, ok := public[ancestor.ID]; ok {
+				ancestor.Namespace = value.Namespace
+				ancestor.LocalID = value.LocalID
+			}
+		}
+		result[targetID] = detail
 	}
 
 	for _, id := range ids {

@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"time"
 
+	"batchscope/internal/identity"
 	"batchscope/internal/normalize"
 )
 
@@ -32,6 +33,19 @@ func Load(ctx context.Context, db *sql.DB, extracted Extracted, validated Valida
 		return fmt.Errorf("defer snapshot foreign keys: %w", err)
 	}
 
+	// graph本体はcanonical node_idを主キーのまま維持し、利用者向けidentityだけを検索用tableへ分離する。
+	// local_id先頭のindexにより、namespace未指定のジョブID検索でも全node scanを避ける。
+	if _, err := tx.ExecContext(ctx, `
+CREATE TABLE node_identity (
+    node_id TEXT PRIMARY KEY REFERENCES node(node_id),
+    namespace TEXT NOT NULL,
+    local_id TEXT NOT NULL,
+    UNIQUE(namespace, local_id)
+);
+CREATE INDEX idx_node_identity_local ON node_identity(local_id, namespace, node_id);`); err != nil {
+		return fmt.Errorf("create node identity index: %w", err)
+	}
+
 	nodeStatement, err := tx.PrepareContext(ctx, `INSERT INTO node (
         node_id, node_type, name, name_normalized, path, path_normalized,
         parent_id, locator_json, attributes_json
@@ -40,6 +54,14 @@ func Load(ctx context.Context, db *sql.DB, extracted Extracted, validated Valida
 		return fmt.Errorf("prepare node insert: %w", err)
 	}
 	defer nodeStatement.Close()
+
+	identityStatement, err := tx.PrepareContext(ctx, `INSERT INTO node_identity (
+        node_id, namespace, local_id
+    ) VALUES (?, ?, ?)`)
+	if err != nil {
+		return fmt.Errorf("prepare node identity insert: %w", err)
+	}
+	defer identityStatement.Close()
 
 	limitStatement, err := tx.PrepareContext(ctx, `INSERT INTO limit_fact (
         limit_id, node_id, kind, business_day_offset, local_time_seconds,
@@ -58,7 +80,7 @@ func Load(ctx context.Context, db *sql.DB, extracted Extracted, validated Valida
 	}
 	defer relationStatement.Close()
 
-	nodeCount, err := loadNodes(ctx, extracted.Nodes, nodeStatement, limitStatement)
+	nodeCount, err := loadNodes(ctx, extracted.Nodes, nodeStatement, identityStatement, limitStatement)
 	if err != nil {
 		return err
 	}
@@ -80,7 +102,7 @@ func Load(ctx context.Context, db *sql.DB, extracted Extracted, validated Valida
 	return nil
 }
 
-func loadNodes(ctx context.Context, path string, nodes, limits *sql.Stmt) (int, error) {
+func loadNodes(ctx context.Context, path string, nodes, identities, limits *sql.Stmt) (int, error) {
 	count := 0
 	err := readNDJSON(ctx, path, nodesName, func(line int, contents []byte) error {
 		count++
@@ -88,6 +110,14 @@ func loadNodes(ctx context.Context, path string, nodes, limits *sql.Stmt) (int, 
 		if err := json.Unmarshal(contents, &current); err != nil {
 			return &Error{Kind: ErrorInvalidJSON, File: nodesName, Line: line, Err: err}
 		}
+		var explicit struct {
+			Namespace string `json:"namespace"`
+			LocalID   string `json:"localId"`
+		}
+		if err := json.Unmarshal(contents, &explicit); err != nil {
+			return &Error{Kind: ErrorInvalidJSON, File: nodesName, Line: line, Err: err}
+		}
+		namespace, localID := identity.PublicIdentity(current.ID, explicit.Namespace, explicit.LocalID)
 
 		var normalizedPath any
 		if current.Path != nil {
@@ -105,6 +135,9 @@ func loadNodes(ctx context.Context, path string, nodes, limits *sql.Stmt) (int, 
 			nullableJSON(current.Attributes),
 		); err != nil {
 			return fmt.Errorf("insert %s:%d: %w", nodesName, line, err)
+		}
+		if _, err := identities.ExecContext(ctx, current.ID, namespace, localID); err != nil {
+			return fmt.Errorf("insert %s:%d identity: %w", nodesName, line, err)
 		}
 
 		for factIndex, fact := range current.LimitFacts {

@@ -7,19 +7,39 @@ SQLiteは、検査済みスナップショットを検索しやすい形で保�
 
 | データ | 保存上の役割 |
 |---|---|
-| ノード | ID、種別、表示情報、単一親の所属関係を保持する |
+| ノード | canonical ID、種別、表示情報、単一親の所属関係を保持する |
+| node identity | canonical IDと`namespace + localId`の対応を検索用に保持する |
 | relation | 実行順に影響する有向の依存関係を保持する |
 | リミット | ジョブに設定された完了条件を種類ごとに保持する |
 
 親子関係とrelationは別のデータとして保存します。
 親子関係は所属を表し、relationは実行順の到達可能性を表すためです。
+namespaceは親子階層の境界ですが、relationの境界ではありません。cross-namespace relationも両端のcanonical IDで通常のrelationとして保存します。
 
 同じ二つのノード間でも、種類、生成元、確実性、根拠が異なるrelationは区別します。
 内容がすべて同じrelationは取込時に拒否します。
 
+## node identity
+
+探索グラフの主キーは従来どおり`node.node_id`のcanonical IDです。
+namespace導入のために探索用relationや親参照をlocal IDへ置き換えません。
+
+取込時には、各nodeについて次の対応を`node_identity`へ保存します。
+
+```text
+canonical node_id -> namespace + local_id
+```
+
+`namespace + local_id`には一意制約を持たせます。
+これにより、同一namespaceで同じlocal IDを黙って上書き・統合しません。
+`local_id, namespace, node_id`の索引を持ち、`jobId`だけの検索と`namespace + jobId`検索の双方を全node scanなしで行います。
+
+namespaceを持たない従来snapshotは、取込時に`namespace=default`、`local_id=node_id`として`node_identity`へ登録します。
+このtableは検索用read modelであり、canonical snapshotの公開形式そのものではありません。
+
 ## 検索方式
 
-完全一致検索、親から直接の子を得るscope展開、外向きrelationの取得、ノードに属するリミットの取得に索引を使います。
+ジョブID検索、従来の完全一致検索、親から直接の子を得るscope展開、外向きrelationの取得、ノードに属するリミットの取得に索引を使います。
 名前とパスは、取込時に検索用の値を保存し、検索時にも同じ変換を適用します。
 利用者へ保証する完全一致の意味と結果順は[対象の検索](api.md#対象の検索)で定めます。
 

@@ -35,6 +35,32 @@ batchscope-snapshot.tar.gz
 宣言したノード数とrelation数は、NDJSONの実件数と一致する必要があります。
 項目と制約は[`manifest.schema.json`](../../schema/manifest.schema.json)を参照してください。
 
+## namespaceとノードidentity
+
+**namespace**は、同じジョブID体系を共有する意味上の定義セットです。典型例は本番・DR、システム別環境、ジョブマネージャー上の独立した定義領域です。
+ファイルを分割した単位や、取込処理上の都合だけをnamespaceにはしません。入力資料からnamespaceを決定できない場合は推測せず、変換側で明示的に一つの値を決めるか、従来形式として扱います。
+
+namespace対応ノードでは、次の三つを区別します。
+
+- `localId`: 元システム内で利用者が認識するジョブIDなど
+- `namespace`: `localId`が属する意味上の定義セット
+- `id`: BatchScope内部の参照・探索に使うcanonical ID
+
+`namespace`と`localId`は必ず組で指定します。canonical IDは次の決定規則で生成します。
+
+```text
+id = "bs1." + base64url-no-padding(UTF-8(namespace))
+             + "." + base64url-no-padding(UTF-8(localId))
+```
+
+この形式はnamespaceやlocal IDに`/`、`:`, `.`などが含まれても区切りが曖昧にならず、同じ`namespace + localId`から常に同じ`id`を生成します。
+ファイル名、NDJSONの行順、表示名、親階層はcanonical IDへ含めません。
+
+同じnamespace内で同じ`localId`を持つ二つのノードは同じcanonical IDになるため、一つのスナップショット内では重複ノードとして受け入れません。
+異なるnamespaceなら同じ`localId`を持てます。
+
+schema version 0.5では既存スナップショットとの互換性を維持します。`namespace`と`localId`を持たない従来ノードは、その`id`をそのままcanonical IDとして受け入れ、API表示上はnamespace=`default`、localId=`id`として扱います。`default`はこの互換表示専用に予約し、新しいnamespace対応ノードへ明示指定してはいけません。新しく複数namespaceを生成する変換では、この従来形式へ依存せず`namespace`と`localId`を明示します。
+
 ## ノード
 
 ノードは、管理単位の親子関係を構成する要素か、実行上の依存関係に現れる要素です。
@@ -50,7 +76,7 @@ batchscope-snapshot.tar.gz
 | `external_event` | 外部ベンダー、クラウド、サーバレスから届くイベント | なし |
 
 ノードIDは、一つのスナップショット内で重複してはいけません。
-ジョブIDには、複数環境の定義を一つにまとめても衝突しない値を使います。
+`parentId`はcanonical IDを参照します。namespace対応ノードの親子階層は同じnamespace内に閉じ、別namespaceのノードを親にしてはいけません。namespaceは管理階層の境界でもあります。
 項目と単体制約は[`node.schema.json`](../../schema/node.schema.json)を参照してください。
 
 ## リミット
@@ -87,6 +113,7 @@ BatchScopeは、検索時に到達可能な範囲にあるリミット設定済�
 ## 依存関係の向き
 
 依存関係は、`fromId`側の処理や状態が成立した後に、`toId`側の処理や状態が成立できる向きで記録します。
+`fromId`と`toId`はcanonical IDです。
 
 | 種類 | 代表的な使い方 |
 |---|---|
@@ -98,6 +125,22 @@ BatchScopeは、検索時に到達可能な範囲にあるリミット設定済�
 
 relationの両端は、同じスナップショットに存在するノードを参照する必要があります。
 項目と単体制約は[`relation.schema.json`](../../schema/relation.schema.json)を参照してください。
+
+### namespaceを跨ぐ依存
+
+namespaceはidentityと管理階層の境界ですが、依存解析の境界ではありません。明示的なrelationはnamespaceを跨げます。
+
+例えば、main環境のジョブが状態ファイルを生成し、DR環境のジョブがそのファイルを監視して起動する場合は、次のように中間ノードを含む依存として表せます。
+
+```text
+main/JOB-A --produces--> main/JOB-A.done
+main/JOB-A.done --triggers--> dr/JOB-B
+```
+
+実際の中間ノードは`file`、`file_pattern`、`job_status`、`external_event`など、取得できた根拠に合う種別を使います。
+ジョブ側が他namespaceのジョブ終了を直接チェックすることが資料から確認できる場合も、canonical endpointを使うrelationとして保存できます。
+
+BatchScopeはnamespaceを跨ぐrelationを推測生成しません。変換側が入力資料から検出し、`origin`、`certainty`、取得できる場合は`evidence`を付けます。根拠が不十分なら`inferred`または`candidate`のまま保持します。
 
 ### relationの重複
 
@@ -140,10 +183,11 @@ relationの両端は、同じスナップショットに存在するノードを
 | JSON Schema | 形式 | JSON Schemaに違反している |
 | BatchScopeの追加検査 | 件数 | マニフェストの件数が実データと一致しない |
 | BatchScopeの追加検査 | IDと参照 | ノードIDが重複している、存在しないノードまたは親を参照している |
+| BatchScopeの追加検査 | namespace | `namespace`と`localId`が片方だけである、canonical `id`が規則と一致しない、`parentId`が別namespaceを参照する |
 | BatchScopeの追加検査 | 親子関係 | 親の種別が許可されていない、複数の親を設定している、循環がある |
 | BatchScopeの追加検査 | リミット | `max_elapsed`を固定秒数へ変換できない |
 | BatchScopeの追加検査 | 依存関係 | 内容がすべて同じ依存関係が重複している |
 | アーカイブ検査 | アーカイブ | 不正なエントリがある、サイズ上限を超えている |
 
-実行上の依存関係に含まれる循環、孤立ノード、同名ノードは受け入れます。
+実行上の依存関係に含まれる循環、孤立ノード、同名ノード、異なるnamespaceにある同じ`localId`は受け入れます。
 `evidence`を持たない`inferred`の依存関係も受け入れますが、検索結果でも`inferred`のまま返します。
