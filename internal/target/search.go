@@ -46,8 +46,16 @@ func Search(ctx context.Context, db *sql.DB, query string, types []string) (Sear
 // SearchByLocalID は利用者が認識するジョブIDをnamespaceで任意に絞って完全一致検索する。
 // namespaceを省略した場合は、同じlocal IDを持つ全namespaceの候補を返す。
 func SearchByLocalID(ctx context.Context, db *sql.DB, localID, namespace string, types []string) (SearchResult, error) {
-	candidates, truncated, err := searchIndexedLocalIDCandidates(ctx, db, localID, namespace, types)
-	if err != nil && strings.Contains(err.Error(), "no such table: node_identity") {
+	indexed, err := hasNodeIdentityTable(ctx, db)
+	if err != nil {
+		return SearchResult{}, err
+	}
+
+	var candidates []candidate
+	var truncated bool
+	if indexed {
+		candidates, truncated, err = searchIndexedLocalIDCandidates(ctx, db, localID, namespace, types)
+	} else {
 		// namespace導入前のSQLiteにはnamespaced identityが存在しない。
 		// 旧node_idは文字列の見た目にかかわらず常にdefault namespaceのlocal IDそのものとして扱う。
 		candidates, truncated, err = searchLegacyLocalIDCandidates(ctx, db, localID, namespace, types)
@@ -75,6 +83,16 @@ func SearchByLocalID(ctx context.Context, db *sql.DB, localID, namespace string,
 		return strings.Compare(left.ID, right.ID)
 	})
 	return result, nil
+}
+
+func hasNodeIdentityTable(ctx context.Context, db *sql.DB) (bool, error) {
+	var exists int
+	if err := db.QueryRowContext(ctx, `SELECT EXISTS(
+		SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = 'node_identity'
+	)`).Scan(&exists); err != nil {
+		return false, fmt.Errorf("check node identity table: %w", err)
+	}
+	return exists != 0, nil
 }
 
 func loadSearchItems(ctx context.Context, db *sql.DB, candidates []candidate, truncated bool) (SearchResult, error) {
