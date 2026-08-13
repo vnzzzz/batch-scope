@@ -27,6 +27,9 @@ func (node *nodeInput) UnmarshalJSON(data []byte) error {
 	if wire.Namespace == nil || wire.LocalID == nil || *wire.Namespace == "" || *wire.LocalID == "" {
 		return fmt.Errorf("namespace and localId must be specified together")
 	}
+	if *wire.Namespace == "default" {
+		return fmt.Errorf("namespace %q is reserved for legacy nodes", *wire.Namespace)
+	}
 	if expected := identity.Canonical(*wire.Namespace, *wire.LocalID); node.ID != expected {
 		return fmt.Errorf("canonical id %q does not match namespace/localId; want %q", node.ID, expected)
 	}
