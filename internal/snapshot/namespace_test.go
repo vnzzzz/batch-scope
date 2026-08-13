@@ -41,6 +41,16 @@ func TestNodeInputRejectsCrossNamespaceParent(t *testing.T) {
 	}
 }
 
+func TestNodeInputRejectsExplicitDefaultNamespace(t *testing.T) {
+	t.Parallel()
+	id := identity.Canonical("default", "JOB-A")
+	input := `{"type":"job","id":"` + id + `","namespace":"default","localId":"JOB-A","name":"A"}`
+	var node nodeInput
+	if err := json.Unmarshal([]byte(input), &node); err == nil || !strings.Contains(err.Error(), "reserved for legacy nodes") {
+		t.Fatalf("error = %v", err)
+	}
+}
+
 func TestNodeInputKeepsLegacyCompatibility(t *testing.T) {
 	t.Parallel()
 	var node nodeInput
