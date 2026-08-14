@@ -44,6 +44,7 @@ prepare_persistent_directories
 
 install_npm_cli "@openai/codex" "${CODEX_VERSION:-latest}" codex
 install_npm_cli "@anthropic-ai/claude-code" "${CLAUDE_CODE_VERSION:-latest}" claude
+bash .devcontainer/scripts/install-agent-skills-plugin.sh
 
 make bootstrap
 
@@ -52,4 +53,5 @@ printf '  Go:     '; go version
 printf '  Node:   '; node --version
 printf '  Codex:  '; codex --version || true
 printf '  Claude: '; claude --version || true
-printf '\nRun `codex` or `claude` once to authenticate. Credentials are kept in repository-scoped named volumes.\n'
+printf '\nReusable agent-skills are installed as a Plugin from public GitHub.\n'
+printf 'Run `codex` or `claude` once to authenticate the agents. Agent credentials are kept in repository-scoped named volumes.\n'

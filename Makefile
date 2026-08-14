@@ -35,7 +35,7 @@ test: ## [Dev Container/CI] テストを実行する
 	go test -race ./...
 
 scripts-check: ## [Dev Container/CI] シェルスクリプトの構文を確認する
-	bash -n scripts/*.sh
+	bash -n scripts/*.sh .devcontainer/scripts/*.sh
 
 run: ## [Dev Container] サービスを起動する
 	go run ./cmd/batchscope serve

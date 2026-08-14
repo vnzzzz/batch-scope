@@ -14,7 +14,7 @@
 ## 実装方針
 
 - 現在のMVPで必要な処理だけを実装する。
-- 実例が一つしかない段階では、プラグイン機構、汎用グラフ基盤、設定用DSL、過度なインターフェース分割を追加しない。
+- 実例が一つしかない段階では、製品機能としてのプラグイン機構、汎用グラフ基盤、設定用DSL、過度なインターフェース分割を追加しない。
 - 入力境界のID、親子関係、依存関係、リミットは検査する。
 - 任意の補足情報は`attributes`、`locator`、`raw`、`evidence`で受け入れる。
 - 曖昧検索や、サービス内部での依存関係の推測は行わない。
@@ -22,8 +22,10 @@
 - 新しいSQLiteの準備が終わるまでは、現在使用中のSQLiteを検索に使う。
 - 同じ入力と検索条件には、同じ順序の結果を返す。
 - 同じ仕様を複数の文書へコピーしない。
-- コードコメントは`readable-code` Skillに従う。
-- 日本語技術文書は`japanese-technical-writing` Skillに従う。
+- repository非依存の開発規則はDev Containerで導入される`agent-skills` Pluginを利用し、BatchScope repositoryへ複製しない。
+- 作業内容に応じて`agent-skills` Plugin内の該当Skillを適用する。
+- 日本語技術文書には`agent-skills` Pluginの規則に加えて`docs/development/writing-style.md`のBatchScope固有規則を適用する。
+- 共有Pluginの規則とBatchScope固有規則が競合する場合は、BatchScope固有規則を優先する。
 
 ## 作業管理とエージェント分担
 
@@ -42,6 +44,8 @@
 ## 実行環境
 
 CodexとClaude CodeはDev Container内で作業する。
+Dev Container作成時にpublic GitHub repository `vnzzzz/agent-skills`から共有Pluginを導入する。
+共有Pluginの取得にGitHub認証情報は要求しない。
 Dev ContainerにはDocker CLIとDockerソケットを追加していない。
 
 作業完了前に、Dev Container内で次を実行する。
