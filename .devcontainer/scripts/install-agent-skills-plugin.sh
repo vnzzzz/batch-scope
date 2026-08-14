@@ -14,16 +14,13 @@ command -v claude >/dev/null || {
   exit 1
 }
 
-codex plugin marketplace add "$MARKETPLACE_SOURCE" --json >/dev/null
-codex plugin marketplace upgrade "$MARKETPLACE_NAME" --json >/dev/null 2>&1 || true
 codex plugin remove "$PLUGIN_ID" --json >/dev/null 2>&1 || true
+codex plugin marketplace remove "$MARKETPLACE_NAME" --json >/dev/null 2>&1 || true
+codex plugin marketplace add "$MARKETPLACE_SOURCE" --json >/dev/null
 codex plugin add "$PLUGIN_ID" --json >/dev/null
 
-if ! claude plugin marketplace update "$MARKETPLACE_NAME" >/dev/null 2>&1; then
-  claude plugin marketplace add "$MARKETPLACE_SOURCE" --scope user >/dev/null
-fi
-if ! claude plugin update "$PLUGIN_ID" --scope user >/dev/null 2>&1; then
-  claude plugin install "$PLUGIN_ID" --scope user >/dev/null
-fi
+claude plugin marketplace remove "$MARKETPLACE_NAME" >/dev/null 2>&1 || true
+claude plugin marketplace add "$MARKETPLACE_SOURCE" --scope user >/dev/null
+claude plugin install "$PLUGIN_ID" --scope user >/dev/null
 
 printf 'agent-skills Plugin installed for Codex and Claude Code from %s.\n' "$MARKETPLACE_SOURCE"
