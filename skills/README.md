@@ -8,7 +8,10 @@
 
 ## Internal
 
-`skills/internal`は、BatchScopeの開発だけに使用します。
+`skills/internal`は、BatchScope固有の開発用Skillだけを管理します。
 Internal Skillは公開用成果物へ含めません。
-バックログ監査と実装指揮のSkillはClaude Codeだけが使用します。
-コードコメントと日本語技術文書のSkillはClaude CodeとCodexが共通して使用します。
+現在はバックログ監査と実装指揮のSkillをClaude Codeが使用します。
+
+複数repositoryで再利用する`readable-code`と`japanese-technical-writing`は、このrepositoryへ複製しません。
+public repository `vnzzzz/agent-skills`をCodex / Claude Code PluginとしてDev Containerへ導入し、両Agentで共通利用します。
+BatchScope側ではPlugin内の個別Skill名やprovider repository内部pathをdiscovery設定へ列挙しません。
