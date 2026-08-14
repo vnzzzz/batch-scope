@@ -44,6 +44,7 @@ prepare_persistent_directories
 
 install_npm_cli "@openai/codex" "${CODEX_VERSION:-latest}" codex
 install_npm_cli "@anthropic-ai/claude-code" "${CLAUDE_CODE_VERSION:-latest}" claude
+bash scripts/install-shared-plugin.sh
 
 make bootstrap
 
@@ -52,4 +53,5 @@ printf '  Go:     '; go version
 printf '  Node:   '; node --version
 printf '  Codex:  '; codex --version || true
 printf '  Claude: '; claude --version || true
-printf '\nRun `codex` or `claude` once to authenticate. Credentials are kept in repository-scoped named volumes.\n'
+printf '\nShared agent-skills Plugin is installed for Codex and Claude Code.\n'
+printf 'Run `codex` or `claude` once to authenticate. Credentials are kept in repository-scoped named volumes.\n'
