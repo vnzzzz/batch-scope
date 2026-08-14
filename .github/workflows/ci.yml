@@ -33,3 +33,27 @@ jobs:
 
       - name: Build production image
         run: make image TAG=ci
+
+  plugin-integration:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install agent CLIs
+        run: |
+          npm install --global @openai/codex@0.147.0 @anthropic-ai/claude-code@2.1.227
+          codex --version
+          claude --version
+
+      - name: Install shared Plugin from agent-skills PR branch
+        env:
+          AGENT_SKILLS_MARKETPLACE_REF: agent/issue-9-dual-plugin
+        run: bash scripts/install-shared-plugin.sh
+
+      - name: Verify Plugin bootstrap is idempotent
+        env:
+          AGENT_SKILLS_MARKETPLACE_REF: agent/issue-9-dual-plugin
+        run: bash scripts/install-shared-plugin.sh
