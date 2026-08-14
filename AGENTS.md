@@ -22,10 +22,10 @@
 - 新しいSQLiteの準備が終わるまでは、現在使用中のSQLiteを検索に使う。
 - 同じ入力と検索条件には、同じ順序の結果を返す。
 - 同じ仕様を複数の文書へコピーしない。
-- 汎用`readable-code`と`japanese-technical-writing`はDev Containerで導入される`agent-skills` Pluginを利用し、BatchScope repositoryへ複製しない。
-- コードコメントは共有`readable-code` Skillに従う。
-- 日本語技術文書は共有`japanese-technical-writing` Skillと`docs/development/writing-style.md`の両方に従う。
-- 共有SkillとBatchScope固有規則が競合する場合は、BatchScope固有規則を優先する。
+- repository非依存の開発規則はDev Containerで導入される`agent-skills` Pluginを利用し、BatchScope repositoryへ複製しない。
+- 作業内容に応じて`agent-skills` Plugin内の該当Skillを適用する。
+- 日本語技術文書には`agent-skills` Pluginの規則に加えて`docs/development/writing-style.md`のBatchScope固有規則を適用する。
+- 共有Pluginの規則とBatchScope固有規則が競合する場合は、BatchScope固有規則を優先する。
 
 ## 作業管理とエージェント分担
 
