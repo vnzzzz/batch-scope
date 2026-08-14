@@ -42,12 +42,22 @@ flowchart LR
 Dev Containerに対応したエディタでリポジトリを開き、コンテナを作成します。
 初回作成時に`.devcontainer/scripts/post-create.sh`を実行します。
 
-このスクリプトは、Codex CLIとClaude Codeをnpmからインストールし、Goモジュールを取得します。
+このスクリプトは次を順に行います。
+
+1. Codex CLIとClaude Codeをnpmからインストールする。
+2. public GitHub repository `vnzzzz/agent-skills`をPlugin marketplaceとして登録または更新する。
+3. `agent-skills` PluginをCodexとClaude Codeの双方へ導入する。
+4. Goモジュールを取得する。
+
 Codex CLIとClaude Codeは、利用時点の最新版をインストールします。
+`agent-skills`も特定revisionへ固定せず、Dev Container作成時の最新Pluginを使用します。
+Pluginの取得はpublic GitHub repositoryへのHTTPSアクセスであり、GitHub認証情報を必要としません。
+GitHubへの外向きHTTPS通信は必要です。
 
 実行環境：Dev Container
 
-各CLIとGitHub CLIの認証を完了します。
+Codex、Claude Code、GitHub CLIは用途に応じて個別に認証します。
+Plugin取得時のGitHub認証とは関係ありません。
 
 ```bash
 codex
@@ -65,6 +75,19 @@ gh repo view
 認証情報と利用者設定は、リポジトリ専用の名前付きボリュームへ保存します。
 初回作成時に、名前付きボリュームの所有者をDev Containerの`node`ユーザーへ変更します。
 ホストのSSH鍵、クラウド認証ファイル、Dockerソケットはマウントしません。
+
+### shared Pluginを再取得する場合
+
+実行環境：Dev Container
+
+通常はDev Container作成時に自動実行されます。
+手動で最新`agent-skills`を再取得する場合は次を実行します。
+
+```bash
+bash .devcontainer/scripts/install-agent-skills-plugin.sh
+```
+
+この処理はPlugin単位で行い、BatchScope側では`readable-code`などの個別Skillを登録しません。
 
 ### Codexが起動できない場合
 
