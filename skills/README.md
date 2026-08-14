@@ -12,6 +12,6 @@
 Internal Skillは公開用成果物へ含めません。
 現在はバックログ監査と実装指揮のSkillをClaude Codeが使用します。
 
-複数repositoryで再利用する`readable-code`と`japanese-technical-writing`は、このrepositoryへ複製しません。
+複数repositoryで再利用する汎用Skillは、このrepositoryへ複製しません。
 public repository `vnzzzz/agent-skills`をCodex / Claude Code PluginとしてDev Containerへ導入し、両Agentで共通利用します。
-BatchScope側ではPlugin内の個別Skill名やprovider repository内部pathをdiscovery設定へ列挙しません。
+BatchScope側ではPlugin内の個別Skill名、Skill一覧、provider repository内部pathをdiscovery設定へ列挙しません。
