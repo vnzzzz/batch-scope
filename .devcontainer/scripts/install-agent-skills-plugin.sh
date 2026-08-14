@@ -19,6 +19,7 @@ codex plugin marketplace remove "$MARKETPLACE_NAME" --json >/dev/null 2>&1 || tr
 codex plugin marketplace add "$MARKETPLACE_SOURCE" --json >/dev/null
 codex plugin add "$PLUGIN_ID" --json >/dev/null
 
+claude plugin uninstall "$PLUGIN_ID" --scope user >/dev/null 2>&1 || true
 claude plugin marketplace remove "$MARKETPLACE_NAME" >/dev/null 2>&1 || true
 claude plugin marketplace add "$MARKETPLACE_SOURCE" --scope user >/dev/null
 claude plugin install "$PLUGIN_ID" --scope user >/dev/null
