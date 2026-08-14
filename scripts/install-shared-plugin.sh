@@ -22,6 +22,7 @@ MARKETPLACE_NAME="$(node -e 'const data=JSON.parse(process.argv[1]); process.std
 PLUGIN_ID="${PLUGIN_NAME}@${MARKETPLACE_NAME}"
 
 codex plugin marketplace upgrade "$MARKETPLACE_NAME" --json
+codex plugin remove "$PLUGIN_ID" --json >/dev/null 2>&1 || true
 codex plugin add "$PLUGIN_ID" --json
 
 if ! claude plugin marketplace update "$MARKETPLACE_NAME" >/dev/null 2>&1; then
