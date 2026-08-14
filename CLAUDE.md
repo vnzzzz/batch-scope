@@ -5,9 +5,9 @@
 
 バックログを監査またはGitHub Issueへ登録する場合は、`batchscope-backlog` Skillを使用する。
 GitHub Issueを実装する場合は、`batchscope-development` Skillを使用する。
-コードコメントを追加または変更する場合は`agent-skills` Pluginの`readable-code` Skillを使用する。
-日本語技術文書を追加または変更する場合は`agent-skills` Pluginの`japanese-technical-writing` Skillと`docs/development/writing-style.md`を併用する。
-共有SkillとBatchScope固有規則が競合する場合はBatchScope固有規則を優先する。
+コードコメントや日本語技術文書などrepository非依存の作業規則は、作業内容に応じて`agent-skills` Plugin内の該当Skillを使用する。
+日本語技術文書では、共有Pluginの規則に加えて`docs/development/writing-style.md`を適用する。
+共有Pluginの規則とBatchScope固有規則が競合する場合はBatchScope固有規則を優先する。
 
 Claude Codeが主担当としてIssueの解釈、計画、設計判断、差分レビュー、最終検証、GitHub操作を担う。
 実装、テスト、文書更新、コードベースの一次調査は、原則としてIssue単位でCodexへ委任する。
