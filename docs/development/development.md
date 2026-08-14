@@ -87,7 +87,7 @@ gh repo view
 bash .devcontainer/scripts/install-agent-skills-plugin.sh
 ```
 
-この処理はPlugin単位で行い、BatchScope側では`readable-code`などの個別Skillを登録しません。
+この処理はPlugin単位で行い、BatchScope側ではPlugin内の個別Skillを登録しません。
 
 ### Codexが起動できない場合
 
