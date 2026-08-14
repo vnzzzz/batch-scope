@@ -1,9 +1,9 @@
 # 技術文書の書き方
 
-BatchScopeの日本語技術文書には、`agent-skills` Pluginの`japanese-technical-writing`と、この文書のBatchScope固有規則を併せて適用します。
-repository非依存の文書責務、主張の区別、用語一貫性、構成、図表、推敲は共有Skillで扱います。
+BatchScopeの日本語技術文書には、`agent-skills` Pluginから提供されるrepository非依存の文書規則と、この文書のBatchScope固有規則を併せて適用します。
+repository非依存の文書責務、主張の区別、用語一貫性、構成、図表、推敲は共有Pluginで扱います。
 この文書はBatchScope固有規則の正本です。
-共有Skillとこの文書が競合する場合は、この文書を優先します。
+共有Pluginの規則とこの文書が競合する場合は、この文書を優先します。
 共有できる一般原則はこの文書へ複製せず、`vnzzzz/agent-skills`側で更新します。
 
 ## 表記
@@ -74,6 +74,6 @@ Mermaidは、GitHubと主要なMarkdown表示環境で解釈できる基本構�
 
 ## 規則の更新
 
-repository非依存の日本語技術文書原則を変更する場合は、`vnzzzz/agent-skills`の`japanese-technical-writing`を更新します。
+repository非依存の文書原則を変更する場合は、`vnzzzz/agent-skills` Pluginを更新します。
 BatchScope固有の用語、表記、文書配置、実行環境、説明範囲を変更する場合は、この文書を更新します。
-共有Skillの文章をこの文書へコピーして二重管理しません。
+共有Pluginの文章をこの文書へコピーして二重管理しません。
