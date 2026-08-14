@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-MARKETPLACE_SOURCE=${AGENT_SKILLS_MARKETPLACE_SOURCE:-vnzzzz/agent-skills}
-MARKETPLACE_NAME=agent-skills
-PLUGIN_ID=agent-skills@agent-skills
+MARKETPLACE_SOURCE=${AGENT_SKILLS_MARKETPLACE_SOURCE:-https://github.com/vnzzzz/agent-skills.git}
+MARKETPLACE_NAME=vnzzzz-agent-skills
+PLUGIN_ID=agent-skills@vnzzzz-agent-skills
 
 command -v codex >/dev/null || {
   echo "ERROR: codex CLI is required before installing agent-skills Plugin." >&2
