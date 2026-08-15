@@ -1,79 +1,70 @@
 # エージェントスキル
 
-BatchScopeでは、製品利用に必要なPublic Skill、BatchScope固有の開発用Skill、複数repositoryで再利用するshared Pluginの責務を分離します。
-サービス内部の処理や設計文書をSkillへ重複して実装しません。
+BatchScopeでは、製品利用者へ配布するPublic Skillと、複数repositoryで再利用するshared Pluginの責務を分離します。
+BatchScope固有の開発運用はSkillとして持たず、`AGENTS.md`、`CLAUDE.md`、`CONTRIBUTING.md`、`docs/development/`で管理します。
 
-## Skillの責務
+## 責務
 
 | 区分 | 配布単位 | 正本 | 利用者 | 役割 |
 |---|---|---|---|---|
 | Public | `batchscope` Skill | `skills/public/batchscope` | Codex、Claude Code | スナップショットの作成、取込、検索APIの利用 |
-| Internal | `batchscope-backlog` Skill | `skills/internal/batchscope-backlog` | Claude Code | 設計、実装、既存Issueの監査とIssue候補の作成 |
-| Internal | `batchscope-development` Skill | `skills/internal/batchscope-development` | Claude Code | Issue単位の委任、差分レビュー、検証、GitHub操作 |
 | Shared | `agent-skills` Plugin | `vnzzzz/agent-skills` | Codex、Claude Code | repository非依存の開発用Agent Skill群 |
 
-shared Skill群は`agent-skills` Pluginとして開発環境へ導入します。
-BatchScope repositoryはPlugin内のSkill本文、Skill一覧、個別Skillへのsymlink、provider内部pathを管理しません。
-作業内容に応じたSkillの選択はPlugin導入後のAgent側に委ねます。
+Public SkillはBatchScopeという製品を利用するための成果物です。
+shared Pluginは開発環境で利用する汎用規則であり、BatchScopeの製品Releaseには含めません。
 
-日本語技術文書ではshared Pluginの規則に加えて`docs/development/writing-style.md`のBatchScope固有overlayを適用します。
-競合時はBatchScope固有規則を優先します。
-
-## 管理する内容
+## 情報の正本
 
 | 対象 | 正本 |
 |---|---|
 | 取込JSONの機械的制約 | `schema/`配下のJSON Schema |
 | 取込データの意味とレコード間制約 | `docs/design/canonical-snapshot.md` |
 | BatchScope利用手順 | `skills/public/batchscope/SKILL.md` |
-| バックログ監査 | `skills/internal/batchscope-backlog/SKILL.md` |
-| Issue実装 | `skills/internal/batchscope-development/SKILL.md` |
 | repository非依存の汎用Agent Skill | `vnzzzz/agent-skills` Plugin |
+| BatchScope共通のエージェント実装原則 | `AGENTS.md` |
+| Claude Code固有の役割 | `CLAUDE.md` |
+| Issue / Pull Request運用 | `CONTRIBUTING.md` |
 | BatchScope固有日本語文書規則 | `docs/development/writing-style.md` |
 | HTTPの機械的schema | HumaのGo実装から生成する`docs/api/openapi.yaml` |
 | APIの意味と保証 | `docs/design/api.md` |
 | システム全体の設計理由 | `docs/design/`配下 |
 
-## repository内の構成
+## repository内のSkill構成
 
 ```text
 skills/
 ├── README.md
-├── public/
-│   └── batchscope/
-└── internal/
-    ├── batchscope-backlog/
-    └── batchscope-development/
+└── public/
+    └── batchscope/
 ```
 
-repository内のdiscovery linkはBatchScope固有Skillだけを扱います。
-shared SkillはDev Container作成時にPluginとして導入されるため、`.agents/skills`または`.claude/skills`へ個別linkを置きません。
+repository内のdiscovery linkはPublic Skill `batchscope`だけを扱います。
+shared SkillはDev Container作成時にPluginとして導入するため、`.agents/skills`または`.claude/skills`へ個別linkを置きません。
 
 ## shared Pluginの導入
 
 Dev ContainerではCodex / Claude Code CLIのインストール後にpublic GitHub repository `vnzzzz/agent-skills`をmarketplace sourceとして登録し、`agent-skills` Pluginを導入します。
 
-- GitHub認証情報を前提にしない。
+- public HTTPS取得にGitHub認証情報を要求しない。
 - 特定revisionへpinしない。
-- Dev Container作成時にmarketplaceをrefreshし、最新Pluginを利用する。
-- BatchScopeはPlugin内のSkill一覧を管理しない。
+- Plugin内の個別Skill名やprovider内部pathをBatchScope側で管理しない。
 - Universal Plugin DirectoryやAnthropic公式marketplaceへの公開を前提にしない。
 
 Plugin bootstrapは`.devcontainer/scripts/install-agent-skills-plugin.sh`が担当します。
-Plugin package自体の構造とCodex / Claude Code横断検証は`vnzzzz/agent-skills`と`vnzzzz/agent-skills-development`の責務です。
+Plugin packageの構造とCodex / Claude Code横断検証は`vnzzzz/agent-skills`と`vnzzzz/agent-skills-development`の責務です。
 
 ## 配布
 
-Public SkillはBatchScope repository内を正本とし、GitHub Releaseで自己完結したPublic Skillとして配布します。
-Internal Skillと開発環境用`agent-skills` Pluginはproduction imageおよびRelease archiveへ含めません。
+Public SkillはBatchScope repository内を正本とし、GitHub Releaseで自己完結した成果物として配布します。
+Release archiveにはPublic Skillを含めますが、開発環境用の`agent-skills` Pluginは含めません。
+production imageにはPublic Skillもshared Pluginも含めません。
 アーカイブ構成と生成方法は[ビルドと公開](../development/build-and-release.md#対応環境とアーカイブ構成)を正本とします。
 
-Public Skill `batchscope`自体をPlugin化することは本変更の対象ではありません。
+Public Skill `batchscope`自体をPlugin化することは現在の対象ではありません。
 
 ## 更新規則
 
 - APIまたは取込形式を変更した場合は、実装、JSON Schema、設計文書、Public Skillの参照資料、必要なデモデータを同じ変更で更新する。
 - repository非依存のshared Skillを変更する場合は`vnzzzz/agent-skills`を更新し、BatchScopeへコピーしない。
-- BatchScope固有の日本語文書規則は`docs/development/writing-style.md`で更新する。
+- BatchScope固有の開発運用は`AGENTS.md`、`CLAUDE.md`、`CONTRIBUTING.md`、`docs/development/`の責務に応じて更新する。
 - Plugin内のSkill追加を理由にBatchScopeのdiscovery設定や文書を変更しない。
-- Public Skillと開発用Skillの配布責務を混在させない。
