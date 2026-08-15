@@ -36,6 +36,14 @@ chore/update-dev-environment
 外部コントリビューターはforkし、元のリポジトリを`upstream`として登録する。
 Dev Container作成後の編集、Git操作、テストはDev Container内で行う。
 
+既存checkoutで作業を始める場合は、branch切替、fetch、pull、reset相当の操作より先にworktreeを確認する。
+
+```bash
+git status --short
+```
+
+開始前から変更がある場合は、自動でstash、discard、commitせず、その変更の所有者と安全な扱いを確認するまでmain更新やbranch切替を行わない。
+
 書込権限がある場合:
 
 ```bash
@@ -124,15 +132,16 @@ Dockerfileまたはコンテナのビルド設定を変更した場合は、Dock
 
 Issueが十分に定義されている場合、主担当エージェントは途中の計画承認を必須とせず、Issueの範囲内で次まで進めてよい。
 
-1. Issue、Openのブロッカー、linked branch、開始前のworktree状態を確認する。
-2. Issueに紐づく作業ブランチを作成する。
-3. 実装と検証を行う。
-4. 実差分と受入条件を照合する。
-5. コミットしてpushする。
-6. Draft Pull Requestを作成する。
-7. CIを確認し、Issue範囲内の失敗を修正する。
-8. CI成功後にReady for reviewへ移行する。
-9. 人間へレビュー対象、検証結果、未解決事項を報告して停止する。
+1. main更新より前に開始時worktreeを確認する。
+2. Issue、Openのブロッカー、linked branch、branch作成直前のworktree状態を確認する。
+3. Issueに紐づく作業ブランチを作成する。
+4. 実装と検証を行う。
+5. 実差分と受入条件を照合する。
+6. コミットしてpushする。
+7. Draft Pull Requestを作成する。
+8. CIを確認し、Issue範囲内の失敗を修正する。
+9. CI成功後にReady for reviewへ移行する。
+10. 人間へレビュー対象、検証結果、未解決事項を報告して停止する。
 
 次の場合は作業を止めて人間へ確認する。
 
