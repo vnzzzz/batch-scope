@@ -69,6 +69,24 @@ Openの関連Pull Request、または`gh issue develop --list <番号>`が返す
 新しいIssue候補を作る場合は、設計文書、実装、テスト、Open / Closed Issueを確認し、既存Issueとの重複と依存関係を整理する。
 利用者からIssue作成を明示的に依頼されていない場合は、候補を提示して確認を得てからGitHubへ登録する。
 
+### Issue依存関係の登録
+
+新しいIssueを登録したら、新規Issue側だけでなく既存Issue側も含めて実装上の依存関係を再確認する。
+相手のIssueが完了するまで着手できない真のブロッカーだけをGitHubのネイティブ依存関係へ登録する。
+単なる関連、同じ文書を扱う、テーマが近いだけの関係は登録しない。
+
+```bash
+gh issue edit <番号> --add-blocked-by <ブロッカー番号>
+gh issue edit <番号> --add-blocking <ブロックされる番号>
+```
+
+依存理由はIssue本文にも記載するが、着手可否を機械判定する正本はGitHubのネイティブ依存関係とする。
+登録後は対象Issueの`blockedBy` / `blocking`を取得し、意図した関係が登録されていること、不要な関係や循環がないことを確認する。
+
+```bash
+gh issue view <番号> --json blockedBy,blocking
+```
+
 ## 作業ブランチの作成
 
 Issueが着手可能で、対応中のlinked branchがないことを確認してから、Issueに紐づくdevelopment branchを作成してcheckoutする。
