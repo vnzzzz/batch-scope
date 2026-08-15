@@ -150,7 +150,7 @@ Pull Request作成前に、タイトルがSquash merge後の`main`コミット�
 
 Pull Request本文には少なくとも次を記載する。
 
-- 関連Issue
+- `Closes #<Issue番号>`による実装Issueへのclosing reference
 - 変更の目的と主な変更内容
 - 最初に確認するファイル
 - 主な設計判断と維持する不変条件
@@ -158,6 +158,8 @@ Pull Request本文には少なくとも次を記載する。
 - 実行した検査
 - 互換性への影響
 - 未対応事項
+
+実装Issueは`Closes #<Issue番号>`等のGitHub closing keywordで参照し、単なる`#<Issue番号>`の関連付けだけで代替しない。
 
 エージェントが作成するPull RequestはDraftで開始し、CI成功後にReady for reviewへ移行する。
 
