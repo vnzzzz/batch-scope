@@ -106,19 +106,34 @@ Codexへ渡す指示には少なくとも次を含めます。
 - 変更ファイル、正本との整合、検査結果、未解決事項を最後に報告すること
 
 モデルを指定する場合だけ`BATCHSCOPE_CODEX_MODEL`を`-m`へ渡します。
+委任用promptと最後の応答はrepository外の一時ファイルへ作成し、成功・失敗にかかわらず削除します。
 
 ```bash
-codex_args=(
-  exec
-  --ephemeral
-  --sandbox workspace-write
+(
+  set -e
+  prompt_file="$(mktemp)"
+  result_file="$(mktemp)"
+  trap 'rm -f "$prompt_file" "$result_file"' EXIT
+
+  cat >"$prompt_file" <<'PROMPT'
+ここにIssueと委任範囲に沿った実装指示を記載する。
+検査では`GOCACHE=/tmp/batchscope-go-cache make verify`を実行する。
+PROMPT
+
+  codex_args=(
+    exec
+    --ephemeral
+    --sandbox workspace-write
+    --output-last-message "$result_file"
+  )
+
+  if [[ -n "${BATCHSCOPE_CODEX_MODEL:-}" ]]; then
+    codex_args+=(-m "$BATCHSCOPE_CODEX_MODEL")
+  fi
+
+  codex "${codex_args[@]}" - <"$prompt_file"
+  cat "$result_file"
 )
-
-if [[ -n "${BATCHSCOPE_CODEX_MODEL:-}" ]]; then
-  codex_args+=(-m "$BATCHSCOPE_CODEX_MODEL")
-fi
-
-codex "${codex_args[@]}" - < prompt.txt
 ```
 
 `--sandbox danger-full-access`、`--dangerously-bypass-approvals-and-sandbox`、`--skip-git-repo-check`は使用しません。
