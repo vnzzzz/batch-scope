@@ -83,11 +83,14 @@ Dev ContainerにはDocker CLIとDockerソケットを追加していない。
 make verify
 ```
 
-Dockerfileまたはコンテナのビルド設定を変更した場合は、Dockerを利用できるホストまたはCIで次の確認が必要であることをPull Requestへ記載する。
+Dockerfileまたはコンテナのビルド設定を変更した場合は、Dockerを利用できるホストまたはCIで次を確認する。
 
 ```bash
 make image
 ```
+
+エージェントはDockerを利用できないDev Container内で`make image`を実行しない。
+ホストで確認できない場合は、Pull Requestへ未実施であることを記載してCI結果を確認する。
 
 ## 公開仕様を変更する場合
 
@@ -100,4 +103,17 @@ APIまたは取込データの形式を変更する場合は、実装と同じ�
 - Go実装から生成する`docs/api/openapi.yaml`
 
 OpenAPIは手書きしない。
+
+## 公開設定を変更する場合
+
 バイナリ公開はGitHub Releasesだけを対象とし、GHCR、Docker Hub、外部レジストリの認証設定を追加しない。
+
+`.github/workflows/release.yml`または`scripts/build-release-artifacts.sh`を変更した場合は、Dev Container内で次を実行する。
+
+```bash
+make verify
+make release-artifacts VERSION=0.1.0
+make release-artifacts-check VERSION=0.1.0
+```
+
+公開用成果物の構成、Public Skill、配布Schema、READMEリンク、チェックサムまで確認する。
