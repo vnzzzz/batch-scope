@@ -60,11 +60,15 @@ Issueに紐づく作業ブランチは、次節の確認後にGitHubのdevelopme
 ```bash
 gh issue view <番号> --json number,title,body,labels,url,blockedBy,blocking
 gh issue develop --list <番号>
+git status --short
 ```
 
 Openのブロッカーが一つでもあるIssueには着手しない。
 単に参照するIssueはネイティブ依存関係へ登録せず、Issue本文の関連資料として扱う。
 Openの関連Pull Request、または`gh issue develop --list <番号>`が返す作業ブランチが存在する場合は、既に対応中として重複実装を開始しない。
+
+`git status --short`で開始前から存在する変更がある場合は、その変更を自動でstash、discard、commitせず、作業ブランチを作成する前に安全な扱いを確認する。
+エージェントは既存変更の所有者や意図を推測してlinked branchへ持ち込まない。
 
 新しいIssue候補を作る場合は、設計文書、実装、テスト、Open / Closed Issueを確認し、既存Issueとの重複と依存関係を整理する。
 利用者からIssue作成を明示的に依頼されていない場合は、候補を提示して確認を得てからGitHubへ登録する。
@@ -89,7 +93,7 @@ gh issue view <番号> --json blockedBy,blocking
 
 ## 作業ブランチの作成
 
-Issueが着手可能で、対応中のlinked branchがないことを確認してから、Issueに紐づくdevelopment branchを作成してcheckoutする。
+Issueが着手可能で、対応中のlinked branchがなく、開始前のworktreeを安全に扱えることを確認してから、Issueに紐づくdevelopment branchを作成してcheckoutする。
 
 ```bash
 gh issue develop <番号> --name <接頭辞>/<要約> --base main --checkout
@@ -120,7 +124,7 @@ Dockerfileまたはコンテナのビルド設定を変更した場合は、Dock
 
 Issueが十分に定義されている場合、主担当エージェントは途中の計画承認を必須とせず、Issueの範囲内で次まで進めてよい。
 
-1. Issue、Openのブロッカー、linked branchを確認する。
+1. Issue、Openのブロッカー、linked branch、開始前のworktree状態を確認する。
 2. Issueに紐づく作業ブランチを作成する。
 3. 実装と検証を行う。
 4. 実差分と受入条件を照合する。
@@ -134,6 +138,7 @@ Issueが十分に定義されている場合、主担当エージェントは途
 
 - Issueの目的、対象範囲、対象外、受入条件が不足している。
 - Openのブロッカーがある。
+- 開始前から存在するworktree変更を安全に扱えない。
 - 新しい公開API、Schema、データ形式の決定が必要になる。
 - Issueと設計文書、または正本同士が矛盾している。
 - 変更に必要な正本または同期対象を特定できない。
