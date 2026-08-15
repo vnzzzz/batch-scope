@@ -1,17 +1,19 @@
 # Skills
 
-## Public
+BatchScope repositoryの`skills/`は、製品利用者へ配布するPublic Skillだけを管理します。
 
-`skills/public`は、BatchScopeの利用者へ配布するSkillです。
-公開Skillは、リポジトリ外へコピーしても利用できる内容にします。
-リポジトリ固有の開発手順やIssue運用には依存させません。
+```text
+skills/
+├── README.md
+└── public/
+    └── batchscope/
+```
 
-## Internal
+`skills/public/batchscope`は、ジョブ定義からのスナップショット作成、取込、検索API利用を支援するBatchScopeの製品成果物です。
+repository外へコピーしても利用できる内容とし、GitHub Release archiveへ自己完結する形で同梱します。
 
-`skills/internal`は、BatchScope固有の開発用Skillだけを管理します。
-Internal Skillは公開用成果物へ含めません。
-現在はバックログ監査と実装指揮のSkillをClaude Codeが使用します。
+BatchScope固有の開発運用はSkillとして管理しません。
+共通の実装原則は`AGENTS.md`、Claude Code固有の役割は`CLAUDE.md`、Issue / Pull Request運用は`CONTRIBUTING.md`、再現可能な開発手順は`docs/development/`を正本とします。
 
-複数repositoryで再利用する汎用Skillは、このrepositoryへ複製しません。
-public repository `vnzzzz/agent-skills`をCodex / Claude Code PluginとしてDev Containerへ導入し、両Agentで共通利用します。
-BatchScope側ではPlugin内の個別Skill名、Skill一覧、provider repository内部pathをdiscovery設定へ列挙しません。
+複数repositoryで再利用する汎用Skillは`vnzzzz/agent-skills`をCodex / Claude Code PluginとしてDev Containerへ導入して利用します。
+BatchScope側ではPlugin内の個別Skill名、Skill一覧、provider repository内部pathを管理しません。

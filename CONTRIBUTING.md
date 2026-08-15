@@ -1,28 +1,13 @@
 # コントリビューションガイド
 
-## ブランチ運用
+## 基本方針
 
-`main`は、常にテストを通過した状態を保ちます。
-開発は作業ブランチで行い、Pull Requestを通して`main`へ取り込みます。
-「一つのIssue、一つのPull Request、一つの`main`コミット」を基本とします。
+`main`は常にテストを通過した状態を保つ。
+開発はGitHub Issueを起点に作業ブランチで行い、Pull Requestを通して`main`へ取り込む。
+「一つのIssue、一つのPull Request、一つの`main`コミット」を基本とする。
 
-作業ブランチへ`main`をマージせず、最新の`main`へrebaseします。
-マージ時はGitHubのSquash mergeを使用します。
-
-```mermaid
-flowchart TD
-    A[ホストでcloneまたはfork] --> B[Dev Containerを作成]
-    B --> C[作業ブランチを作成]
-    C --> D[変更、make verify、コミット]
-    D --> E[origin/mainまたはupstream/mainへrebase]
-    E --> F[再テストしてpush]
-    F --> G[Pull Request]
-    G --> H[レビュー対応]
-    H --> I[Squash merge]
-    I --> J[リモートのheadブランチを自動削除]
-```
-
-ローカルの作業ブランチは自動削除しません。
+Pull RequestはSquash mergeを使用する。
+**mergeは人間が最終レビュー後に行う。エージェントはPull Requestをmergeしない。**
 
 ## ブランチ名
 
@@ -31,6 +16,7 @@ feature/add-snapshot-import
 fix/handle-cycle-path
 refactor/simplify-storage
 docs/update-contributing-guide
+chore/update-dev-environment
 ```
 
 | 接頭辞 | 用途 |
@@ -42,57 +28,93 @@ docs/update-contributing-guide
 | `test/` | テストの追加または修正 |
 | `chore/` | 開発環境、依存関係、CIの整備 |
 
-## cloneまたはfork
+エージェントが作成する一時的なIssueブランチでは`agent/`接頭辞を使用してよい。
 
-リポジトリへの書込権限がある開発者は、元のリポジトリをcloneします。
+## cloneとmainの更新
 
-実行環境：ホスト
+リポジトリへの書込権限がある開発者は元のリポジトリをcloneする。
+外部コントリビューターはforkし、元のリポジトリを`upstream`として登録する。
+Dev Container作成後の編集、Git操作、テストはDev Container内で行う。
 
-```bash
-git clone git@github.com:<OWNER>/batchscope.git
-cd batchscope
-```
-
-外部のコントリビューターはGitHub上でforkし、自分のforkをcloneします。
-元のリポジトリは`upstream`として登録します。
+既存checkoutで作業を始める場合は、branch切替、fetch、pull、reset相当の操作より先にworktreeを確認する。
 
 ```bash
-git clone git@github.com:<YOUR_ACCOUNT>/batchscope.git
-cd batchscope
-git remote add upstream git@github.com:<OWNER>/batchscope.git
-git remote -v
+git status --short
 ```
 
-HTTPSを使う場合は、clone URLを置き換えます。
-エディタからDev Containerを作成した後は、編集、Git操作、テストをDev Container内で行います。
+開始前から変更がある場合は、自動でstash、discard、commitせず、その変更の所有者と安全な扱いを確認するまでmain更新やbranch切替を行わない。
 
-## 作業ブランチの作成
-
-実行環境：Dev Container
-
-書込権限がある開発者は`origin/main`を基準にします。
+書込権限がある場合:
 
 ```bash
 git switch main
 git pull --ff-only origin main
-git switch -c feature/add-snapshot-import
 ```
 
-forkを使う場合は`upstream/main`を基準にします。
+forkの場合:
 
 ```bash
 git fetch upstream
 git switch -C main upstream/main
-git switch -c feature/add-snapshot-import
 ```
 
-## 変更と確認
+Issueに紐づく作業ブランチは、次節の確認後にGitHubのdevelopment branchとして作成する。
 
-実行環境：Dev Container
+## Issueの確認
 
-変更内容を小さな単位に分け、必要なテストと文書を同じブランチで更新します。
-公開APIまたは取込形式を変更した場合は、JSON Schema、設計文書、Skillの参照資料、必要なデモデータも更新します。
-HumaによるAPI実装後は、Goコードから生成するOpenAPIも同じ変更で更新します。
+実装前にIssueの目的、対象範囲、対象外、受入条件を確認する。
+実装順序上の依存関係はGitHubのネイティブな`blocked by` / `blocking`を正本とする。
+
+```bash
+gh issue view <番号> --json number,title,body,labels,url,blockedBy,blocking,closedByPullRequestsReferences
+gh issue develop --list <番号>
+git status --short
+```
+
+Openのブロッカーが一つでもあるIssueには着手しない。
+単に参照するIssueはネイティブ依存関係へ登録せず、Issue本文の関連資料として扱う。
+`closedByPullRequestsReferences`にOpenのPull Requestが一つでもある場合、または`gh issue develop --list <番号>`が作業ブランチを返す場合は、既に対応中として重複実装を開始しない。
+
+`git status --short`で開始前から存在する変更がある場合は、その変更を自動でstash、discard、commitせず、作業ブランチを作成する前に安全な扱いを確認する。
+エージェントは既存変更の所有者や意図を推測してlinked branchへ持ち込まない。
+
+新しいIssue候補を作る場合は、設計文書、実装、テスト、Open / Closed Issueを確認し、既存Issueとの重複と依存関係を整理する。
+利用者からIssue作成を明示的に依頼されていない場合は、候補を提示して確認を得てからGitHubへ登録する。
+
+### Issue依存関係の登録
+
+新しいIssueを登録したら、新規Issue側だけでなく既存Issue側も含めて実装上の依存関係を再確認する。
+相手のIssueが完了するまで着手できない真のブロッカーだけをGitHubのネイティブ依存関係へ登録する。
+単なる関連、同じ文書を扱う、テーマが近いだけの関係は登録しない。
+
+```bash
+gh issue edit <番号> --add-blocked-by <ブロッカー番号>
+gh issue edit <番号> --add-blocking <ブロックされる番号>
+```
+
+依存理由はIssue本文にも記載するが、着手可否を機械判定する正本はGitHubのネイティブ依存関係とする。
+登録後は対象Issueの`blockedBy` / `blocking`を取得し、意図した関係が登録されていること、不要な関係や循環がないことを確認する。
+
+```bash
+gh issue view <番号> --json blockedBy,blocking
+```
+
+## 作業ブランチの作成
+
+Issueが着手可能で、対応中のlinked branchがなく、開始前のworktreeを安全に扱えることを確認してから、Issueに紐づくdevelopment branchを作成してcheckoutする。
+
+```bash
+gh issue develop <番号> --name <接頭辞>/<要約> --base main --checkout
+```
+
+fork等でこのコマンドをそのまま利用できない場合は、Issueとbranchの関連付けを失わない代替手順を確認してから作業を開始する。
+単なるlocal branchだけを先に作って実装を開始しない。
+
+## 変更と検証
+
+変更する事実ごとに正本と同期対象を特定し、Issueの対象範囲内で一貫して更新する。
+同じ仕様を複数文書へ詳しく複製しない。
+公開APIまたは取込形式を変更した場合は、JSON Schema、設計文書、Public Skillの参照資料、必要なデモデータ、生成OpenAPIを実装と同期する。
 
 ```bash
 git status
@@ -100,14 +122,48 @@ git diff
 make verify
 ```
 
-Dockerfileまたはコンテナのビルド設定を変更した場合は、Dockerを利用できるホストで`make image`を実行します。
-ホストで確認できない場合は、Pull Requestへ未実施であることを記載し、CIの結果を確認します。
+Dockerfileまたはコンテナのビルド設定を変更した場合は、Dockerを利用できるホストで`make image`を実行する。
+実行できない場合はPull Requestへ未実施であることを記載し、CIの結果を確認する。
+
+## AIエージェントによる実装
+
+主担当エージェントはIssueの解釈、設計判断、差分レビュー、受入条件との照合、最終検証を担う。
+実装、テスト、文書更新、一次調査は、原則としてIssue単位で実装担当エージェントへ委任できる。
+
+Issueが十分に定義されている場合、主担当エージェントは途中の計画承認を必須とせず、Issueの範囲内で次まで進めてよい。
+
+1. main更新より前に開始時worktreeを確認する。
+2. Issue、Openのブロッカー、Openのclosing Pull Request、linked branch、branch作成直前のworktree状態を確認する。
+3. Issueに紐づく作業ブランチを作成する。
+4. 実装と検証を行う。
+5. 実差分と受入条件を照合する。
+6. コミットしてpushする。
+7. Draft Pull Requestを作成する。
+8. CIを確認し、Issue範囲内の失敗を修正する。
+9. CI成功後にReady for reviewへ移行する。
+10. 人間へレビュー対象、検証結果、未解決事項を報告して停止する。
+
+次の場合は作業を止めて人間へ確認する。
+
+- Issueの目的、対象範囲、対象外、受入条件が不足している。
+- Openのブロッカーがある。
+- 開始前から存在するworktree変更を安全に扱えない。
+- 新しい公開API、Schema、データ形式の決定が必要になる。
+- Issueと設計文書、または正本同士が矛盾している。
+- 変更に必要な正本または同期対象を特定できない。
+- Secret、認証、権限、破壊的操作の追加が必要になる。
+- Issue外の大規模な設計変更が必要になる。
+- 外部環境の問題により受入条件を検証できない。
+- 受入条件の変更が必要になる。
+
+内部の関数分割、パッケージ構成、テスト方法は既存方針の範囲内で判断してよい。
+
+**エージェントはCI成功、review承認、merge可能状態のいずれを確認してもmerge操作を実行しない。**
+mergeは人間の最終レビュー後に人間が実行する。
 
 ## コミット
 
-実行環境：Dev Container
-
-コミットには、一つの目的に関係する変更だけを含めます。
+コミットには一つの目的に関係する変更だけを含める。
 
 ```bash
 git add <変更したファイル>
@@ -115,87 +171,41 @@ git diff --cached
 git commit -m "feat: add snapshot import endpoint"
 ```
 
-意図しないファイルを追加した場合は、コミット前にステージから外します。
+Pull RequestはSquash mergeするため、作業ブランチ上の途中コミット数は`main`の履歴には持ち込まれないが、レビューしやすい論理単位を保つ。
 
-```bash
-git restore --staged <ファイル>
-```
+## 最新mainへのrebase
 
-## 最新のmainへのrebase
-
-実行環境：Dev Container
-
-書込権限がある開発者は`origin/main`、forkを使う場合は`upstream/main`へrebaseします。
+作業ブランチへ`main`をmergeせず、基準remoteの最新`main`へrebaseする。
 
 ```bash
 git fetch origin
 git rebase origin/main
+make verify
 ```
 
-```bash
-git fetch upstream
-git rebase upstream/main
-```
-
-競合が発生した場合は、対象ファイルを修正してからrebaseを続けます。
-
-```bash
-git status
-git add <競合を解消したファイル>
-git rebase --continue
-```
-
-rebaseを取り消す場合は`git rebase --abort`を実行します。
-rebase後は`make verify`を再実行します。
-
-## ブランチのpush
-
-実行環境：Dev Container
-
-```bash
-git push -u origin feature/add-snapshot-import
-```
-
-一度pushしたブランチをrebaseした場合は、通常の`--force`ではなく`--force-with-lease`を使います。
-共有ブランチでは、合意なく履歴を書き換えません。
-
-```bash
-git push --force-with-lease
-```
+forkの場合は`upstream/main`へrebaseする。
+一度pushしたブランチをrebaseした場合は通常の`--force`ではなく`--force-with-lease`を使う。
+共有ブランチでは合意なく履歴を書き換えない。
 
 ## Pull Requestの作成
 
-実行環境：Dev Container
+Pull Request作成前に、タイトルがSquash merge後の`main`コミットタイトルとして適切か確認する。
+タイトルは`feat:`、`fix:`、`chore:`等のConventional Commits形式を基本とする。
 
-Pull Requestを作成する前に、タイトルが`main`のコミット履歴として適切か確認します。
-Pull RequestのタイトルはSquash merge後に`main`のコミットタイトルになります。
-タイトルは`feat:`、`fix:`、`chore:`などのConventional Commits形式を基本とし、一つのIssueの目的を簡潔に表します。
-基準とするremoteのコミット履歴と比較し、既存のタイトルと同じ粒度になっていることも確認します。
+Pull Request本文には少なくとも次を記載する。
 
-```bash
-git log --oneline -10 origin/main
-```
+- `Closes #<Issue番号>`による実装Issueへのclosing reference
+- 変更の目的と主な変更内容
+- 最初に確認するファイル
+- 主な設計判断と維持する不変条件
+- 受入条件ごとの確認結果
+- 実行した検査
+- 互換性への影響
+- 未対応事項
 
-forkを使う場合は、`upstream/main`のコミット履歴を確認します。
+実装Issueは`Closes #<Issue番号>`等のGitHub closing keywordで参照し、単なる`#<Issue番号>`の関連付けだけで代替しない。
 
-```bash
-git log --oneline -10 upstream/main
-```
-
-GitHub CLIでPull Requestを作成します。
-forkから送る場合も、`--repo`には元のリポジトリを指定します。
-
-```bash
-gh pr create \
-  --repo <OWNER>/batchscope \
-  --base main \
-  --head <YOUR_ACCOUNT>:feature/add-snapshot-import \
-  --title "feat: add snapshot import endpoint"
-```
-
-同じリポジトリ内の作業ブランチでは、`--head`にブランチ名だけを指定できます。
-
-エージェントがPull Requestを作成する場合は、Draftとして作成し、CI成功後にReady for reviewへ移行します。
+エージェントが作成するPull RequestはDraftで開始し、CI成功後にReady for reviewへ移行する。
 
 ```bash
 gh pr create --draft
@@ -203,34 +213,19 @@ gh pr checks <Pull Request番号> --watch
 gh pr ready <Pull Request番号>
 ```
 
-CI失敗時の修正手順とレビューガイドの内容は`batchscope-development` Skillを参照してください。
-Ready for reviewへの移行後も、人間による最終レビューを省略しません。
-
-Pull Requestには、少なくとも次を記載します。
-Pull Requestの本文はSquash merge後に`main`のコミット本文として残ります。
-
-- 変更の目的
-- 主な変更内容
-- 確認方法と結果
-- 互換性への影響
-- 未対応事項
+Ready for reviewへの移行後は人間の最終レビューを待つ。
 
 ## レビュー後の更新
 
-実行環境：Dev Container
+レビュー対応ではIssueの対象範囲を維持する。
+必要な修正後に`make verify`を再実行し、最新`main`へのrebaseが必要な場合は`--force-with-lease`で更新する。
 
-最新の`main`へrebaseし、テスト後に`--force-with-lease`で更新します。
-基準となるremoteは、作業開始時と同じ`origin`または`upstream`を使用します。
+## マージと片付け
 
-## マージ後の片付け
+必須チェックと人間の最終レビューが完了した後、**人間が**GitHubのSquash mergeで`main`へ反映する。
+GitHubはmerge後にリモートのheadブランチを自動削除する。
 
-必須チェックとレビューが完了した後に、Squash mergeで`main`へ反映します。
-GitHubはマージ後にリモートのheadブランチを自動削除します。
-マージ後は、作業開始時に使った基準リポジトリから`main`を更新し、削除済みのリモートブランチへの参照を整理します。
-
-実行環境：Dev Container
-
-書込権限がある開発者は`origin/main`を取得します。
+書込権限がある開発者はmerge後に次を実行する。
 
 ```bash
 git switch main
@@ -238,19 +233,6 @@ git pull --ff-only origin main
 git fetch --prune origin
 ```
 
-forkを使う場合は`upstream/main`を取得し、自分のforkも更新します。
-
-```bash
-git fetch upstream
-git switch main
-git merge --ff-only upstream/main
-git push origin main
-git fetch --prune origin
-```
-
-ローカルの作業ブランチが不要であることを確認した後、`git branch -d <ブランチ名>`で削除します。
-`git branch -d`が削除を拒否した場合も、`git branch -D`で強制削除したり、自動削除したりしません。
-
-```bash
-git branch -d feature/add-snapshot-import
-```
+forkの場合は`upstream/main`を取得して自分のforkを更新する。
+ローカル作業ブランチは不要であることを確認した後、`git branch -d <ブランチ名>`で削除する。
+`git branch -D`による強制削除を自動実行しない。
