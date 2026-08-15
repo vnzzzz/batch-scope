@@ -30,7 +30,7 @@ chore/update-dev-environment
 
 エージェントが作成する一時的なIssueブランチでは`agent/`接頭辞を使用してよい。
 
-## cloneと作業ブランチ
+## cloneとmainの更新
 
 リポジトリへの書込権限がある開発者は元のリポジトリをcloneする。
 外部コントリビューターはforkし、元のリポジトリを`upstream`として登録する。
@@ -41,7 +41,6 @@ Dev Container作成後の編集、Git操作、テストはDev Container内で行
 ```bash
 git switch main
 git pull --ff-only origin main
-git switch -c feature/add-snapshot-import
 ```
 
 forkの場合:
@@ -49,8 +48,9 @@ forkの場合:
 ```bash
 git fetch upstream
 git switch -C main upstream/main
-git switch -c feature/add-snapshot-import
 ```
+
+Issueに紐づく作業ブランチは、次節の確認後にGitHubのdevelopment branchとして作成する。
 
 ## Issueの確認
 
@@ -59,14 +59,26 @@ git switch -c feature/add-snapshot-import
 
 ```bash
 gh issue view <番号> --json number,title,body,labels,url,blockedBy,blocking
+gh issue develop --list <番号>
 ```
 
 Openのブロッカーが一つでもあるIssueには着手しない。
 単に参照するIssueはネイティブ依存関係へ登録せず、Issue本文の関連資料として扱う。
-既に対応中のPull Requestがある場合は重複実装を開始しない。
+Openの関連Pull Request、または`gh issue develop --list <番号>`が返す作業ブランチが存在する場合は、既に対応中として重複実装を開始しない。
 
 新しいIssue候補を作る場合は、設計文書、実装、テスト、Open / Closed Issueを確認し、既存Issueとの重複と依存関係を整理する。
 利用者からIssue作成を明示的に依頼されていない場合は、候補を提示して確認を得てからGitHubへ登録する。
+
+## 作業ブランチの作成
+
+Issueが着手可能で、対応中のlinked branchがないことを確認してから、Issueに紐づくdevelopment branchを作成してcheckoutする。
+
+```bash
+gh issue develop <番号> --name <接頭辞>/<要約> --base main --checkout
+```
+
+fork等でこのコマンドをそのまま利用できない場合は、Issueとbranchの関連付けを失わない代替手順を確認してから作業を開始する。
+単なるlocal branchだけを先に作って実装を開始しない。
 
 ## 変更と検証
 
@@ -90,8 +102,8 @@ Dockerfileまたはコンテナのビルド設定を変更した場合は、Dock
 
 Issueが十分に定義されている場合、主担当エージェントは途中の計画承認を必須とせず、Issueの範囲内で次まで進めてよい。
 
-1. IssueとOpenのブロッカーを確認する。
-2. 作業ブランチを作成する。
+1. Issue、Openのブロッカー、linked branchを確認する。
+2. Issueに紐づく作業ブランチを作成する。
 3. 実装と検証を行う。
 4. 実差分と受入条件を照合する。
 5. コミットしてpushする。
