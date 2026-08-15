@@ -72,6 +72,7 @@ SQLite破損エラーが残る場合だけ、Codexを終了して`state_5.sqlite
 
 Claude CodeとCodexのモデルIDはrepositoryへ固定しません。
 Claude Codeの既定effortは`.claude/settings.json`の`effortLevel`で管理し、このrepositoryでは`medium`を既定とします。
+利用可能な値は`low`、`medium`、`high`、`xhigh`です。
 権限設定は利用者ごとの`.claude/settings.local.json`に置き、repositoryでは管理しません。
 
 Claude Codeのモデルは`ANTHROPIC_MODEL`でローカルに指定できます。
@@ -84,6 +85,44 @@ export BATCHSCOPE_CODEX_MODEL=<利用可能なCodexモデル>
 ```
 
 モデル名や認証情報をrepositoryへコミットしません。
+
+### Codexへ実装を委任する場合
+
+`codex exec --ephemeral --sandbox workspace-write`では、既定のGo build cacheがsandboxの書込み可能範囲外になる場合があります。
+委任した検査ではrepository外の一時cacheを明示します。
+
+```bash
+GOCACHE=/tmp/batchscope-go-cache make verify
+```
+
+Codexへ渡す指示には少なくとも次を含めます。
+
+- Issue番号、目的、受入条件
+- 今回の委任範囲と対象外
+- 参照すべき正本、文書、コード
+- 編集前に正本と同期対象を特定すること
+- 実行する検査
+- GitHub操作を行わないこと
+- 変更ファイル、正本との整合、検査結果、未解決事項を最後に報告すること
+
+モデルを指定する場合だけ`BATCHSCOPE_CODEX_MODEL`を`-m`へ渡します。
+
+```bash
+codex_args=(
+  exec
+  --ephemeral
+  --sandbox workspace-write
+)
+
+if [[ -n "${BATCHSCOPE_CODEX_MODEL:-}" ]]; then
+  codex_args+=(-m "$BATCHSCOPE_CODEX_MODEL")
+fi
+
+codex "${codex_args[@]}" - < prompt.txt
+```
+
+`--sandbox danger-full-access`、`--dangerously-bypass-approvals-and-sandbox`、`--skip-git-repo-check`は使用しません。
+権限またはnetwork制限で処理できない場合は回避せず主担当へ報告します。
 
 ## 開発コマンド
 
