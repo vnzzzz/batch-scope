@@ -66,14 +66,14 @@ Issueに紐づく作業ブランチは、次節の確認後にGitHubのdevelopme
 実装順序上の依存関係はGitHubのネイティブな`blocked by` / `blocking`を正本とする。
 
 ```bash
-gh issue view <番号> --json number,title,body,labels,url,blockedBy,blocking
+gh issue view <番号> --json number,title,body,labels,url,blockedBy,blocking,closedByPullRequestsReferences
 gh issue develop --list <番号>
 git status --short
 ```
 
 Openのブロッカーが一つでもあるIssueには着手しない。
 単に参照するIssueはネイティブ依存関係へ登録せず、Issue本文の関連資料として扱う。
-Openの関連Pull Request、または`gh issue develop --list <番号>`が返す作業ブランチが存在する場合は、既に対応中として重複実装を開始しない。
+`closedByPullRequestsReferences`にOpenのPull Requestが一つでもある場合、または`gh issue develop --list <番号>`が作業ブランチを返す場合は、既に対応中として重複実装を開始しない。
 
 `git status --short`で開始前から存在する変更がある場合は、その変更を自動でstash、discard、commitせず、作業ブランチを作成する前に安全な扱いを確認する。
 エージェントは既存変更の所有者や意図を推測してlinked branchへ持ち込まない。
@@ -133,7 +133,7 @@ Dockerfileまたはコンテナのビルド設定を変更した場合は、Dock
 Issueが十分に定義されている場合、主担当エージェントは途中の計画承認を必須とせず、Issueの範囲内で次まで進めてよい。
 
 1. main更新より前に開始時worktreeを確認する。
-2. Issue、Openのブロッカー、linked branch、branch作成直前のworktree状態を確認する。
+2. Issue、Openのブロッカー、Openのclosing Pull Request、linked branch、branch作成直前のworktree状態を確認する。
 3. Issueに紐づく作業ブランチを作成する。
 4. 実装と検証を行う。
 5. 実差分と受入条件を照合する。
