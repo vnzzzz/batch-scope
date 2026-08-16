@@ -9,25 +9,35 @@ clone、ブランチ作成、Issue / Pull Request運用は[コントリビュー
 |---|---|---|
 | ホスト | clone、Dev Container作成、本番イメージ操作 | Docker、Dev Containers対応エディタ |
 | Dev Container | 編集、Goテスト、サービス起動、Codex、Claude Code、デモ表示 | Go、Node.js、GitHub CLI、SQLite CLI、`jq` |
-| GitHub Actions | Pull Request検査、イメージbuild確認、タグ付き公開成果物作成 | Go、Docker、GitHub Actions |
+| GitHub Actions | Pull Request検査、Dev Container検査、イメージbuild確認、タグ付き公開成果物作成 | Go、Docker、GitHub Actions |
 
 Dev ContainerにはDocker CLIとDockerソケットを追加しません。
 本番イメージはホストまたはCIで作成します。
 
+## Dev Containerの構成
+
+BatchScopeは`vnzzzz/agentic-development-toolkit`が公開するDev Container Feature `agent-dev:1`を利用します。
+Featureの提供範囲とconsumer責務は同repositoryの`docs/dev-container-feature.md`を正本とします。
+
+責務は次のように分けます。
+
+| 担当 | 管理するもの |
+|---|---|
+| `agent-dev` Feature | Node.js 22、GitHub CLI、Claude Code、Codex、共通CLI、Agent用VS Code extension、認証volume、`vnzzzz/agent-skills` Plugin bootstrap |
+| BatchScope | Go 1.26.5、SQLite CLI、Go cache、Go module取得、ポート8080、BatchScope固有VS Code設定 |
+
+`.devcontainer/devcontainer.json`では`agent-dev:1`のmajor versionを参照します。
+`.devcontainer/devcontainer-lock.json`は、実際に解決したFeatureのexact versionとdigestを固定します。
+Featureを更新するまで既存のbuildはlockfileのartifactを利用します。
+
+BatchScope独自のAgent CLI installerや`agent-skills` installerは持ちません。
+`agent-dev`のpost-create処理がpublic GitHub repository `vnzzzz/agent-skills`をmarketplace sourceとして登録し、CodexとClaude CodeへPluginを導入します。
+BatchScopeの`.devcontainer/scripts/post-create.sh`はGo cacheの準備と`make bootstrap`だけを担当します。
+
 ## Dev Containerの作成
 
-Dev Container作成時に`.devcontainer/scripts/post-create.sh`が次を行います。
-
-1. Codex CLIとClaude Codeをインストールする。
-2. public GitHub repository `vnzzzz/agent-skills`をPlugin marketplaceとして登録する。
-3. `agent-skills` PluginをCodexとClaude Codeへ導入する。
-4. Goモジュールを取得する。
-
-Agent CLIと`agent-skills` Pluginは特定revisionへ固定せず、Dev Container作成時の取得対象を使用します。
-Plugin取得はpublic GitHub repositoryへのHTTPSアクセスであり、GitHub認証情報を必要としません。
-Agent自身の認証、GitHub CLIの認証とは別です。
-
-実行環境：Dev Container
+Dev Containers対応エディタからrepositoryを開き、Dev Containerを作成します。
+作成後は必要に応じて各CLIへloginします。
 
 ```bash
 codex
@@ -42,31 +52,39 @@ gh auth status
 gh repo view
 ```
 
-認証情報と利用者設定はrepository専用の名前付きボリュームへ保存します。
-ホストのSSH鍵、クラウド認証ファイル、Dockerソケットはマウントしません。
+Claude Code、Codex、GitHub CLIの認証情報は`agent-dev`が管理するDev Container単位のnamed volumeへ分離して保存します。
+ホストのcredential directory、SSH鍵、Dockerソケットはbind mountしません。
+認証済みcontainer内のcodeは同じuser権限で認証状態へアクセスできるため、未確認のrepositoryやscriptを実行しません。
+詳細なtrust boundaryは`vnzzzz/agentic-development-toolkit`の`SECURITY.md`を参照してください。
 
-### shared Pluginを再取得する場合
+### Featureを更新する場合
 
-```bash
-bash .devcontainer/scripts/install-agent-skills-plugin.sh
-```
-
-Plugin単位で導入し、BatchScope側ではPlugin内の個別Skillを登録しません。
-
-### Codexが起動できない場合
-
-`/home/node/.codex`への書込み権限がない場合はDev ContainerをRebuildします。
-既存コンテナをそのまま使う必要がある場合は、Dev Container内で次を実行します。
+`agent-dev:1`はmajor versionだけを指定し、lockfileでexact artifactを固定します。
+Dev Containers CLIを利用できるホストで更新候補を確認し、更新時はlockfile差分を通常のcode changeとしてreviewします。
 
 ```bash
-sudo chown -R "$(id -u):$(id -g)" "${CODEX_HOME:-$HOME/.codex}"
-chmod 700 "${CODEX_HOME:-$HOME/.codex}"
-mkdir -p "${CODEX_HOME:-$HOME/.codex}/tmp"
-codex doctor
+devcontainer outdated
+devcontainer upgrade
 ```
 
-SQLite破損エラーが残る場合だけ、Codexを終了して`state_5.sqlite`と付随ファイルを退避します。
-認証情報やセッションを含む`.codex`全体は削除しません。
+更新後は`.github/workflows/devcontainer.yml`で実際のDev Container作成とrepository検査を確認します。
+major versionを変更する場合はFeatureのbreaking changeを別途確認します。
+
+### shared Pluginを更新する場合
+
+shared Skillの正本は`vnzzzz/agent-skills`です。
+BatchScope側ではPlugin内の個別Skillを登録せず、独自install scriptも管理しません。
+既存containerでPlugin bootstrapをやり直す必要がある場合はDev ContainerをRebuildし、`agent-dev`のpost-create処理を再実行します。
+Pluginの直接操作が必要な場合は`vnzzzz/agent-skills`のREADMEに記載されたCodex / Claude Code向けコマンドを使用します。
+
+### Agent CLIや認証volumeで問題が起きた場合
+
+Agent CLIの既定version、認証volumeのmount先、環境変数は`agent-dev` Featureが管理します。
+BatchScope側で`CODEX_HOME`やClaude Codeの設定directoryを上書きしません。
+
+認証volumeの書込み権限やFeature bootstrapで問題が起きた場合は、まずDev ContainerをRebuildします。
+解消しない場合は`vnzzzz/agentic-development-toolkit`のFeature contractと`SECURITY.md`を確認し、BatchScope固有設定ではなくFeature側の問題かを切り分けます。
+認証状態を破棄する場合は対象Dev Containerと対応するnamed volumeを明示的に削除し、必要に応じてprovider側でもsessionをrevokeします。
 
 ### モデルとeffort
 
@@ -158,10 +176,11 @@ PROMPT
 
 BatchScope固有の開発運用はInternal Skillとして持ちません。
 
+- 共通のAgent開発環境: `vnzzzz/agentic-development-toolkit`の`agent-dev` Feature
+- repository非依存のAgent Skill: `vnzzzz/agent-skills` Plugin
 - 共通の実装原則、停止条件、検証ルール: `AGENTS.md`
 - Claude Code固有の責務: `CLAUDE.md`
 - Issue、branch、Pull Request、review、mergeの実務フロー: `CONTRIBUTING.md`
-- repository非依存のコード・文章等の規則: `agent-skills` Plugin
 
 実装作業はGitHub Issueを起点とし、OpenのブロッカーがあるIssueには着手しません。
 主担当エージェントはIssueの解釈とレビューを担い、実装や一次調査をIssue単位でCodex等へ委任できます。
