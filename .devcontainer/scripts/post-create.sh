@@ -15,43 +15,16 @@ ensure_writable_directory() {
   chmod "$mode" "$path"
 }
 
-prepare_persistent_directories() {
-  ensure_writable_directory "${CODEX_HOME:-${HOME}/.codex}" 0700
-  ensure_writable_directory "${HOME}/.claude" 0700
-  ensure_writable_directory "${HOME}/.config/gh" 0700
-  ensure_writable_directory "${HOME}/.cache/go-build" 0755
-  ensure_writable_directory "/go/pkg/mod" 0755
-  ensure_writable_directory "/go/pkg/sumdb" 0755
-
-  mkdir -p "${CODEX_HOME:-${HOME}/.codex}/tmp"
-}
-
-install_npm_cli() {
-  local package="$1"
-  local version="$2"
-  local command="$3"
-
-  if command -v "$command" >/dev/null 2>&1; then
-    printf '%s already installed: ' "$command"
-    "$command" --version || true
-    return
-  fi
-
-  sudo npm install --global "${package}@${version}"
-}
-
-prepare_persistent_directories
-
-install_npm_cli "@openai/codex" "${CODEX_VERSION:-latest}" codex
-install_npm_cli "@anthropic-ai/claude-code" "${CLAUDE_CODE_VERSION:-latest}" claude
-bash .devcontainer/scripts/install-agent-skills-plugin.sh
+ensure_writable_directory "${HOME}/.cache/go-build" 0755
+ensure_writable_directory "/go/pkg/mod" 0755
+ensure_writable_directory "/go/pkg/sumdb" 0755
 
 make bootstrap
 
-printf '\nDevelopment environment ready.\n'
-printf '  Go:     '; go version
-printf '  Node:   '; node --version
-printf '  Codex:  '; codex --version || true
-printf '  Claude: '; claude --version || true
-printf '\nReusable agent-skills are installed as a Plugin from public GitHub.\n'
-printf 'Run `codex` or `claude` once to authenticate the agents. Agent credentials are kept in repository-scoped named volumes.\n'
+printf '\nBatchScope development environment ready.\n'
+printf '  Go:      '; go version
+printf '  SQLite:  '; sqlite3 --version
+printf '  Codex:   '; codex --version
+printf '  Claude:  '; claude --version
+printf '  GitHub:  '; gh --version | head -n 1
+printf '\nAgent CLIs, credential volumes, and the agent-skills Plugin are provided by agentic-development-toolkit/agent-dev.\n'

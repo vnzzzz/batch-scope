@@ -25,7 +25,8 @@
 ## Agent Skillとrepository固有規則
 
 - BatchScope repositoryが管理するSkillは、製品利用者向けの`skills/public/batchscope`だけとする。
-- repository非依存の開発規則は、Dev Containerで導入される`agent-skills` Pluginを利用し、BatchScopeへ複製しない。
+- repository非依存の開発規則は`vnzzzz/agent-skills` Pluginを利用し、BatchScopeへ複製しない。
+- shared Pluginは`vnzzzz/agentic-development-toolkit`のDev Container Feature `agent-dev`が導入する。
 - 作業内容に応じて`agent-skills` Plugin内の該当Skillを適用する。
 - 日本語技術文書には、shared Pluginの規則に加えて`docs/development/writing-style.md`のBatchScope固有規則を適用する。
 - shared Pluginの規則とBatchScope固有規則が競合する場合は、BatchScope固有規則を優先する。
@@ -73,9 +74,10 @@
 ## 実行環境と検証
 
 CodexとClaude CodeはDev Container内で作業する。
-Dev Container作成時にpublic GitHub repository `vnzzzz/agent-skills`からshared Pluginを導入する。
-shared Pluginの取得にGitHub認証情報は要求しない。
-Dev ContainerにはDocker CLIとDockerソケットを追加していない。
+Dev Containerは`vnzzzz/agentic-development-toolkit`の`agent-dev:1`を利用し、Agent CLI、GitHub CLI、認証volume、`vnzzzz/agent-skills` Pluginのbootstrapを共通Featureへ委ねる。
+BatchScope側はGo、SQLite、Go cache、port等のproject固有設定だけを管理する。
+認証情報はFeatureが管理するDev Container単位のnamed volumeへ保存し、ホストのcredential directory、SSH鍵、Dockerソケットをmountしない。
+Dev ContainerにはDocker CLIとDockerソケットを追加しない。
 
 作業完了前にDev Container内で次を実行する。
 
@@ -88,6 +90,8 @@ Dockerfileまたはコンテナのビルド設定を変更した場合は、Dock
 ```bash
 make image
 ```
+
+Dev Container設定を変更した場合は、`.github/workflows/devcontainer.yml`によるDev Container作成と`make verify`の成功も確認する。
 
 エージェントはDockerを利用できないDev Container内で`make image`を実行しない。
 ホストで確認できない場合は、Pull Requestへ未実施であることを記載してCI結果を確認する。
