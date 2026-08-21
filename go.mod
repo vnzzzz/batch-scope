@@ -5,7 +5,7 @@ go 1.26.5
 require (
 	github.com/danielgtaylor/huma/v2 v2.39.1
 	github.com/santhosh-tekuri/jsonschema/v6 v6.0.3
-	golang.org/x/text v0.40.0
+	golang.org/x/text v0.41.0
 	modernc.org/sqlite v1.56.0
 )
 
